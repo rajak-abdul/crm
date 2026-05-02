@@ -1,0 +1,33 @@
+name: crm_app
+description: CRM Mobile App with Cubit State Management
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_bloc: ^8.1.4        # Cubit / BLoC
+  dio: ^5.4.0                 # HTTP client
+  shared_preferences: ^2.2.2  # Token storage
+  intl: ^0.18.1               # Date formatting
+  image_picker: ^1.0.4        # Avatar upload
+  equatable: ^2.0.5           # Value equality for states
+  cupertino_icons: ^1.0.6
+  sqflite: ^2.4.2
+  file_picker: ^8.0.0
+  url_launcher: ^6.3.2
+  open_file: ^3.5.11
+  path_provider: ^2.1.5
+  gal: ^1.1.0
+  file_saver: ^0.2.8
+  device_info_plus: ^10.1.0
+  permission_handler: ^12.0.1
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
