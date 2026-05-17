@@ -4,8 +4,11 @@
 
 // ignore_for_file: unnecessary_cast
 
+import 'dart:async' show unawaited;
+
+import 'package:crm_app/database/local_db.dart';
 import 'package:crm_app/modals/modals.dart' show Lead;
-import 'package:crm_app/utils/permission_helper.dart';
+import 'package:crm_app/screen/LeaderBoard/cubit/leaderBoard_cubit.dart';
 import 'package:crm_app/screen/dashboard/ui/dashboard_screen.dart'
     show
         PipelineStage,
@@ -16,13 +19,14 @@ import 'package:crm_app/screen/dashboard/ui/dashboard_screen.dart'
         DashboardLoaded,
         DashboardError,
         InvoiceRecord;
+import 'package:crm_app/utils/permission_helper.dart';
 import 'package:dio/dio.dart'
     show DioExceptionType, DioException, Dio, BaseOptions, InterceptorsWrapper;
 import 'package:flutter/material.dart' show debugPrint;
 import 'package:flutter_bloc/flutter_bloc.dart' show Cubit;
 import 'package:shared_preferences/shared_preferences.dart'
     show SharedPreferences;
-
+    
 class DashboardCubit extends Cubit<DashboardState> {
   static const _base = 'https://sales.stagingzar.com/api';
 
@@ -54,23 +58,38 @@ class DashboardCubit extends Cubit<DashboardState> {
 
   Future<void> _initToken() async {
     try {
-      final prefs  = await SharedPreferences.getInstance();
+      final prefs = await SharedPreferences.getInstance();
       _cachedToken = prefs.getString('token');
     } catch (_) {}
   }
 
+  // ════════════════════════════════════════════════════════════
+  // LOAD DASHBOARD
+  // ════════════════════════════════════════════════════════════
+
   Future<void> loadDashboard() async {
     if (isClosed) return;
-    emit(DashboardLoading());
+
+    final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('user_id') ?? '';
+
+    // ── Step 1: Show last-online data immediately ─────────────
+    // If the user is offline or the fetch is slow, they still see
+    // real data instead of a blank/loading screen.
+    await _tryEmitCachedDashboard(userId);
+
+    // ── Step 2: Only show spinner if nothing is on screen yet ─
+    if (state is! DashboardLoaded) emit(DashboardLoading());
+
     try {
       if (_cachedToken == null || _cachedToken!.isEmpty) await _initToken();
 
-      final prefs = await SharedPreferences.getInstance();
-      final currentUserId = prefs.getString('user_id') ?? '';
-      final userName = prefs.getString('user_name') ?? '';
-      final canViewAll = PermissionHelper.can('admin_access');
+      await PermissionHelper.load();
 
-      // Fetch everything in parallel for speed
+      final userName = prefs.getString('user_name') ?? '';
+      final canViewAll = PermissionHelper.can('users_roles');
+
+      // Fetch everything in parallel
       final results = await Future.wait([
         _fetchLeads('/leads/getAllLead'),
         _safeLeads('/leads/recent'),
@@ -78,35 +97,29 @@ class DashboardCubit extends Cubit<DashboardState> {
         _fetchInvoices(),
         _fetchPipelineResolved(
           canViewAll: canViewAll,
-          userId: currentUserId,
+          userId: userId,
           userName: userName,
         ),
         _fetchAllDealMaps(),
       ]);
 
-      final allLeadsRaw    = results[0]  as List<Lead>;
-      final recentLeadsRaw = results[1]  as List<Lead>;
-      final base        = results[2]  as DashboardSummary;
-      final invoices    = results[3]  as List<InvoiceRecord>;
-      final pipeline    = results[4]  as List<PipelineStage>;
-      final allDealRows = results[5]  as List<Map<String, dynamic>>;
+      final allLeadsRaw = results[0] as List<Lead>;
+      final recentLeadsRaw = results[1] as List<Lead>;
+      final base = results[2] as DashboardSummary;
+      final invoices = results[3] as List<InvoiceRecord>;
+      final pipeline = results[4] as List<PipelineStage>;
+      final allDealRows = results[5] as List<Map<String, dynamic>>;
 
       final allLeads = canViewAll
           ? allLeadsRaw
-          : allLeadsRaw
-              .where((l) => l.assignedToId == currentUserId)
-              .toList();
+          : allLeadsRaw.where((l) => l.assignedToId == userId).toList();
       final recentLeads = canViewAll
           ? recentLeadsRaw
-          : recentLeadsRaw
-              .where((l) => l.assignedToId == currentUserId)
-              .toList();
+          : recentLeadsRaw.where((l) => l.assignedToId == userId).toList();
 
-      // Compute revenue in INR using invoice exchangeRate, then API fallback rate.
       final allRates = await _fetchRatesForInvoices(invoices);
       final revenue = _computeRevenue(invoices, rates: allRates);
 
-      // Pending leads: prefer API; fallback = leads that aren't Converted
       final pendingLeads = base.pendingLeads > 0
           ? base.pendingLeads
           : allLeads.where((l) => l.status != 'Converted').length;
@@ -114,11 +127,10 @@ class DashboardCubit extends Cubit<DashboardState> {
       final scopedDeals = _scopeDealsForUser(
         allDealRows,
         canViewAll: canViewAll,
-        userId: currentUserId,
+        userId: userId,
         userName: userName,
       );
-
-      final dealMetricsLast7 = _dealMetricsForPeriod(
+      final dealMetrics = _dealMetricsForPeriod(
         scopedDeals,
         range: 'last7',
         month: null,
@@ -127,56 +139,87 @@ class DashboardCubit extends Cubit<DashboardState> {
         dealsFetched: allDealRows.isNotEmpty,
       );
 
+      Map<String, dynamic>? topPerformer;
+
+try {
+  final leaderboard = await LeaderboardService.fetchLeaderboard(
+    token: _cachedToken ?? '',
+  );
+
+  if (leaderboard.data.isNotEmpty) {
+    leaderboard.data.sort(
+  (a, b) => b.totalLeads.compareTo(a.totalLeads),
+    );
+
+    final top = leaderboard.data.first;
+
+    topPerformer = {
+      "name": top.name,
+      "email": top.email,
+      "conversionRate": top.conversionRate,
+      "convertedLeads": top.convertedLeads,
+      "totalLeads": top.totalLeads,
+      "productiveDays": top.productiveDays,
+    };
+  }
+} catch (_) {}
+
       final summary = DashboardSummary(
-        totalLeads:    canViewAll
+        totalLeads: canViewAll
             ? (base.totalLeads > 0 ? base.totalLeads : allLeads.length)
             : allLeads.length,
-        totalDeals:    dealMetricsLast7.totalDeals,
-        dealsWon:      dealMetricsLast7.dealsWon,
-        pendingLeads:  pendingLeads,
-        leadsChange:   base.leadsChange,
-        dealsChange:   dealMetricsLast7.dealsChange,
-        paidRevenue:   revenue.paid,
+        totalDeals: dealMetrics.totalDeals,
+        dealsWon: dealMetrics.dealsWon,
+        pendingLeads: pendingLeads,
+        leadsChange: base.leadsChange,
+        dealsChange: dealMetrics.dealsChange,
+        paidRevenue: revenue.paid,
         unpaidRevenue: revenue.unpaid,
-        totalRevenue:  revenue.total,
+        totalRevenue: revenue.total,
       );
-
-      if (isClosed) return;
 
       // Default filter: last 7 days
       final now = DateTime.now();
       final start = DateTime(now.year, now.month, now.day)
           .subtract(const Duration(days: 6));
-      final last7DayInvoices = invoices.where((inv) {
+      final last7Invoices = invoices.where((inv) {
         final d = inv.issueDate;
         if (d == null) return false;
-        final day = DateTime(d.year, d.month, d.day);
-        return !day.isBefore(start);
+        return !DateTime(d.year, d.month, d.day).isBefore(start);
       }).toList();
-      final rangeRates = await _fetchRatesForInvoices(last7DayInvoices);
-      final currentRangeRevenue = _computeRevenue(last7DayInvoices, rates: rangeRates);
+      final rangeRates = await _fetchRatesForInvoices(last7Invoices);
+      final rangeRevenue = _computeRevenue(last7Invoices, rates: rangeRates);
 
-      emit(DashboardLoaded(
-        allLeads:    allLeads,
+      if (isClosed) return;
+
+      final freshState = DashboardLoaded(
+        topPerformer: topPerformer,
+        allLeads: allLeads,
         recentLeads: recentLeads,
-        summary:     summary.copyWith(
-          paidRevenue:   currentRangeRevenue.paid,
-          unpaidRevenue: currentRangeRevenue.unpaid,
-          totalRevenue:  currentRangeRevenue.total,
+        summary: summary.copyWith(
+          paidRevenue: rangeRevenue.paid,
+          unpaidRevenue: rangeRevenue.unpaid,
+          totalRevenue: rangeRevenue.total,
         ),
-        pipeline:    pipeline,
-        invoices:    invoices,     // store full list for re-filtering
+        pipeline: pipeline,
+        invoices: invoices,
         allDealRows: allDealRows,
         filterRange: 'last7',
         filterMonth: null,
-        filterYear:  null,
-      ));
+        filterYear: null,
+      );
+
+      emit(freshState);
+
+      // ── Step 3: Persist to DB — becomes the new offline snapshot
+      unawaited(_persistDashboard(userId, freshState));
     } on DioException catch (e) {
       if (isClosed) return;
-      emit(DashboardError(_dioMsg(e)));
+      // Don't overwrite cached data with an error screen
+      if (state is! DashboardLoaded) emit(DashboardError(_dioMsg(e)));
     } catch (e) {
       if (isClosed) return;
-      emit(DashboardError(e.toString()));
+      if (state is! DashboardLoaded) emit(DashboardError(e.toString()));
     }
   }
 
@@ -184,19 +227,70 @@ class DashboardCubit extends Cubit<DashboardState> {
     if (state is! DashboardLoading) await loadDashboard();
   }
 
-  // ── Revenue filter: recompute from cached invoices ──────────
-  Future<void> filterByPeriod({String range = 'last7', int? month, int? year}) async {
+  // ════════════════════════════════════════════════════════════
+  // OFFLINE HELPERS
+  // ════════════════════════════════════════════════════════════
+
+  /// Emit whatever was last saved to the local DB for [userId].
+  /// Called before every network fetch so the screen is never blank.
+  Future<void> _tryEmitCachedDashboard(String userId) async {
+    try {
+      final cached = await LocalDb.instance.loadDashboard(userId: userId);
+      if (cached == null || isClosed) return;
+      emit(DashboardLoaded(
+          topPerformer: null,
+        allLeads: cached.recentLeads,
+        recentLeads: cached.recentLeads,
+        summary: cached.summary,
+        pipeline: cached.pipeline,
+        invoices: cached.invoices, // ← restored from cache (was const [])
+        allDealRows: cached.allDealRows, // ← ADD (was missing, defaulted to [])
+        filterRange: cached.filterRange,
+        filterMonth: cached.filterMonth,
+        filterYear: cached.filterYear,
+      ));
+    } catch (_) {}
+  }
+
+  /// Persist a fresh [DashboardLoaded] state to the local DB so it
+  /// becomes the offline snapshot for the next session.
+  Future<void> _persistDashboard(String userId, DashboardLoaded s) async {
+    try {
+      await LocalDb.instance.saveDashboard(
+        userId: userId,
+        summary: s.summary,
+        pipeline: s.pipeline,
+        recentLeads: s.recentLeads,
+        invoices: s.invoices, // ← now persisted
+        allDealRows: s.allDealRows,
+        filterRange: s.filterRange,
+        filterMonth: s.filterMonth,
+        filterYear: s.filterYear,
+      );
+    } catch (_) {}
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // PERIOD FILTER
+  // ════════════════════════════════════════════════════════════
+
+  Future<void> filterByPeriod({
+    String range = 'last7',
+    int? month,
+    int? year,
+  }) async {
     final cur = state;
     if (cur is! DashboardLoaded) return;
 
     final prefs = await SharedPreferences.getInstance();
-    final currentUserId = prefs.getString('user_id') ?? '';
+    final userId = prefs.getString('user_id') ?? '';
     final userName = prefs.getString('user_name') ?? '';
-    final canViewAll = PermissionHelper.can('admin_access');
+    final canViewAll = PermissionHelper.can('users_roles');
+
     final scopedDeals = _scopeDealsForUser(
       cur.allDealRows,
       canViewAll: canViewAll,
-      userId: currentUserId,
+      userId: userId,
       userName: userName,
     );
     final dealMetrics = _dealMetricsForPeriod(
@@ -216,41 +310,95 @@ class DashboardCubit extends Cubit<DashboardState> {
       filtered = cur.invoices.where((inv) {
         final d = inv.issueDate;
         if (d == null) return false;
-        final day = DateTime(d.year, d.month, d.day);
-        return !day.isBefore(start);
+        return !DateTime(d.year, d.month, d.day).isBefore(start);
       }).toList();
     } else if (month != null || year != null) {
       filtered = cur.invoices.where((inv) {
         final d = inv.issueDate;
         if (d == null) return false;
         if (month != null && d.month != month) return false;
-        if (year  != null && d.year  != year)  return false;
+        if (year != null && d.year != year) return false;
         return true;
       }).toList();
     }
 
-    final rates = await _fetchRatesForInvoices(filtered);
+    // Use cached rates when offline; fall back gracefully
+    Map<String, double> rates = {};
+    try {
+      rates = await _fetchRatesForInvoices(filtered);
+    } catch (_) {
+      rates = Map<String, double>.from(_rateCache);
+    }
     final revenue = _computeRevenue(filtered, rates: rates);
+    Map<String, dynamic>? topPerformer;
+
+try {
+  String? startDate;
+  String? endDate;
+  String filterType = 'last7';
+
+  if (range == 'month' && month != null && year != null) {
+    filterType = 'month';
+
+    startDate =
+        "$year-${month.toString().padLeft(2, '0')}-01";
+
+    final lastDay = DateTime(year, month + 1, 0).day;
+
+    endDate =
+        "$year-${month.toString().padLeft(2, '0')}-$lastDay";
+  }
+
+  final leaderboard = await LeaderboardService.fetchLeaderboard(
+    token: _cachedToken ?? '',
+    filterType: filterType,
+    startDate: startDate,
+    endDate: endDate,
+  );
+
+  if (leaderboard.data.isNotEmpty) {
+    leaderboard.data.sort(
+      (a, b) => b.totalLeads.compareTo(a.totalLeads),
+    );
+
+    final top = leaderboard.data.first;
+
+    topPerformer = {
+      "name": top.name,
+      "email": top.email,
+      "conversionRate": top.conversionRate,
+      "convertedLeads": top.convertedLeads,
+      "totalLeads": top.totalLeads,
+      "productiveDays": top.productiveDays,
+    };
+  }
+} catch (_) {}
+    if (isClosed) return;
 
     emit(DashboardLoaded(
-      allLeads:    cur.allLeads,
+      topPerformer: topPerformer ?? cur.topPerformer,
+      allLeads: cur.allLeads,
       recentLeads: cur.recentLeads,
-      summary:     cur.summary.copyWith(
-        paidRevenue:   revenue.paid,
+      summary: cur.summary.copyWith(
+        paidRevenue: revenue.paid,
         unpaidRevenue: revenue.unpaid,
-        totalRevenue:  revenue.total,
-        totalDeals:    dealMetrics.totalDeals,
-        dealsWon:      dealMetrics.dealsWon,
-        dealsChange:   dealMetrics.dealsChange,
+        totalRevenue: revenue.total,
+        totalDeals: dealMetrics.totalDeals,
+        dealsWon: dealMetrics.dealsWon,
+        dealsChange: dealMetrics.dealsChange,
       ),
-      pipeline:    cur.pipeline,
-      invoices:    cur.invoices,   // keep original full list for re-filtering
+      pipeline: cur.pipeline,
+      invoices: cur.invoices,
       allDealRows: cur.allDealRows,
       filterRange: range,
       filterMonth: range == 'month' ? month : null,
-      filterYear:  range == 'month' ? year : null,
+      filterYear: range == 'month' ? year : null,
     ));
   }
+
+  // ════════════════════════════════════════════════════════════
+  // DEALS
+  // ════════════════════════════════════════════════════════════
 
   Future<List<Map<String, dynamic>>> _fetchAllDealMaps() async {
     try {
@@ -284,9 +432,7 @@ class DashboardCubit extends Cubit<DashboardState> {
     required String userName,
   }) {
     if (canViewAll) return List<Map<String, dynamic>>.from(rows);
-    return rows
-        .where((m) => _dealAssignedToUser(m, userId, userName))
-        .toList();
+    return rows.where((m) => _dealAssignedToUser(m, userId, userName)).toList();
   }
 
   DateTime? _dealFilterDate(Map<String, dynamic> m) {
@@ -295,7 +441,7 @@ class DashboardCubit extends Cubit<DashboardState> {
       'wonAt',
       'dealClosedAt',
       'updatedAt',
-      'createdAt',
+      'createdAt'
     ]) {
       final d = DateTime.tryParse((m[k] ?? '').toString());
       if (d != null) return d;
@@ -320,8 +466,7 @@ class DashboardCubit extends Cubit<DashboardState> {
     if (d == null) return false;
     final day = DateTime(d.year, d.month, d.day);
     if (day.isBefore(rangeStartDay)) return false;
-    if (rangeEndExclusiveDay != null &&
-        !day.isBefore(rangeEndExclusiveDay)) {
+    if (rangeEndExclusiveDay != null && !day.isBefore(rangeEndExclusiveDay)) {
       return false;
     }
     return true;
@@ -332,17 +477,12 @@ class DashboardCubit extends Cubit<DashboardState> {
     required DateTime rangeStartDay,
     DateTime? rangeEndExclusiveDay,
   }) {
-    var total = 0;
-    var won = 0;
+    var total = 0, won = 0;
     for (final m in deals) {
       final d = _dealFilterDate(m);
-      if (!_dealDayInRange(
-        d,
-        rangeStartDay: rangeStartDay,
-        rangeEndExclusiveDay: rangeEndExclusiveDay,
-      )) {
-        continue;
-      }
+      if (!_dealDayInRange(d,
+          rangeStartDay: rangeStartDay,
+          rangeEndExclusiveDay: rangeEndExclusiveDay)) continue;
       total++;
       if (_isWonDealStage(m['stage']?.toString())) won++;
     }
@@ -354,11 +494,7 @@ class DashboardCubit extends Cubit<DashboardState> {
     return ((current - previous) / previous) * 100.0;
   }
 
-  ({
-    int totalDeals,
-    int dealsWon,
-    double dealsChange,
-  }) _dealMetricsForPeriod(
+  ({int totalDeals, int dealsWon, double dealsChange}) _dealMetricsForPeriod(
     List<Map<String, dynamic>> scopedDeals, {
     required String range,
     int? month,
@@ -379,18 +515,11 @@ class DashboardCubit extends Cubit<DashboardState> {
 
     if (range == 'last7') {
       final curStart = today.subtract(const Duration(days: 6));
-      final cur = _dealCountsInRange(
-        scopedDeals,
-        rangeStartDay: curStart,
-        rangeEndExclusiveDay: null,
-      );
+      final cur = _dealCountsInRange(scopedDeals, rangeStartDay: curStart);
       final prevStart = today.subtract(const Duration(days: 13));
       final prevEndEx = today.subtract(const Duration(days: 6));
-      final prev = _dealCountsInRange(
-        scopedDeals,
-        rangeStartDay: prevStart,
-        rangeEndExclusiveDay: prevEndEx,
-      );
+      final prev = _dealCountsInRange(scopedDeals,
+          rangeStartDay: prevStart, rangeEndExclusiveDay: prevEndEx);
       return (
         totalDeals: cur.total,
         dealsWon: cur.won,
@@ -400,23 +529,14 @@ class DashboardCubit extends Cubit<DashboardState> {
 
     final m = month ?? now.month;
     final y = year ?? now.year;
-    final curMonthStart = DateTime(y, m, 1);
-    final curMonthEndEx =
-        m == 12 ? DateTime(y + 1, 1, 1) : DateTime(y, m + 1, 1);
-    final cur = _dealCountsInRange(
-      scopedDeals,
-      rangeStartDay: curMonthStart,
-      rangeEndExclusiveDay: curMonthEndEx,
-    );
-
-    final prevMonthStart = DateTime(y, m - 1, 1);
-    final prevMonthEndEx = DateTime(y, m, 1);
-    final prev = _dealCountsInRange(
-      scopedDeals,
-      rangeStartDay: prevMonthStart,
-      rangeEndExclusiveDay: prevMonthEndEx,
-    );
-
+    final curStart = DateTime(y, m, 1);
+    final curEndEx = m == 12 ? DateTime(y + 1, 1, 1) : DateTime(y, m + 1, 1);
+    final cur = _dealCountsInRange(scopedDeals,
+        rangeStartDay: curStart, rangeEndExclusiveDay: curEndEx);
+    final prevStart = DateTime(y, m - 1, 1);
+    final prevEndEx = DateTime(y, m, 1);
+    final prev = _dealCountsInRange(scopedDeals,
+        rangeStartDay: prevStart, rangeEndExclusiveDay: prevEndEx);
     return (
       totalDeals: cur.total,
       dealsWon: cur.won,
@@ -424,7 +544,12 @@ class DashboardCubit extends Cubit<DashboardState> {
     );
   }
 
-  Future<Map<String, double>> _fetchRatesForInvoices(List<InvoiceRecord> invoices) async {
+  // ════════════════════════════════════════════════════════════
+  // REVENUE
+  // ════════════════════════════════════════════════════════════
+
+  Future<Map<String, double>> _fetchRatesForInvoices(
+      List<InvoiceRecord> invoices) async {
     final currencies = invoices
         .map((i) => i.currency.toUpperCase().trim())
         .where((c) => c.isNotEmpty && c != 'INR')
@@ -436,58 +561,17 @@ class DashboardCubit extends Cubit<DashboardState> {
       try {
         final res = await _dio.get('/invoices/exchange-rate/$ccy');
         final rate = double.tryParse(res.data?['rate']?.toString() ?? '');
-        if (rate != null && rate > 0) {
-          _rateCache[ccy] = rate;
-        }
+        if (rate != null && rate > 0) _rateCache[ccy] = rate;
       } catch (_) {}
     }));
     return _rateCache;
   }
 
-  // ── Invoice fetching ────────────────────────────────────────
-  Future<List<InvoiceRecord>> _fetchInvoices() async {
-    try {
-      final res  = await _dio.get('/invoices/getInvoice');
-      final body = res.data;
-      debugPrint('[Invoice] status=${res.statusCode}');
-
-      List<dynamic> raw = [];
-      if (body is List) {
-        raw = body;
-      } else if (body is Map) {
-        for (final k in ['data', 'invoices', 'result', 'records', 'invoice']) {
-          if (body[k] is List) { raw = body[k] as List; break; }
-        }
-        if (raw.isEmpty) {
-          for (final v in (body as Map).values) {
-            if (v is List) { raw = v; break; }
-          }
-        }
-      }
-
-      return raw
-          .whereType<Map>()
-          .map((e) => InvoiceRecord.fromJson(Map<String, dynamic>.from(e)))
-          .toList();
-    } catch (e) {
-      debugPrint('[Invoice] error: $e');
-      return [];
-    }
-  }
-
-  // ── Revenue computation for dashboard totals ────────────────
-  // Rules:
-  //   1) INR invoices use their own total amount.
-  //   2) Non-INR paid invoices use total * exchangeRate.
-  //      (fallback to inrAmount if present)
-  //   3) Non-INR unpaid invoices only use exchangeRate when available;
-  //      otherwise contribute 0 (backend usually sends null).
   _RevenueResult _computeRevenue(
     List<InvoiceRecord> invoices, {
     Map<String, double> rates = const {},
   }) {
     double paid = 0, unpaid = 0;
-
     for (final inv in invoices) {
       final ccy = inv.currency.toUpperCase();
       double inrAmt = 0;
@@ -498,13 +582,11 @@ class DashboardCubit extends Cubit<DashboardState> {
         if (inv.exchangeRate != null && inv.exchangeRate! > 0) {
           inrAmt = inv.total * inv.exchangeRate!;
         } else if (inv.inrAmount != null && inv.inrAmount! > 0) {
-          // Some paid records already include converted INR amount.
           inrAmt = inv.inrAmount!;
         } else if ((rates[ccy] ?? 0) > 0) {
           inrAmt = inv.total * rates[ccy]!;
         }
       } else {
-        // For unpaid non-INR, keep 0 when exchangeRate is unavailable.
         if (inv.exchangeRate != null && inv.exchangeRate! > 0) {
           inrAmt = inv.total * inv.exchangeRate!;
         } else if ((rates[ccy] ?? 0) > 0) {
@@ -518,15 +600,52 @@ class DashboardCubit extends Cubit<DashboardState> {
         unpaid += inrAmt;
       }
     }
-
-    return _RevenueResult(
-      paid:   paid,
-      unpaid: unpaid,
-      total:  paid + unpaid,
-    );
+    return _RevenueResult(paid: paid, unpaid: unpaid, total: paid + unpaid);
   }
 
-  // ── Leads ───────────────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════
+  // INVOICES
+  // ════════════════════════════════════════════════════════════
+
+  Future<List<InvoiceRecord>> _fetchInvoices() async {
+    try {
+      final res = await _dio.get('/invoices/getInvoice');
+      final body = res.data;
+      debugPrint('[Invoice] status=${res.statusCode}');
+
+      List<dynamic> raw = [];
+      if (body is List) {
+        raw = body;
+      } else if (body is Map) {
+        for (final k in ['data', 'invoices', 'result', 'records', 'invoice']) {
+          if (body[k] is List) {
+            raw = body[k] as List;
+            break;
+          }
+        }
+        if (raw.isEmpty) {
+          for (final v in (body as Map).values) {
+            if (v is List) {
+              raw = v;
+              break;
+            }
+          }
+        }
+      }
+      return raw
+          .whereType<Map>()
+          .map((e) => InvoiceRecord.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+    } catch (e) {
+      debugPrint('[Invoice] error: $e');
+      return [];
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // LEADS
+  // ════════════════════════════════════════════════════════════
+
   Future<List<Lead>> _fetchLeads(String path) async {
     final res = await _dio.get(path);
     debugPrint('[Leads] $path  ${res.statusCode}');
@@ -548,7 +667,10 @@ class DashboardCubit extends Cubit<DashboardState> {
       raw = data;
     } else if (data is Map) {
       for (final k in ['data', 'leads', 'result', 'records']) {
-        if (data[k] is List) { raw = data[k] as List; break; }
+        if (data[k] is List) {
+          raw = data[k] as List;
+          break;
+        }
       }
     }
     final out = <Lead>[];
@@ -561,14 +683,14 @@ class DashboardCubit extends Cubit<DashboardState> {
             final fn = assignRaw['firstName']?.toString() ?? '';
             final ln = assignRaw['lastName']?.toString() ?? '';
             m['assignTo'] = '$fn $ln'.trim();
-            m['assignedToId'] =
-                assignRaw['_id']?.toString() ??
+            m['assignedToId'] = assignRaw['_id']?.toString() ??
                 assignRaw['id']?.toString() ??
                 '';
           } else if (assignRaw != null) {
             m['assignTo'] = assignRaw.toString().trim();
           }
-          if ((m['assignedToId'] == null || m['assignedToId'].toString().isEmpty) &&
+          if ((m['assignedToId'] == null ||
+                  m['assignedToId'].toString().isEmpty) &&
               m['assignToId'] != null) {
             m['assignedToId'] = m['assignToId'].toString();
           }
@@ -579,10 +701,13 @@ class DashboardCubit extends Cubit<DashboardState> {
     return out;
   }
 
-  // ── Summary ──────────────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════
+  // SUMMARY
+  // ════════════════════════════════════════════════════════════
+
   Future<DashboardSummary> _fetchSummary() async {
     try {
-      final res  = await _dio.get('/dashboard/summary');
+      final res = await _dio.get('/dashboard/summary');
       final body = res.data;
       debugPrint('[Summary] ${res.statusCode}  body=$body');
       if (body is Map) {
@@ -596,23 +721,20 @@ class DashboardCubit extends Cubit<DashboardState> {
     }
   }
 
-  // ── Pipeline ─────────────────────────────────────────────────
-  /// Admins use `/dashboard/pipeline` (org-wide). Sales users aggregate their
-  /// own deals from `/deals/getAll` because many backends return an empty
-  /// pipeline when `userId` is passed or do not filter that endpoint.
+  // ════════════════════════════════════════════════════════════
+  // PIPELINE
+  // ════════════════════════════════════════════════════════════
+
   Future<List<PipelineStage>> _fetchPipelineResolved({
     required bool canViewAll,
     required String userId,
     required String userName,
   }) async {
     if (!canViewAll) {
-      final fromDeals =
-          await _pipelineFromAssignedDeals(userId, userName);
+      final fromDeals = await _pipelineFromAssignedDeals(userId, userName);
       if (fromDeals.isNotEmpty) return fromDeals;
-      // No matching deals from aggregation: try API (JWT-scoped / userId).
       final scoped = await _fetchPipelineApi(userId: userId);
       if (scoped.isNotEmpty) return scoped;
-      // Do NOT fall back to org-wide pipeline for sales users.
       return <PipelineStage>[];
     }
     return _fetchPipelineApi(userId: null);
@@ -649,8 +771,7 @@ class DashboardCubit extends Cubit<DashboardState> {
         final rv = m['value'] ?? m['dealValue'] ?? m['amount'];
         if (rv != null) {
           val = double.tryParse(
-                rv.toString().replaceAll(RegExp(r'[^\d.\-]'), ''),
-              ) ??
+                  rv.toString().replaceAll(RegExp(r'[^\d.\-]'), '')) ??
               0;
         }
         final ccy = m['currency']?.toString().trim();
@@ -679,9 +800,8 @@ class DashboardCubit extends Cubit<DashboardState> {
 
     final assignRaw = m['assignTo'] ?? m['assignedTo'];
     if (assignRaw is Map) {
-      final id = assignRaw['_id']?.toString() ??
-          assignRaw['id']?.toString() ??
-          '';
+      final id =
+          assignRaw['_id']?.toString() ?? assignRaw['id']?.toString() ?? '';
       if (id.isNotEmpty && uid.isNotEmpty && id == uid) return true;
       final fn = assignRaw['firstName']?.toString().trim() ?? '';
       final ln = assignRaw['lastName']?.toString().trim() ?? '';
@@ -693,15 +813,13 @@ class DashboardCubit extends Cubit<DashboardState> {
       if (assignRaw.toString().trim().toLowerCase() == uname) return true;
     }
 
-    final topId = m['assignToId']?.toString() ??
-        m['assignedToId']?.toString() ??
-        '';
+    final topId =
+        m['assignToId']?.toString() ?? m['assignedToId']?.toString() ?? '';
     if (topId.isNotEmpty && uid.isNotEmpty && topId == uid) return true;
 
     return false;
   }
 
-  /// Optional [userId] query for backends that support per-user pipeline.
   Future<List<PipelineStage>> _fetchPipelineApi({String? userId}) async {
     try {
       final query = <String, dynamic>{};
@@ -714,21 +832,14 @@ class DashboardCubit extends Cubit<DashboardState> {
       );
       final body = res.data;
 
-      // Exact API shape (as shared):
-      // [
-      //   { "stage": "...", "leads": 4 },
-      //   ...
-      // ]
       if (body is List) {
         final direct = <PipelineStage>[];
         for (final e in body) {
           if (e is Map) {
             try {
-              final row = Map<String, dynamic>.from(e);
-              final stage = PipelineStage.fromJson(row);
-              if (stage.stage.trim().isNotEmpty) {
-                direct.add(stage);
-              }
+              final stage =
+                  PipelineStage.fromJson(Map<String, dynamic>.from(e));
+              if (stage.stage.trim().isNotEmpty) direct.add(stage);
             } catch (err) {
               debugPrint('[Pipeline] direct parse err: $err');
             }
@@ -742,44 +853,30 @@ class DashboardCubit extends Cubit<DashboardState> {
 
       final rows = _extractPipelineRows(body);
       debugPrint('[Pipeline] rows extracted=${rows.length}');
-      if (rows.isNotEmpty) {
-        debugPrint('[Pipeline] first row sample=${rows.first}');
-      } else {
-        debugPrint('[Pipeline] raw body type=${body.runtimeType} body=$body');
-      }
 
       final out = <PipelineStage>[];
       for (final row in rows) {
         try {
           final stage = PipelineStage.fromJson(row);
-          if (stage.stage.trim().isNotEmpty) {
-            out.add(stage);
-          }
+          if (stage.stage.trim().isNotEmpty) out.add(stage);
         } catch (err) {
           debugPrint('[Pipeline] parse err: $err');
         }
       }
-
-      final finalList =
-          _mergePipelineByStage(_applyPipelineStageRules(out));
-      debugPrint('[Pipeline] final stages=${finalList.length}');
-      return finalList;
+      return _mergePipelineByStage(_applyPipelineStageRules(out));
     } catch (e) {
       debugPrint('[Pipeline] API error: $e');
       return <PipelineStage>[];
     }
   }
 
-  /// Normalizes pipeline buckets so proposal/negotiation stays distinct.
   List<PipelineStage> _applyPipelineStageRules(List<PipelineStage> input) {
     var proposalCount = 0;
     var proposalValue = 0.0;
     var proposalCurrency = 'INR';
-
     var invoiceCount = 0;
     var invoiceValue = 0.0;
     var invoiceCurrency = 'INR';
-
     final kept = <PipelineStage>[];
 
     for (final s in input) {
@@ -789,7 +886,6 @@ class DashboardCubit extends Cubit<DashboardState> {
         if (s.currency.trim().isNotEmpty) proposalCurrency = s.currency;
         continue;
       }
-
       if (_isInvoiceSentPipelineStage(s.stage)) {
         invoiceCount += s.count;
         invoiceValue += s.value;
@@ -807,7 +903,6 @@ class DashboardCubit extends Cubit<DashboardState> {
         currency: proposalCurrency,
       ));
     }
-
     if (invoiceCount > 0 || invoiceValue > 0) {
       kept.add(PipelineStage(
         stage: 'Invoice Sent',
@@ -827,9 +922,9 @@ class DashboardCubit extends Cubit<DashboardState> {
     if (k.isEmpty) return false;
     if (k == 'proposal' || k == 'negotiation') return true;
     if (k == 'proposalsent') return true;
-    if (k.contains('proposal') && k.contains('sent') && k.contains('negotiation')) {
-      return true;
-    }
+    if (k.contains('proposal') &&
+        k.contains('sent') &&
+        k.contains('negotiation')) return true;
     if (k == 'proposalsentnegotiation') return true;
     if (k.contains('proposal') && k.contains('negotiation')) return true;
     return false;
@@ -878,8 +973,7 @@ class DashboardCubit extends Cubit<DashboardState> {
         );
       }
     }
-    final out = merged.values.toList()..sort(_comparePipelineStages);
-    return out;
+    return merged.values.toList()..sort(_comparePipelineStages);
   }
 
   List<Map<String, dynamic>> _extractPipelineRows(dynamic node,
@@ -928,9 +1022,7 @@ class DashboardCubit extends Cubit<DashboardState> {
 
     if (node is Map) {
       final m = Map<String, dynamic>.from(node);
-      if (looksLikeRow(m)) {
-        out.add(m);
-      }
+      if (looksLikeRow(m)) out.add(m);
 
       for (final entry in m.entries) {
         final k = entry.key.toString();
@@ -938,44 +1030,40 @@ class DashboardCubit extends Cubit<DashboardState> {
 
         if (v is Map) {
           final vm = Map<String, dynamic>.from(v);
-          if (!looksLikeRow(vm)) {
-            // Handle object-shape: { Qualified: {count: 3, value: 1000} }
-            final hasMetricsOnly = vm['count'] != null ||
-                vm['dealCount'] != null ||
-                vm['deals'] != null ||
-                vm['total'] != null ||
-                vm['totalDeals'] != null ||
-                vm['value'] != null ||
-                vm['totalValue'] != null ||
-                vm['amount'] != null ||
-                vm['dealValue'] != null;
-            if (hasMetricsOnly) {
-              out.add({'stage': k, ...vm});
-            }
+          final hasMetricsOnly = vm['count'] != null ||
+              vm['dealCount'] != null ||
+              vm['deals'] != null ||
+              vm['total'] != null ||
+              vm['totalDeals'] != null ||
+              vm['value'] != null ||
+              vm['totalValue'] != null ||
+              vm['amount'] != null ||
+              vm['dealValue'] != null;
+          if (!looksLikeRow(vm) && hasMetricsOnly) {
+            out.add({'stage': k, ...vm});
           }
           out.addAll(_extractPipelineRows(v, parentKey: k));
         } else if (v is List) {
-          // Handle map-of-stage-to-list shape:
-          // { "Qualification": [ ... ], "Closed Won": [ ... ] }
           if (!metricKeys.contains(k)) {
             out.add({'stage': k, 'count': v.length});
           }
           out.addAll(_extractPipelineRows(v, parentKey: k));
         } else if (v is num && !metricKeys.contains(k)) {
-          // Handle numeric stage maps at any nesting level:
-          // { Qualified: 3, Negotiation: 2 }
-          // { data: { Qualified: 3, Negotiation: 2 } }
           out.add({'stage': k, 'count': v});
         }
       }
     }
-
     return out;
   }
 
+  // ════════════════════════════════════════════════════════════
+  // ERROR HELPER
+  // ════════════════════════════════════════════════════════════
+
   String _dioMsg(DioException e) => switch (e.type) {
         DioExceptionType.connectionTimeout ||
-        DioExceptionType.receiveTimeout  => 'Connection timed out.',
+        DioExceptionType.receiveTimeout =>
+          'Connection timed out.',
         DioExceptionType.connectionError => 'No internet connection.',
         DioExceptionType.badResponse =>
           'Server error (${e.response?.statusCode}).',
@@ -983,7 +1071,10 @@ class DashboardCubit extends Cubit<DashboardState> {
       };
 }
 
-// Internal helper — not exported
+// ════════════════════════════════════════════════════════════
+// INTERNAL HELPERS
+// ════════════════════════════════════════════════════════════
+
 class _RevenueResult {
   final double paid, unpaid, total;
   const _RevenueResult({
@@ -993,15 +1084,15 @@ class _RevenueResult {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
 // copyWith extension on DashboardSummary
-// ══════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
 extension DashboardSummaryX on DashboardSummary {
   DashboardSummary copyWith({
-    int?    totalLeads,
-    int?    totalDeals,
-    int?    dealsWon,
-    int?    pendingLeads,
+    int? totalLeads,
+    int? totalDeals,
+    int? dealsWon,
+    int? pendingLeads,
     double? leadsChange,
     double? dealsChange,
     double? paidRevenue,
@@ -1009,14 +1100,14 @@ extension DashboardSummaryX on DashboardSummary {
     double? totalRevenue,
   }) =>
       DashboardSummary(
-        totalLeads:    totalLeads    ?? this.totalLeads,
-        totalDeals:    totalDeals    ?? this.totalDeals,
-        dealsWon:      dealsWon      ?? this.dealsWon,
-        pendingLeads:  pendingLeads  ?? this.pendingLeads,
-        leadsChange:   leadsChange   ?? this.leadsChange,
-        dealsChange:   dealsChange   ?? this.dealsChange,
-        paidRevenue:   paidRevenue   ?? this.paidRevenue,
+        totalLeads: totalLeads ?? this.totalLeads,
+        totalDeals: totalDeals ?? this.totalDeals,
+        dealsWon: dealsWon ?? this.dealsWon,
+        pendingLeads: pendingLeads ?? this.pendingLeads,
+        leadsChange: leadsChange ?? this.leadsChange,
+        dealsChange: dealsChange ?? this.dealsChange,
+        paidRevenue: paidRevenue ?? this.paidRevenue,
         unpaidRevenue: unpaidRevenue ?? this.unpaidRevenue,
-        totalRevenue:  totalRevenue  ?? this.totalRevenue,
+        totalRevenue: totalRevenue ?? this.totalRevenue,
       );
 }

@@ -4,6 +4,7 @@
 
 // ignore_for_file: unnecessary_cast
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:crm_app/screen/LeaderBoard/ui/leader_board.dart';
 import 'package:crm_app/screen/dashboard/cubit/dashboard.dart';
 import 'package:crm_app/screen/dashboard/cubit/notification_cubit.dart';
@@ -18,30 +19,37 @@ import 'package:crm_app/modals/modals.dart' show Lead, AppConstants;
 import 'package:crm_app/shareWidgets/share_widgets.dart'
     show StatusBadge, EmptyState, LoadingState, ErrorState;
 import 'package:crm_app/screen/deals/ui/deal_screen.dart' show DealsScreen;
-import 'package:crm_app/screen/profile/ui/profile_screen.dart' show ProfileScreen;
+import 'package:crm_app/screen/profile/ui/profile_screen.dart'
+    show ProfileScreen;
 import '../../invoice/ui/invoice_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 
 bool _isSessionExpiredMessage(String msg) {
   final m = msg.toLowerCase();
+
   return m.contains('session expired') ||
       m.contains('unauthorized') ||
       m.contains('401') ||
-      m.contains('login again');
+      m.contains('login again') ||
+      m.contains('token failed') ||
+      m.contains('invalid token') ||
+      m.contains('jwt expired') ||
+      m.contains('token expired') ||
+      m.contains('authentication failed');
 }
 
 // ══════════════════════════════════════════════════════════════
 // INVOICE RECORD MODEL
 // ══════════════════════════════════════════════════════════════
 class InvoiceRecord {
-  final String    id;
-  final String    invoiceNumber;
-  final String    status;       // 'paid' | 'unpaid'
-  final String    currency;
-  final double    total;
-  final double?   inrAmount;    // server-converted INR (if available)
-  final double?   exchangeRate; // rate used by server
+  final String id;
+  final String invoiceNumber;
+  final String status; // 'paid' | 'unpaid'
+  final String currency;
+  final double total;
+  final double? inrAmount; // server-converted INR (if available)
+  final double? exchangeRate; // rate used by server
   final DateTime? issueDate;
   final DateTime? dueDate;
   final DateTime? paidAt;
@@ -67,54 +75,66 @@ class InvoiceRecord {
   }
 
   factory InvoiceRecord.fromJson(Map<String, dynamic> j) => InvoiceRecord(
-        id:            j['_id']?.toString() ?? j['id']?.toString() ?? '',
+        id: j['_id']?.toString() ?? j['id']?.toString() ?? '',
         invoiceNumber: j['invoicenumber']?.toString() ??
-                       j['invoiceNumber']?.toString() ?? '',
-        status:        (j['status'] ?? 'unpaid').toString().toLowerCase(),
-        currency:      (j['currency'] ?? 'INR').toString().toUpperCase(),
-        total:         _d(j['total'] ?? j['amount'] ?? j['grandTotal']),
-        inrAmount:     j['inrAmount'] != null ? _d(j['inrAmount']) : null,
-        exchangeRate:  j['exchangeRate'] != null ? _d(j['exchangeRate']) : null,
-        issueDate:     j['issueDate'] != null
+            j['invoiceNumber']?.toString() ??
+            '',
+        status: (j['status'] ?? 'unpaid').toString().toLowerCase(),
+        currency: (j['currency'] ?? 'INR').toString().toUpperCase(),
+        total: _d(j['total'] ?? j['amount'] ?? j['grandTotal']),
+        inrAmount: j['inrAmount'] != null ? _d(j['inrAmount']) : null,
+        exchangeRate: j['exchangeRate'] != null ? _d(j['exchangeRate']) : null,
+        issueDate: j['issueDate'] != null
             ? DateTime.tryParse(j['issueDate'].toString())
             : null,
-        dueDate:       j['dueDate'] != null
+        dueDate: j['dueDate'] != null
             ? DateTime.tryParse(j['dueDate'].toString())
             : null,
-        paidAt:        j['paidAt'] != null
+        paidAt: j['paidAt'] != null
             ? DateTime.tryParse(j['paidAt'].toString())
             : null,
       );
+  Map<String, dynamic> toJson() => {
+        '_id': id,
+        'invoiceNumber': invoiceNumber,
+        'status': status,
+        'currency': currency,
+        'total': total,
+        'inrAmount': inrAmount,
+        'exchangeRate': exchangeRate,
+        'issueDate': issueDate?.toIso8601String(),
+        'dueDate': dueDate?.toIso8601String(),
+        'paidAt': paidAt?.toIso8601String(),
+      };
 }
 
 // ══════════════════════════════════════════════════════════════
 // DASHBOARD SUMMARY MODEL
 // ══════════════════════════════════════════════════════════════
 class DashboardSummary extends Equatable {
-  final int    totalLeads;
-  final int    totalDeals;
-  final int    dealsWon;
-  final int    pendingLeads;   // leads not yet converted/closed
+  final int totalLeads;
+  final int totalDeals;
+  final int dealsWon;
+  final int pendingLeads; // leads not yet converted/closed
   final double leadsChange;
   final double dealsChange;
-  final double paidRevenue;    // in INR — shown as "Total Revenue" on card 3
-  final double unpaidRevenue;  // in INR
-  final double totalRevenue;   // in INR
+  final double paidRevenue; // in INR — shown as "Total Revenue" on card 3
+  final double unpaidRevenue; // in INR
+  final double totalRevenue; // in INR
 
-   const DashboardSummary({
-    this.totalLeads    = 0,
-    this.totalDeals    = 0,
-    this.dealsWon      = 0,
-    this.pendingLeads  = 0,
-    this.leadsChange   = 0,
-    this.dealsChange   = 0,
-    this.paidRevenue   = 0,
+  const DashboardSummary({
+    this.totalLeads = 0,
+    this.totalDeals = 0,
+    this.dealsWon = 0,
+    this.pendingLeads = 0,
+    this.leadsChange = 0,
+    this.dealsChange = 0,
+    this.paidRevenue = 0,
     this.unpaidRevenue = 0,
-    this.totalRevenue  = 0,
+    this.totalRevenue = 0,
   });
 
-  static int    _i(dynamic v) =>
-      v == null ? 0 : int.tryParse(v.toString())    ?? 0;
+  static int _i(dynamic v) => v == null ? 0 : int.tryParse(v.toString()) ?? 0;
   static double _d(dynamic v) =>
       v == null ? 0 : double.tryParse(v.toString()) ?? 0;
 
@@ -127,24 +147,44 @@ class DashboardSummary extends Equatable {
       }
     }
     return DashboardSummary(
-      totalLeads:  _i(d['totalLeads']  ?? d['total_leads']  ??
-                      d['leads']       ?? d['leadsCount']   ?? d['leadCount']),
-      totalDeals:  _i(d['totalDeals']  ?? d['total_deals']  ??
-                      d['deals']       ?? d['dealsCount']   ?? d['dealCount']),
-      dealsWon:    _i(d['totalDealsWon'] ?? d['dealsWon']   ?? d['won']          ??
-                      d['closedWon']   ?? d['wonDeals']     ?? d['deals_won']),
-      pendingLeads: _i(d['pendingLeads'] ?? d['pending_leads'] ??
-                       d['pending']      ?? d['openLeads']   ?? d['activeLeads']),
-      leadsChange: _d(d['leadsChange'] ?? d['leads_change'] ?? d['leadsGrowth']),
-      dealsChange: _d(d['dealsChange'] ?? d['deals_change'] ?? d['dealsGrowth']),
+      totalLeads: _i(d['totalLeads'] ??
+          d['total_leads'] ??
+          d['leads'] ??
+          d['leadsCount'] ??
+          d['leadCount']),
+      totalDeals: _i(d['totalDeals'] ??
+          d['total_deals'] ??
+          d['deals'] ??
+          d['dealsCount'] ??
+          d['dealCount']),
+      dealsWon: _i(d['totalDealsWon'] ??
+          d['dealsWon'] ??
+          d['won'] ??
+          d['closedWon'] ??
+          d['wonDeals'] ??
+          d['deals_won']),
+      pendingLeads: _i(d['pendingLeads'] ??
+          d['pending_leads'] ??
+          d['pending'] ??
+          d['openLeads'] ??
+          d['activeLeads']),
+      leadsChange:
+          _d(d['leadsChange'] ?? d['leads_change'] ?? d['leadsGrowth']),
+      dealsChange:
+          _d(d['dealsChange'] ?? d['deals_change'] ?? d['dealsGrowth']),
     );
   }
 
   @override
   List<Object?> get props => [
-    totalLeads, totalDeals, dealsWon, pendingLeads,
-    paidRevenue, unpaidRevenue, totalRevenue,
-  ];
+        totalLeads,
+        totalDeals,
+        dealsWon,
+        pendingLeads,
+        paidRevenue,
+        unpaidRevenue,
+        totalRevenue,
+      ];
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -152,36 +192,43 @@ class DashboardSummary extends Equatable {
 // ══════════════════════════════════════════════════════════════
 class PipelineStage extends Equatable {
   final String stage;
-  final int    count;
+  final int count;
   final double value;
   final String currency;
 
   const PipelineStage({
     required this.stage,
-    this.count    = 0,
-    this.value    = 0,
+    this.count = 0,
+    this.value = 0,
     this.currency = 'INR',
   });
 
   factory PipelineStage.fromJson(Map<String, dynamic> j) => PipelineStage(
-        stage:    j['stage']?.toString()     ??
-                  j['stageName']?.toString() ??
-                  j['_id']?.toString()       ??
-                  j['name']?.toString()      ??
-                  j['label']?.toString()     ?? 'Unknown',
-        count:    DashboardSummary._i(
-                  j['count']  ?? j['dealCount'] ??
-                  j['deals']  ?? j['leads'] ?? j['total'] ?? j['totalDeals'] ??
-                  (j['items'] is List ? (j['items'] as List).length : null) ??
-                  (j['leads'] is List ? (j['leads'] as List).length : null) ??
-                  (j['records'] is List ? (j['records'] as List).length : null)),
-        value:    DashboardSummary._d(
-                  j['value']  ?? j['totalValue'] ??
-                  j['amount'] ?? j['dealValue']  ?? j['revenue']),
+        stage: j['stage']?.toString() ??
+            j['stageName']?.toString() ??
+            j['_id']?.toString() ??
+            j['name']?.toString() ??
+            j['label']?.toString() ??
+            'Unknown',
+        count: DashboardSummary._i(j['count'] ??
+            j['dealCount'] ??
+            j['deals'] ??
+            j['leads'] ??
+            j['total'] ??
+            j['totalDeals'] ??
+            (j['items'] is List ? (j['items'] as List).length : null) ??
+            (j['leads'] is List ? (j['leads'] as List).length : null) ??
+            (j['records'] is List ? (j['records'] as List).length : null)),
+        value: DashboardSummary._d(j['value'] ??
+            j['totalValue'] ??
+            j['amount'] ??
+            j['dealValue'] ??
+            j['revenue']),
         currency: j['currency']?.toString() ?? 'INR',
       );
 
-  @override List<Object?> get props => [stage, count, value];
+  @override
+  List<Object?> get props => [stage, count, value];
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -189,24 +236,30 @@ class PipelineStage extends Equatable {
 // ══════════════════════════════════════════════════════════════
 abstract class DashboardState extends Equatable {
   const DashboardState();
-  @override List<Object?> get props => [];
+  @override
+  List<Object?> get props => [];
 }
+
 class DashboardInitial extends DashboardState {}
-class DashboardLoading  extends DashboardState {}
+
+class DashboardLoading extends DashboardState {}
 
 class DashboardLoaded extends DashboardState {
-  final List<Lead>          allLeads;
-  final List<Lead>          recentLeads;
-  final DashboardSummary    summary;
+  final Map<String, dynamic>? topPerformer;
+  final List<Lead> allLeads;
+  final List<Lead> recentLeads;
+  final DashboardSummary summary;
   final List<PipelineStage> pipeline;
   final List<InvoiceRecord> invoices;
+
   /// Raw deal rows from `/deals/getAll` for date- and user-scoped metrics.
   final List<Map<String, dynamic>> allDealRows;
-  final String              filterRange; // 'last7' | 'month'
-  final int?                filterMonth;
-  final int?                filterYear;
+  final String filterRange; // 'last7' | 'month'
+  final int? filterMonth;
+  final int? filterYear;
 
   const DashboardLoaded({
+    required this.topPerformer,
     required this.allLeads,
     required this.recentLeads,
     required this.summary,
@@ -222,15 +275,24 @@ class DashboardLoaded extends DashboardState {
 
   @override
   List<Object?> get props => [
-    allLeads, recentLeads, summary, pipeline,
-    invoices, allDealRows, filterRange, filterMonth, filterYear,
-  ];
+      topPerformer,
+        allLeads,
+        recentLeads,
+        summary,
+        pipeline,
+        invoices,
+        allDealRows,
+        filterRange,
+        filterMonth,
+        filterYear,
+      ];
 }
 
 class DashboardError extends DashboardState {
   final String message;
   const DashboardError(this.message);
-  @override List<Object?> get props => [message];
+  @override
+  List<Object?> get props => [message];
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -250,16 +312,18 @@ class DashboardScreen extends StatelessWidget {
 
 class _DashboardShell extends StatefulWidget {
   const _DashboardShell();
-  @override State<_DashboardShell> createState() => _DashboardShellState();
+  @override
+  State<_DashboardShell> createState() => _DashboardShellState();
 }
 
 class _DashboardShellState extends State<_DashboardShell>
     with SingleTickerProviderStateMixin {
-   String _authToken = '';
+  String _authToken = '';
   static const _drawerFraction = 0.72;
   late final AnimationController _ctrl;
-  late final Animation<double>   _anim;
+  late final Animation<double> _anim;
   bool _isOpen = false;
+  bool _isOffline = false;
 
   @override
   void initState() {
@@ -267,25 +331,60 @@ class _DashboardShellState extends State<_DashboardShell>
     _ctrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 300));
     _anim = CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic);
-      _loadAuthToken();        // ✅ add this
+    _loadAuthToken(); // ✅ add this
     _loadNotifications();
+    _checkInternet();
+    _listenInternet();
   }
+
+  Future<void> _checkInternet() async {
+    final result = await Connectivity().checkConnectivity();
+
+    if (!mounted) return;
+
+    setState(() {
+      _isOffline = result == ConnectivityResult.none;
+    });
+  }
+
+  void _listenInternet() {
+    Connectivity().onConnectivityChanged.listen((result) {
+      if (!mounted) return;
+
+      setState(() {
+        _isOffline = result == ConnectivityResult.none;
+      });
+    });
+  }
+
   Future<void> _loadAuthToken() async {
-  final prefs = await SharedPreferences.getInstance();
-  if (mounted) setState(() => _authToken = prefs.getString('token') ?? '');
-}
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) setState(() => _authToken = prefs.getString('token') ?? '');
+  }
 
   Future<void> _loadNotifications() async {
     final prefs = await SharedPreferences.getInstance();
-    final uid   = prefs.getString('user_id') ?? '';
+    final uid = prefs.getString('user_id') ?? '';
     if (uid.isEmpty || !mounted) return;
     context.read<NotificationCubit>().load(uid);
   }
 
-  @override void dispose() { _ctrl.dispose(); super.dispose(); }
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
-  void _open()   { setState(() => _isOpen = true);  _ctrl.forward(); }
-  void _close()  { setState(() => _isOpen = false); _ctrl.reverse(); }
+  void _open() {
+    setState(() => _isOpen = true);
+    _ctrl.forward();
+  }
+
+  void _close() {
+    setState(() => _isOpen = false);
+    _ctrl.reverse();
+  }
+
   void _toggle() => _isOpen ? _close() : _open();
 
   Route _slide(Widget page) => PageRouteBuilder(
@@ -297,25 +396,35 @@ class _DashboardShellState extends State<_DashboardShell>
         ),
       );
 
-  void _onDrawerNav(String route, {int tab = 0}) {
-  _close();
-  Future.delayed(const Duration(milliseconds: 260), () {
-    if (!mounted) return;
-    if (route == '/leads') {
-      Navigator.of(context, rootNavigator: true)
-          .push(_slide(const LeadsScreen()));
-    } else if (route == '/deals') {
-      Navigator.of(context, rootNavigator: true)
-          .push(_slide(DealsScreen(initialTab: tab)));
-    } else if (route == '/invoice') {
-      Navigator.of(context, rootNavigator: true)
-          .push(_slide(const InvoiceScreen()));
-    } else if (route == '/LeaderboardPage') {  // ✅ add this
-      Navigator.of(context, rootNavigator: true)
-          .push(_slide(LeaderboardPage(authToken: _authToken)));
+  void _onDrawerNav(String route, {int tab = 0}) async {
+    final result = await Connectivity().checkConnectivity();
+
+    if (result == ConnectivityResult.none) {
+      _close();
+
+      return;
     }
-  });
-}
+
+    _close();
+
+    Future.delayed(const Duration(milliseconds: 260), () {
+      if (!mounted) return;
+
+      if (route == '/leads') {
+        Navigator.of(context, rootNavigator: true)
+            .push(_slide(const LeadsScreen()));
+      } else if (route == '/deals') {
+        Navigator.of(context, rootNavigator: true)
+            .push(_slide(DealsScreen(initialTab: tab)));
+      } else if (route == '/invoice') {
+        Navigator.of(context, rootNavigator: true)
+            .push(_slide(const InvoiceScreen()));
+      } else if (route == '/LeaderboardPage') {
+        Navigator.of(context, rootNavigator: true)
+            .push(_slide(LeaderboardPage(authToken: _authToken)));
+      }
+    });
+  }
 
   void _openNotificationsSheet() {
     final notifCubit = context.read<NotificationCubit>();
@@ -332,12 +441,12 @@ class _DashboardShellState extends State<_DashboardShell>
           builder: (ctx, ctrl) => Container(
             decoration: const BoxDecoration(
                 color: AppColors.surface,
-                borderRadius:
-                    BorderRadius.vertical(top: Radius.circular(24))),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
             child: Column(children: [
               Container(
                 margin: const EdgeInsets.only(top: 12),
-                width: 40, height: 4,
+                width: 40,
+                height: 4,
                 decoration: BoxDecoration(
                     color: AppColors.border,
                     borderRadius: BorderRadius.circular(2)),
@@ -351,12 +460,10 @@ class _DashboardShellState extends State<_DashboardShell>
                       cubit: notifCubit,
                       onViewAll: () {
                         Navigator.pop(ctx);
-                        Future.delayed(
-                            const Duration(milliseconds: 200), () {
+                        Future.delayed(const Duration(milliseconds: 200), () {
                           if (!mounted) return;
-                          Navigator.of(context, rootNavigator: true)
-                              .push(_slide(
-                                  NotificationsScreen(cubit: notifCubit)));
+                          Navigator.of(context, rootNavigator: true).push(
+                              _slide(NotificationsScreen(cubit: notifCubit)));
                         });
                       },
                     ),
@@ -370,10 +477,28 @@ class _DashboardShellState extends State<_DashboardShell>
     );
   }
 
-  void _openProfile() {
+  Future<void> _openProfile() async {
+    final result = await Connectivity().checkConnectivity();
+
+    if (result == ConnectivityResult.none) {
+      _close();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            "You are offline. Profile is not available.",
+          ),
+        ),
+      );
+
+      return;
+    }
+
     _close();
+
     Future.delayed(const Duration(milliseconds: 260), () {
       if (!mounted) return;
+
       Navigator.of(context, rootNavigator: true)
           .push(_slide(const ProfileScreen()));
     });
@@ -392,7 +517,10 @@ class _DashboardShellState extends State<_DashboardShell>
           final t = _anim.value;
           return Stack(children: [
             Positioned(
-                left: 0, top: 0, bottom: 0, width: dw,
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: dw,
                 child: _CrmDrawer(
                     onNavigate: _onDrawerNav,
                     onClose: _close,
@@ -405,19 +533,23 @@ class _DashboardShellState extends State<_DashboardShell>
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(t * 22),
                 child: _MainContent(
-                  onMenuTap:    _toggle,
+                  isOffline: _isOffline,
+                  onMenuTap: _toggle,
                   isDrawerOpen: _isOpen,
-                  onNotifTap:   _openNotificationsSheet,
+                  onNotifTap: _openNotificationsSheet,
                 ),
               ),
             ),
             if (_isOpen)
               Positioned(
-                  left: dw * t, top: 0, right: 0, bottom: 0,
+                  left: dw * t,
+                  top: 0,
+                  right: 0,
+                  bottom: 0,
                   child: GestureDetector(
                       onTap: _close,
-                      child: Container(
-                          color: Colors.black.withOpacity(0.3 * t)))),
+                      child:
+                          Container(color: Colors.black.withOpacity(0.3 * t)))),
           ]);
         },
       ),
@@ -430,7 +562,7 @@ class _DashboardShellState extends State<_DashboardShell>
 // ══════════════════════════════════════════════════════════════
 class _CrmDrawer extends StatefulWidget {
   final void Function(String route, {int tab}) onNavigate;
-  
+
   final VoidCallback onClose;
   final VoidCallback onProfileTap;
 
@@ -439,12 +571,13 @@ class _CrmDrawer extends StatefulWidget {
     required this.onClose,
     required this.onProfileTap,
   });
-  @override State<_CrmDrawer> createState() => _CrmDrawerState();
+  @override
+  State<_CrmDrawer> createState() => _CrmDrawerState();
 }
 
 class _CrmDrawerState extends State<_CrmDrawer> {
-  String _active        = '/dashboard';
-  bool   _dealsExpanded = false;
+  String _active = '/dashboard';
+  bool _dealsExpanded = false;
   String _drawerName = 'CRM User';
   String _drawerEmail = 'crm.stagingzar.com';
   String? _drawerImage;
@@ -467,12 +600,13 @@ class _CrmDrawerState extends State<_CrmDrawer> {
           .trim();
 
       if (mounted &&
-          (savedName.isNotEmpty || savedEmail.isNotEmpty || savedImage.isNotEmpty)) {
+          (savedName.isNotEmpty ||
+              savedEmail.isNotEmpty ||
+              savedImage.isNotEmpty)) {
         setState(() {
           if (savedName.isNotEmpty) _drawerName = savedName;
           if (savedEmail.isNotEmpty) _drawerEmail = savedEmail;
           _drawerImage = _resolveImageUrl(savedImage);
-
         });
       }
 
@@ -493,14 +627,14 @@ class _CrmDrawerState extends State<_CrmDrawer> {
       if (map['user'] is Map) {
         map = Map<String, dynamic>.from(map['user'] as Map);
       }
-      var firstName = (map['firstName'] ?? map['first_name'] ?? '').toString().trim();
-      var lastName = (map['lastName'] ?? map['last_name'] ?? '').toString().trim();
+      var firstName =
+          (map['firstName'] ?? map['first_name'] ?? '').toString().trim();
+      var lastName =
+          (map['lastName'] ?? map['last_name'] ?? '').toString().trim();
       final nameRaw = (map['name'] ?? map['fullName'] ?? '').toString().trim();
       if (firstName.isEmpty && lastName.isEmpty && nameRaw.isNotEmpty) {
-        final parts = nameRaw
-            .split(RegExp(r'\s+'))
-            .where((e) => e.isNotEmpty)
-            .toList();
+        final parts =
+            nameRaw.split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
         firstName = parts.isNotEmpty ? parts.first : '';
         lastName = parts.length > 1 ? parts.sublist(1).join(' ') : '';
       }
@@ -527,9 +661,12 @@ class _CrmDrawerState extends State<_CrmDrawer> {
 
   Map<String, dynamic> _extractUserMap(dynamic body) {
     if (body is Map) {
-      if (body['data'] is Map) return Map<String, dynamic>.from(body['data'] as Map);
-      if (body['user'] is Map) return Map<String, dynamic>.from(body['user'] as Map);
-      if (body['result'] is Map) return Map<String, dynamic>.from(body['result'] as Map);
+      if (body['data'] is Map)
+        return Map<String, dynamic>.from(body['data'] as Map);
+      if (body['user'] is Map)
+        return Map<String, dynamic>.from(body['user'] as Map);
+      if (body['result'] is Map)
+        return Map<String, dynamic>.from(body['result'] as Map);
       return Map<String, dynamic>.from(body);
     }
     return <String, dynamic>{};
@@ -538,7 +675,11 @@ class _CrmDrawerState extends State<_CrmDrawer> {
   String _extractImagePath(Map<String, dynamic> map) {
     final raw = map['profileImage'] ?? map['avatarUrl'] ?? map['avatar'];
     if (raw is Map) {
-      return (raw['url'] ?? raw['path'] ?? raw['location'] ?? raw['secure_url'] ?? '')
+      return (raw['url'] ??
+              raw['path'] ??
+              raw['location'] ??
+              raw['secure_url'] ??
+              '')
           .toString()
           .trim();
     }
@@ -585,53 +726,55 @@ class _CrmDrawerState extends State<_CrmDrawer> {
   Widget build(BuildContext context) => Container(
         color: const Color(0xFF0F172A),
         child: SafeArea(
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
             child: Row(children: [
               GestureDetector(
-                onTap: widget.onProfileTap,
-                child: Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF2563EB), Color(0xFF0EA5E9)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(22),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(22),
-                  child: CircleAvatar(
-                    radius: 30,
-                    backgroundImage:
-                        _drawerImage != null ? NetworkImage(_drawerImage!) : null,
-                    child: _drawerImage == null ? const Icon(Icons.person) : null,
-                  ),
-                ),
-              )),
+                  onTap: widget.onProfileTap,
+                  child: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF2563EB), Color(0xFF0EA5E9)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(22),
+                      child: CircleAvatar(
+                        radius: 30,
+                        backgroundImage: _drawerImage != null
+                            ? NetworkImage(_drawerImage!)
+                            : null,
+                        child: _drawerImage == null
+                            ? const Icon(Icons.person)
+                            : null,
+                      ),
+                    ),
+                  )),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                  Text(_drawerName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 17,
-                          fontWeight: FontWeight.w800)),
-                  Text(_drawerEmail,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: Color(0xFF64748B), fontSize: 11)),
-                ]),
+                      Text(_drawerName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 17,
+                              fontWeight: FontWeight.w800)),
+                      Text(_drawerEmail,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Color(0xFF64748B), fontSize: 11)),
+                    ]),
               ),
             ]),
           ),
@@ -671,8 +814,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
             expanded: _dealsExpanded,
             active: _active.startsWith('/deals'),
             activeColor: const Color(0xFF8B5CF6),
-            onToggle: () =>
-                setState(() => _dealsExpanded = !_dealsExpanded),
+            onToggle: () => setState(() => _dealsExpanded = !_dealsExpanded),
             children: [
               _SubItem(
                   icon: Icons.filter_alt_outlined,
@@ -702,21 +844,19 @@ class _CrmDrawerState extends State<_CrmDrawer> {
                 setState(() => _active = '/invoice');
                 widget.onNavigate('/invoice');
               }),
-            if (PermissionHelper.can('admin_access'))
-              _Item(
-              icon: Icons.leaderboard_outlined,
-              activeIcon: Icons.leaderboard_outlined,
-              label: 'Leaderboard',
-              active: _active == '/LeaderboardPage',
-              activeColor: AppColors.warning,
-              onTap: () {
-                setState(() => _active = '/LeaderboardPage');
-                widget.onNavigate('/LeaderboardPage');
-              }),
+            _Item(
+                icon: Icons.leaderboard_outlined,
+                activeIcon: Icons.leaderboard_outlined,
+                label: 'Leaderboard',
+                active: _active == '/LeaderboardPage',
+                activeColor: AppColors.warning,
+                onTap: () {
+                  setState(() => _active = '/LeaderboardPage');
+                  widget.onNavigate('/LeaderboardPage');
+                }),
           const Spacer(),
           const Divider(
-              color: Color(0xFF1E293B), height: 1,
-              indent: 20, endIndent: 20),
+              color: Color(0xFF1E293B), height: 1, indent: 20, endIndent: 20),
           _Item(
               icon: Icons.logout_outlined,
               activeIcon: Icons.logout_rounded,
@@ -726,12 +866,11 @@ class _CrmDrawerState extends State<_CrmDrawer> {
               onTap: _logout),
           const SizedBox(height: 8),
           const Padding(
-              padding: EdgeInsets.fromLTRB(22, 4, 22, 16),
-              ),
+            padding: EdgeInsets.fromLTRB(22, 4, 22, 16),
+          ),
         ])),
       );
 }
-
 
 class _Item extends StatelessWidget {
   final IconData icon, activeIcon;
@@ -752,14 +891,11 @@ class _Item extends StatelessWidget {
         behavior: HitTestBehavior.opaque,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          margin:
-              const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
-          padding: const EdgeInsets.symmetric(
-              horizontal: 14, vertical: 12),
+          margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           decoration: BoxDecoration(
-              color: active
-                  ? activeColor.withOpacity(0.14)
-                  : Colors.transparent,
+              color:
+                  active ? activeColor.withOpacity(0.14) : Colors.transparent,
               borderRadius: BorderRadius.circular(12)),
           child: Row(children: [
             Icon(active ? activeIcon : icon,
@@ -771,12 +907,12 @@ class _Item extends StatelessWidget {
                     style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
-                        color: active
-                            ? Colors.white
-                            : const Color(0xFF94A3B8)))),
+                        color:
+                            active ? Colors.white : const Color(0xFF94A3B8)))),
             if (active)
               Container(
-                  width: 7, height: 7,
+                  width: 7,
+                  height: 7,
                   decoration: BoxDecoration(
                       color: activeColor, shape: BoxShape.circle)),
           ]),
@@ -807,10 +943,8 @@ class _ExpandItem extends StatelessWidget {
             behavior: HitTestBehavior.opaque,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
-              margin: const EdgeInsets.symmetric(
-                  horizontal: 14, vertical: 2),
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 14, vertical: 12),
+              margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
                   color: active
                       ? activeColor.withOpacity(0.14)
@@ -819,9 +953,7 @@ class _ExpandItem extends StatelessWidget {
               child: Row(children: [
                 Icon(active ? activeIcon : icon,
                     size: 20,
-                    color: active
-                        ? activeColor
-                        : const Color(0xFF64748B)),
+                    color: active ? activeColor : const Color(0xFF64748B)),
                 const SizedBox(width: 12),
                 Expanded(
                     child: Text(label,
@@ -863,10 +995,8 @@ class _SubItem extends StatelessWidget {
         behavior: HitTestBehavior.opaque,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          margin: const EdgeInsets.only(
-              left: 30, right: 14, top: 2, bottom: 2),
-          padding: const EdgeInsets.symmetric(
-              horizontal: 14, vertical: 10),
+          margin: const EdgeInsets.only(left: 30, right: 14, top: 2, bottom: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
               color: active
                   ? const Color(0xFF8B5CF6).withOpacity(0.12)
@@ -878,7 +1008,8 @@ class _SubItem extends StatelessWidget {
                       : Colors.transparent)),
           child: Row(children: [
             Container(
-                width: 6, height: 6,
+                width: 6,
+                height: 6,
                 margin: const EdgeInsets.only(right: 10),
                 decoration: BoxDecoration(
                     color: active
@@ -887,17 +1018,14 @@ class _SubItem extends StatelessWidget {
                     shape: BoxShape.circle)),
             Icon(icon,
                 size: 15,
-                color: active
-                    ? const Color(0xFF8B5CF6)
-                    : const Color(0xFF64748B)),
+                color:
+                    active ? const Color(0xFF8B5CF6) : const Color(0xFF64748B)),
             const SizedBox(width: 9),
             Text(label,
                 style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
-                    color: active
-                        ? Colors.white
-                        : const Color(0xFF64748B))),
+                    color: active ? Colors.white : const Color(0xFF64748B))),
           ]),
         ),
       );
@@ -910,7 +1038,9 @@ class _MainContent extends StatelessWidget {
   final VoidCallback onMenuTap;
   final VoidCallback onNotifTap;
   final bool isDrawerOpen;
+  final bool isOffline;
   const _MainContent({
+    required this.isOffline,
     required this.onMenuTap,
     required this.onNotifTap,
     required this.isDrawerOpen,
@@ -929,8 +1059,7 @@ class _MainContent extends StatelessWidget {
           },
           builder: (context, state) => RefreshIndicator(
             color: AppColors.primary,
-            onRefresh: () =>
-                context.read<DashboardCubit>().refresh(),
+            onRefresh: () => context.read<DashboardCubit>().refresh(),
             child: CustomScrollView(
               physics: isDrawerOpen
                   ? const NeverScrollableScrollPhysics()
@@ -938,9 +1067,11 @@ class _MainContent extends StatelessWidget {
               slivers: [
                 // ── App Bar ──────────────────────────────────
                 SliverAppBar(
-                  expandedHeight: 140,
-                  pinned: true,
+                  toolbarHeight: 100,
+                  pinned: false,
                   automaticallyImplyLeading: false,
+                  floating: false,
+                  snap: false,
                   backgroundColor: AppColors.primary,
                   flexibleSpace: FlexibleSpaceBar(
                     background: Container(
@@ -957,8 +1088,7 @@ class _MainContent extends StatelessWidget {
                       ),
                       child: SafeArea(
                         child: Padding(
-                          padding:
-                              const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
                           child: Column(
                               mainAxisAlignment: MainAxisAlignment.end,
                               children: [
@@ -968,13 +1098,12 @@ class _MainContent extends StatelessWidget {
                                     child: Container(
                                       padding: const EdgeInsets.all(9),
                                       decoration: BoxDecoration(
-                                          color: Colors.white
-                                              .withOpacity(0.2),
+                                          color: Colors.white.withOpacity(0.2),
                                           borderRadius:
                                               BorderRadius.circular(12)),
                                       child: AnimatedSwitcher(
-                                        duration: const Duration(
-                                            milliseconds: 200),
+                                        duration:
+                                            const Duration(milliseconds: 200),
                                         transitionBuilder: (child, anim) =>
                                             RotationTransition(
                                                 turns: anim,
@@ -993,30 +1122,55 @@ class _MainContent extends StatelessWidget {
                                     ),
                                   ),
                                   const SizedBox(width: 14),
-                                  Expanded(
-                                      child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text('Good Morning 👋',
+
+                                  const Spacer(),
+
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(20),
+                                      color: isOffline
+                                          ? Colors.red.withOpacity(0.12)
+                                          : Colors.green.withOpacity(0.12),
+                                      border: Border.all(
+                                        color: isOffline
+                                            ? Colors.red
+                                            : Colors.green,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.circle,
+                                          size: 10,
+                                          color: isOffline
+                                              ? Colors.red
+                                              : Colors.green,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          isOffline ? "Offline" : "Online",
                                           style: TextStyle(
-                                              color: Colors.white
-                                                  .withOpacity(0.75),
-                                              fontSize: 12)),
-                                      const Text('CRM Dashboard',
-                                          style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 22,
-                                              fontWeight:
-                                                  FontWeight.w800)),
-                                    ],
-                                  )),
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                            color: isOffline
+                                                ? Colors.red
+                                                : Colors.green,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const Spacer(),
                                   // ── Notification Bell ───────
                                   BlocBuilder<NotificationCubit,
                                       NotificationState>(
                                     builder: (ctx, ns) {
-                                      final unread = ns
-                                              is NotificationLoaded
+                                      final unread = ns is NotificationLoaded
                                           ? ns.unreadCount
                                           : 0;
                                       return GestureDetector(
@@ -1026,47 +1180,42 @@ class _MainContent extends StatelessWidget {
                                             children: [
                                               Container(
                                                 padding:
-                                                    const EdgeInsets.all(
-                                                        10),
+                                                    const EdgeInsets.all(10),
                                                 decoration: BoxDecoration(
                                                     color: Colors.white
                                                         .withOpacity(0.2),
                                                     borderRadius:
-                                                        BorderRadius
-                                                            .circular(12)),
+                                                        BorderRadius.circular(
+                                                            12)),
                                                 child: const Icon(
-                                                  Icons
-                                                      .notifications_outlined,
+                                                  Icons.notifications_outlined,
                                                   color: Colors.white,
                                                   size: 22,
                                                 ),
                                               ),
                                               if (unread > 0)
                                                 Positioned(
-                                                  top: -4, right: -4,
+                                                  top: -4,
+                                                  right: -4,
                                                   child: Container(
                                                     padding: const EdgeInsets
                                                         .symmetric(
                                                         horizontal: 5,
                                                         vertical: 2),
-                                                    decoration:
-                                                        BoxDecoration(
-                                                      color: AppColors
-                                                          .danger,
+                                                    decoration: BoxDecoration(
+                                                      color: AppColors.danger,
                                                       borderRadius:
-                                                          BorderRadius
-                                                              .circular(10),
+                                                          BorderRadius.circular(
+                                                              10),
                                                       border: Border.all(
-                                                          color:
-                                                              Colors.white,
+                                                          color: Colors.white,
                                                           width: 1.5),
                                                     ),
                                                     child: Text(
                                                       unread > 99
                                                           ? '99+'
                                                           : '$unread',
-                                                      style:
-                                                          const TextStyle(
+                                                      style: const TextStyle(
                                                         color: Colors.white,
                                                         fontSize: 9,
                                                         fontWeight:
@@ -1089,20 +1238,21 @@ class _MainContent extends StatelessWidget {
 
                 if (state is DashboardLoading)
                   const SliverFillRemaining(
-                      child: LoadingState(
-                          message: 'Loading dashboard...'))
+                      child: LoadingState(message: 'Loading dashboard...'))
                 else if (state is DashboardError)
                   SliverFillRemaining(
                       child: ErrorState(
                           message: state.message,
-                          onRetry: () => context
-                              .read<DashboardCubit>()
-                              .loadDashboard()))
+                          onRetry: () =>
+                              context.read<DashboardCubit>().loadDashboard()))
                 else if (state is DashboardLoaded)
-                  SliverToBoxAdapter(
-                      child: _DashboardBody(s: state))
+                  SliverToBoxAdapter(child: _DashboardBody(s: state))
                 else
-                  const SliverFillRemaining(child: SizedBox()),
+                  const SliverFillRemaining(
+                    child: Center(
+                      child: CircularProgressIndicator(),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -1115,12 +1265,14 @@ class _MainContent extends StatelessWidget {
 // ══════════════════════════════════════════════════════════════
 class _DashboardBody extends StatelessWidget {
   final DashboardLoaded s;
+  
   const _DashboardBody({required this.s});
+
 
   // INR formatter
   static String _inr(double v) {
-    final f = NumberFormat.currency(
-        locale: 'en_IN', symbol: '₹', decimalDigits: 0);
+    final f =
+        NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 0);
     return f.format(v);
   }
 
@@ -1130,44 +1282,69 @@ class _DashboardBody extends StatelessWidget {
   static Route _slide(Widget page) => PageRouteBuilder(
         pageBuilder: (_, __, ___) => page,
         transitionsBuilder: (_, a, __, child) => SlideTransition(
-            position: Tween(
-                    begin: const Offset(1, 0), end: Offset.zero)
-                .animate(CurvedAnimation(
-                    parent: a, curve: Curves.easeOutCubic)),
+            position: Tween(begin: const Offset(1, 0), end: Offset.zero)
+                .animate(
+                    CurvedAnimation(parent: a, curve: Curves.easeOutCubic)),
             child: child),
       );
 
-  @override
+  Future<bool> _canNavigate(BuildContext context) async {
+    final result = await Connectivity().checkConnectivity();
+
+    if (result == ConnectivityResult.none) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            "You are offline. Only Dashboard is available.",
+          ),
+        ),
+      );
+
+      return false;
+    }
+
+    return true;
+  }
+
   Widget build(BuildContext context) {
-    final sm         = s.summary;
+    final sm = s.summary;
     final totalLeads = sm.totalLeads > 0 ? sm.totalLeads : s.allLeads.length;
 
     // Revenue values
-    final paidRev  = sm.paidRevenue;   // card 3 shows this as "Total Revenue"
+    final paidRev = sm.paidRevenue; // card 3 shows this as "Total Revenue"
     final unpaidRev = sm.unpaidRevenue;
-    final totalRev  = sm.totalRevenue;
+    final totalRev = sm.totalRevenue;
 
     // Pending leads: prefer API value; fallback = count leads that aren't 'Converted'
-    final pendingInvoiceCount = s.invoices
-    .where((inv) => inv.status == 'unpaid')
-    .length;
+    final pendingInvoiceCount =
+        s.invoices.where((inv) => inv.status == 'unpaid').length;
 
     final paidPct = totalRev > 0
         ? '${(paidRev / totalRev * 100).toStringAsFixed(0)}% of total'
         : '—';
 
+        final topUser = s.topPerformer ??
+{
+  "name": "No Performer",
+  "email": "",
+  "conversionRate": 0,
+  "convertedLeads": 0,
+  "totalLeads": 0,
+  "productiveDays": 0,
+};
+
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-
         // ── Period Filter Row ─────────────────────────────────
         _PeriodFilter(
           selectedRange: s.filterRange,
           selectedMonth: s.filterMonth,
-          selectedYear:  s.filterYear,
+          selectedYear: s.filterYear,
           onChanged: (range, month, year) {
-            context.read<DashboardCubit>().filterByPeriod(
-                  range: range, month: month, year: year);
+            context
+                .read<DashboardCubit>()
+                .filterByPeriod(range: range, month: month, year: year);
           },
         ),
         const SizedBox(height: 16),
@@ -1176,9 +1353,11 @@ class _DashboardBody extends StatelessWidget {
         const _SectionTitle('Overview'),
         const SizedBox(height: 12),
         GridView.count(
-          crossAxisCount: 2, shrinkWrap: true,
+          crossAxisCount: 2,
+          shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          crossAxisSpacing: 12, mainAxisSpacing: 12,
+          crossAxisSpacing: 12,
+          mainAxisSpacing: 12,
           childAspectRatio: 1.35,
           children: [
             // Card 1: Total Leads
@@ -1213,16 +1392,16 @@ class _DashboardBody extends StatelessWidget {
             ),
             // Card 4: Pending Leads — replaces old "Total Revenue" card
             _StatCard(
-  label: 'Pending Invoices',
-  value: '$pendingInvoiceCount',
-  icon: Icons.receipt_long_outlined,
-  color: AppColors.warning,
-  bg: AppColors.warningLight,
-  trend: pendingInvoiceCount > 0
-      ? '$pendingInvoiceCount unpaid'
-      : 'All paid',
-  up: pendingInvoiceCount == 0,
-),
+              label: 'Pending Invoices',
+              value: '$pendingInvoiceCount',
+              icon: Icons.receipt_long_outlined,
+              color: AppColors.warning,
+              bg: AppColors.warningLight,
+              trend: pendingInvoiceCount > 0
+                  ? '$pendingInvoiceCount unpaid'
+                  : 'All paid',
+              up: pendingInvoiceCount == 0,
+            ),
           ],
         ),
 
@@ -1230,9 +1409,9 @@ class _DashboardBody extends StatelessWidget {
         if (totalRev > 0) ...[
           const SizedBox(height: 16),
           _RevenueBreakdown(
-            paid:   paidRev,
+            paid: paidRev,
             unpaid: unpaidRev,
-            total:  totalRev,
+            total: totalRev,
           ),
         ],
 
@@ -1246,34 +1425,44 @@ class _DashboardBody extends StatelessWidget {
               icon: Icons.people_outline,
               label: 'Leads',
               color: AppColors.success,
-              onTap: () => Navigator.of(context, rootNavigator: true)
-                  .push(_slide(const LeadsScreen()))),
+              onTap: () async {
+                if (!await _canNavigate(context)) return;
+
+                Navigator.of(context, rootNavigator: true)
+                    .push(_slide(const LeadsScreen()));
+              }),
           const SizedBox(width: 12),
           _QuickCard(
               icon: Icons.handshake_outlined,
               label: 'All Deals',
               color: const Color(0xFF6366F1),
-              onTap: () => Navigator.of(context, rootNavigator: true)
-                  .push(_slide(const DealsScreen(initialTab: 0)))),
+              onTap: () async {
+                if (!await _canNavigate(context)) return;
+
+                Navigator.of(context, rootNavigator: true)
+                    .push(_slide(DealsScreen(initialTab: 0)));
+              }),
           const SizedBox(width: 12),
           _QuickCard(
               icon: Icons.receipt_long_outlined,
               label: 'Invoices',
               color: AppColors.warning,
-              onTap: () => Navigator.of(context, rootNavigator: true)
-                  .push(_slide(const InvoiceScreen()))),
+              onTap: () async {
+                if (!await _canNavigate(context)) return;
+
+                Navigator.of(context, rootNavigator: true)
+                    .push(_slide(InvoiceScreen()));
+              }),
         ]),
 
         const SizedBox(height: 24),
 
         // ── Deal Pipeline ─────────────────────────────────────
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           const _SectionTitle('Deal Pipeline'),
           if (s.hasPipeline)
             _Pill(
-                label:
-                    '${s.pipeline.fold(0, (a, b) => a + b.count)} deals',
+                label: '${s.pipeline.fold(0, (a, b) => a + b.count)} deals',
                 color: AppColors.primary,
                 bg: AppColors.primaryLight),
         ]),
@@ -1282,13 +1471,19 @@ class _DashboardBody extends StatelessWidget {
 
         const SizedBox(height: 24),
 
+        
+// ── Top Performer ─────────────────────────────────────
+const _SectionTitle('Top Performer'),
+const SizedBox(height: 12),
+_TopPerformerCard(user: topUser),
+
+const SizedBox(height: 24),
         // ── Recent Leads ──────────────────────────────────────
         const _SectionTitle('Recent Leads'),
         const SizedBox(height: 12),
         s.recentLeads.isEmpty
             ? const EmptyState(
-                message: 'No recent leads',
-                icon: Icons.people_outline)
+                message: 'No recent leads', icon: Icons.people_outline)
             : Column(
                 children: s.recentLeads
                     .take(5)
@@ -1318,13 +1513,23 @@ class _PeriodFilter extends StatelessWidget {
   });
 
   static const _months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
   ];
 
   @override
   Widget build(BuildContext context) {
-    final now   = DateTime.now();
+    final now = DateTime.now();
     final years = List.generate(5, (i) => now.year - i);
 
     return Container(
@@ -1372,17 +1577,17 @@ class _PeriodFilter extends StatelessWidget {
         if (selectedRange == 'month') ...[
           const SizedBox(width: 8),
           _DropBtn(
-            value:   selectedMonth,
-            hint:    'Month',
-            items:   List.generate(12,
+            value: selectedMonth,
+            hint: 'Month',
+            items: List.generate(12,
                 (i) => DropdownMenuItem(value: i + 1, child: Text(_months[i]))),
             onChanged: (v) => onChanged(selectedRange, v, selectedYear),
           ),
           const SizedBox(width: 8),
           _DropBtn(
-            value:   selectedYear,
-            hint:    'Year',
-            items:   years
+            value: selectedYear,
+            hint: 'Year',
+            items: years
                 .map((y) => DropdownMenuItem(value: y, child: Text('$y')))
                 .toList(),
             onChanged: (v) => onChanged(selectedRange, selectedMonth, v),
@@ -1413,7 +1618,7 @@ class _PeriodFilter extends StatelessWidget {
       return '${_months[selectedMonth! - 1]} $selectedYear';
     }
     if (selectedMonth != null) return _months[selectedMonth! - 1];
-    if (selectedYear  != null) return '$selectedYear';
+    if (selectedYear != null) return '$selectedYear';
     return 'All time';
   }
 }
@@ -1435,38 +1640,32 @@ class _DropBtn<T> extends StatelessWidget {
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-          color: value != null
-              ? AppColors.primaryLight
-              : AppColors.background,
+          color: value != null ? AppColors.primaryLight : AppColors.background,
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
-            color: value != null
-                ? AppColors.primary
-                : AppColors.border,
+            color: value != null ? AppColors.primary : AppColors.border,
           ),
         ),
         child: DropdownButtonHideUnderline(
           child: DropdownButton<T>(
-            value:       value,
-            hint:        Text(hint,
+            value: value,
+            hint: Text(hint,
                 style: const TextStyle(
                     fontSize: 12, color: AppColors.textSecondary)),
-            items:       items,
-            onChanged:   onChanged,
-            isDense:     true,
-            icon:        Icon(
+            items: items,
+            onChanged: onChanged,
+            isDense: true,
+            icon: Icon(
               Icons.keyboard_arrow_down_rounded,
               size: 16,
-              color: value != null
-                  ? AppColors.primary
-                  : AppColors.textSecondary,
+              color:
+                  value != null ? AppColors.primary : AppColors.textSecondary,
             ),
             style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: value != null
-                    ? AppColors.primary
-                    : AppColors.textPrimary),
+                color:
+                    value != null ? AppColors.primary : AppColors.textPrimary),
           ),
         ),
       );
@@ -1483,9 +1682,9 @@ class _RevenueBreakdown extends StatelessWidget {
     required this.total,
   });
 
-  static String _inr(double v) => NumberFormat.currency(
-          locale: 'en_IN', symbol: '₹', decimalDigits: 0)
-      .format(v);
+  static String _inr(double v) =>
+      NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 0)
+          .format(v);
 
   @override
   Widget build(BuildContext context) {
@@ -1501,8 +1700,7 @@ class _RevenueBreakdown extends StatelessWidget {
                 blurRadius: 10,
                 offset: const Offset(0, 2))
           ]),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Container(
               padding: const EdgeInsets.all(8),
@@ -1523,9 +1721,7 @@ class _RevenueBreakdown extends StatelessWidget {
         Row(children: [
           Expanded(
               child: _AmtBox(
-                  label: 'Paid',
-                  value: _inr(paid),
-                  color: AppColors.success)),
+                  label: 'Paid', value: _inr(paid), color: AppColors.success)),
           const SizedBox(width: 10),
           Expanded(
               child: _AmtBox(
@@ -1546,18 +1742,15 @@ class _RevenueBreakdown extends StatelessWidget {
                 value: pct,
                 minHeight: 8,
                 backgroundColor: AppColors.dangerLight,
-                valueColor: const AlwaysStoppedAnimation(
-                    AppColors.success))),
+                valueColor: const AlwaysStoppedAnimation(AppColors.success))),
         const SizedBox(height: 6),
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           Text('${(pct * 100).toStringAsFixed(0)}% collected',
               style: const TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
                   color: AppColors.success)),
-          Text(
-              '${((1 - pct) * 100).toStringAsFixed(0)}% outstanding',
+          Text('${((1 - pct) * 100).toStringAsFixed(0)}% outstanding',
               style: const TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
@@ -1572,22 +1765,18 @@ class _AmtBox extends StatelessWidget {
   final String label, value;
   final Color color;
   const _AmtBox(
-      {required this.label,
-      required this.value,
-      required this.color});
+      {required this.label, required this.value, required this.color});
   @override
   Widget build(BuildContext context) =>
       Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
         Text(value,
             textAlign: TextAlign.center,
             style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w800,
-                color: color)),
+                fontSize: 12, fontWeight: FontWeight.w800, color: color)),
         const SizedBox(height: 3),
         Text(label,
-            style: const TextStyle(
-                fontSize: 10, color: AppColors.textSecondary)),
+            style:
+                const TextStyle(fontSize: 10, color: AppColors.textSecondary)),
       ]);
 }
 
@@ -1623,49 +1812,43 @@ class _StatCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-            Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                    color: bg,
-                    borderRadius: BorderRadius.circular(10)),
-                child: Icon(icon, size: 18, color: color)),
-            Flexible(
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 6, vertical: 3),
-                decoration: BoxDecoration(
-                    color: up
-                        ? AppColors.successLight
-                        : AppColors.dangerLight,
-                    borderRadius: BorderRadius.circular(20)),
-                child: Text(trend,
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 1,
-                    style: TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w600,
-                        color: up
-                            ? AppColors.success
-                            : AppColors.danger)),
-              ),
-            ),
-          ]),
-          Column(crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-            Text(value,
-                style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textPrimary)),
-            Text(label,
-                style: const TextStyle(
-                    fontSize: 11,
-                    color: AppColors.textSecondary,
-                    fontWeight: FontWeight.w500)),
-          ]),
-        ]),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                        color: bg, borderRadius: BorderRadius.circular(10)),
+                    child: Icon(icon, size: 18, color: color)),
+                Flexible(
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                    decoration: BoxDecoration(
+                        color:
+                            up ? AppColors.successLight : AppColors.dangerLight,
+                        borderRadius: BorderRadius.circular(20)),
+                    child: Text(trend,
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                        style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w600,
+                            color: up ? AppColors.success : AppColors.danger)),
+                  ),
+                ),
+              ]),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(value,
+                    style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary)),
+                Text(label,
+                    style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.textSecondary,
+                        fontWeight: FontWeight.w500)),
+              ]),
+            ]),
       );
 }
 
@@ -1692,7 +1875,11 @@ class _PipelineCard extends StatelessWidget {
   static String _fmtVal(double v, String c) {
     final f = NumberFormat.currency(
         locale: c == 'INR' ? 'en_IN' : 'en_US',
-        symbol: c == 'INR' ? '₹' : c == 'USD' ? r'$' : c,
+        symbol: c == 'INR'
+            ? '₹'
+            : c == 'USD'
+                ? r'$'
+                : c,
         decimalDigits: 0);
     return f.format(v);
   }
@@ -1735,7 +1922,6 @@ class _PipelineCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                
               ],
             ),
             const SizedBox(height: 14),
@@ -1757,18 +1943,16 @@ class _PipelineCard extends StatelessWidget {
       );
 
   Widget _buildFromApi() {
-    final maxCount = s.pipeline
-        .map((e) => e.count)
-        .fold(1, (a, b) => a > b ? a : b);
+    final maxCount =
+        s.pipeline.map((e) => e.count).fold(1, (a, b) => a > b ? a : b);
     return Column(
       children: s.pipeline.map((stage) {
-        final color   = _stageColor(stage.stage);
+        final color = _stageColor(stage.stage);
         final percent = stage.count / maxCount;
         return Padding(
           padding: const EdgeInsets.only(bottom: 12),
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               Expanded(
                   child: Text(stage.stage,
@@ -1777,8 +1961,7 @@ class _PipelineCard extends StatelessWidget {
                           fontWeight: FontWeight.w600,
                           color: AppColors.textPrimary))),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: AppColors.background,
                   borderRadius: BorderRadius.circular(20),
@@ -1793,13 +1976,12 @@ class _PipelineCard extends StatelessWidget {
               if (stage.value > 0) ...[
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 7, vertical: 2),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                   decoration: BoxDecoration(
                       color: color.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(20)),
-                  child: Text(
-                      _fmtVal(stage.value, stage.currency),
+                  child: Text(_fmtVal(stage.value, stage.currency),
                       style: TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.w700,
@@ -1820,7 +2002,6 @@ class _PipelineCard extends StatelessWidget {
       }).toList(),
     );
   }
-
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1875,7 +2056,7 @@ class _MiniLeadCard extends StatelessWidget {
   final Lead lead;
   const _MiniLeadCard({required this.lead});
   @override
-   Widget build(BuildContext ctx) => Container(
+  Widget build(BuildContext ctx) => Container(
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -1889,15 +2070,14 @@ class _MiniLeadCard extends StatelessWidget {
             ]),
         child: Row(children: [
           Container(
-              width: 44, height: 44,
+              width: 44,
+              height: 44,
               decoration: BoxDecoration(
                   color: AppColors.primaryLight,
                   borderRadius: BorderRadius.circular(12)),
               child: Center(
                   child: Text(
-                lead.name.isNotEmpty
-                    ? lead.name[0].toUpperCase()
-                    : '?',
+                lead.name.isNotEmpty ? lead.name[0].toUpperCase() : '?',
                 style: const TextStyle(
                     color: AppColors.primary,
                     fontWeight: FontWeight.w700,
@@ -1908,23 +2088,229 @@ class _MiniLeadCard extends StatelessWidget {
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-            Text(lead.name,
-                style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary)),
-            Text(lead.companyName,
-                style: const TextStyle(
-                    fontSize: 12, color: AppColors.textSecondary)),
-          ])),
-          Column(crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
+                Text(lead.name,
+                    style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary)),
+                Text(lead.companyName,
+                    style: const TextStyle(
+                        fontSize: 12, color: AppColors.textSecondary)),
+              ])),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
             StatusBadge(status: lead.status),
             const SizedBox(height: 4),
             Text(lead.source,
                 style: const TextStyle(
                     fontSize: 11, color: AppColors.textSecondary)),
           ]),
+        ]),
+      );
+}
+
+class _TopPerformerCard extends StatelessWidget {
+  final Map<String, dynamic> user;
+
+   _TopPerformerCard({required this.user});
+
+  @override
+  Widget build(BuildContext context) {
+    final name = user['name'] ?? '';
+    final email = user['email'] ?? '';
+    final conversion = (user['conversionRate'] ?? 0).toDouble();
+    final converted = user['convertedLeads'] ?? 0;
+    final total = user['totalLeads'] ?? 0;
+    final activeDays = user['productiveDays'] ?? 0;
+
+return Material(
+  color: Colors.transparent,
+  child: InkWell(
+    borderRadius: BorderRadius.circular(18),
+    onTap: () async {
+  final prefs = await SharedPreferences.getInstance();
+  final token = prefs.getString('token') ?? '';
+
+  Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) => LeaderboardPage(
+        authToken: token,
+      ),
+    ),
+  );
+},
+    child: Container(      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFF7ED), Color(0xFFFFFBF5)],
+        ),
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          )
+        ],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // ── Header ──
+        Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.orange,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.emoji_events,
+                  color: Colors.white, size: 18),
+            ),
+            const SizedBox(width: 10),
+            const Text(
+              "Top Performer",
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 16),
+
+        // ── User Info ──
+        Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Text("#1",
+                  style: TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+            const SizedBox(width: 12),
+
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(name,
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700)),
+                    Text(email,
+                        style: const TextStyle(
+                            fontSize: 12, color: Colors.grey)),
+                    const SizedBox(height: 4),
+                    Row(children: [
+                      const Icon(Icons.flash_on,
+                          size: 14, color: Colors.orange),
+                      Text(" ${conversion.toStringAsFixed(1)}%",
+                          style: const TextStyle(fontSize: 12)),
+                      const SizedBox(width: 10),
+                      const Icon(Icons.local_fire_department,
+                          size: 14, color: Colors.orange),
+                      Text(" $activeDays d",
+                          style: const TextStyle(fontSize: 12)),
+                    ])
+                  ]),
+            ),
+
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade200,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.workspace_premium,
+                  size: 18, color: Colors.orange),
+            )
+          ],
+        ),
+
+        const SizedBox(height: 16),
+
+        // ── Stats ──
+        Row(
+          children: [
+            Expanded(
+              child: _tpBox(
+                title: "Conversion",
+                value: "${conversion.toStringAsFixed(1)}%",
+                sub: "$converted/$total",
+                color: Colors.orange,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _tpBox(
+                title: "Active Days",
+                value: "$activeDays",
+                sub: "—",
+                color: Colors.blue,
+              ),
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 16),
+
+        // ── Progress ──
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text("Performance",
+                style: TextStyle(fontSize: 12, color: Colors.grey)),
+            Text("${conversion.toStringAsFixed(1)}%",
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w600)),
+          ],
+        ),
+        const SizedBox(height: 6),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: LinearProgressIndicator(
+            value: conversion / 100,
+            minHeight: 6,
+            backgroundColor: Colors.orange.shade100,
+            valueColor:
+                const AlwaysStoppedAnimation<Color>(Colors.orange),
+          ),
+        )
+      ]),
+       ),
+    ),
+  );
+}
+}
+
+class _tpBox extends StatelessWidget {
+  final String title, value, sub;
+  final Color color;
+
+  const _tpBox({
+    required this.title,
+    required this.value,
+    required this.sub,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title,
+              style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 4),
+          Text(value,
+              style:
+                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          Text(sub,
+              style: const TextStyle(fontSize: 11, color: Colors.grey)),
         ]),
       );
 }
@@ -1943,17 +2329,13 @@ class _SectionTitle extends StatelessWidget {
 class _Pill extends StatelessWidget {
   final String label;
   final Color color, bg;
-  const _Pill(
-      {required this.label, required this.color, required this.bg});
+  const _Pill({required this.label, required this.color, required this.bg});
   @override
   Widget build(BuildContext ctx) => Container(
-        padding: const EdgeInsets.symmetric(
-            horizontal: 10, vertical: 3),
-        decoration: BoxDecoration(
-            color: bg, borderRadius: BorderRadius.circular(20)),
-        child: Text(label,
-            style: TextStyle(
-                color: color,
-                fontSize: 11,
-                fontWeight: FontWeight.w700)));
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+      decoration:
+          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+      child: Text(label,
+          style: TextStyle(
+              color: color, fontSize: 11, fontWeight: FontWeight.w700)));
 }

@@ -12,6 +12,17 @@ class DealOption {
     this.currency, {
     this.requirement = '',
   });
+
+  /// Identity-based [==] breaks [DropdownButton]: after a refresh, `deals` are
+  /// new instances while `_selectedDeal` may still point at an old one. Match by [id].
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DealOption && other.id == id;
+
+  @override
+  int get hashCode => id.hashCode;
+
   @override String toString() => name;
 }
 

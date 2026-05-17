@@ -1,8 +1,10 @@
 import 'package:crm_app/utils/permission_helper.dart';
-import 'package:dio/dio.dart' show DioExceptionType, DioException, Dio, BaseOptions;
+import 'package:dio/dio.dart'
+    show DioExceptionType, DioException, Dio, BaseOptions;
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart' show Cubit;
-import 'package:shared_preferences/shared_preferences.dart' show SharedPreferences;
+import 'package:shared_preferences/shared_preferences.dart'
+    show SharedPreferences;
 
 import '../ui/login_screen.dart';
 
@@ -23,10 +25,10 @@ class LoginCubit extends Cubit<LoginState> {
 
   LoginCubit() : super(LoginIdle()) {
     _dio = Dio(BaseOptions(
-      baseUrl:        _base,
+      baseUrl: _base,
       connectTimeout: const Duration(seconds: 20),
       receiveTimeout: const Duration(seconds: 20),
-      headers:        {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json'},
     ));
   }
 
@@ -49,7 +51,11 @@ class LoginCubit extends Cubit<LoginState> {
   String _extractImagePath(Map<String, dynamic> map) {
     final raw = map['profileImage'] ?? map['avatarUrl'] ?? map['avatar'];
     if (raw is Map) {
-      return (raw['url'] ?? raw['path'] ?? raw['location'] ?? raw['secure_url'] ?? '')
+      return (raw['url'] ??
+              raw['path'] ??
+              raw['location'] ??
+              raw['secure_url'] ??
+              '')
           .toString()
           .trim();
     }
@@ -58,8 +64,14 @@ class LoginCubit extends Cubit<LoginState> {
 
   // ── POST /api/auth/login ──────────────────────────────────
   Future<void> login(String email, String password) async {
-    if (email.trim().isEmpty) { emit(const LoginError('Email is required'));    return; }
-    if (password.isEmpty)     { emit(const LoginError('Password is required')); return; }
+    if (email.trim().isEmpty) {
+      emit(const LoginError('Email is required'));
+      return;
+    }
+    if (password.isEmpty) {
+      emit(const LoginError('Password is required'));
+      return;
+    }
 
     emit(LoginLoading());
     try {
@@ -76,19 +88,19 @@ class LoginCubit extends Cubit<LoginState> {
       //   { "data": { "accessToken": "..." } }
       debugPrint('[LoginCubit] full body: ${res.data}');
 
-      final body  = res.data;
+      final body = res.data;
       final userMap = _extractUserMap(body);
       String? token;
 
       if (body is Map) {
-        token = body['token']         as String?
-             ?? body['accessToken']   as String?
-             ?? body['access_token']  as String?
-             ?? (body['data'] is Map ? (
-                    body['data']['token']        as String?
-                 ?? body['data']['accessToken']  as String?
-                 ?? body['data']['access_token'] as String?
-                ) : null);
+        token = body['token'] as String? ??
+            body['accessToken'] as String? ??
+            body['access_token'] as String? ??
+            (body['data'] is Map
+                ? (body['data']['token'] as String? ??
+                    body['data']['accessToken'] as String? ??
+                    body['data']['access_token'] as String?)
+                : null);
       }
 
       if (token == null || token.isEmpty) {
@@ -101,88 +113,87 @@ class LoginCubit extends Cubit<LoginState> {
       await prefs.setString('token', token);
 
       // ✅ Extract role + permissions
-Map<String, dynamic>? role;
-Map<String, dynamic>? permissions;
+      Map<String, dynamic>? role;
+      Map<String, dynamic>? permissions;
 
-if (body is Map) {
-  role = body['role'] as Map<String, dynamic>?
-      ?? (body['data'] is Map
-          ? (body['data']['role'] as Map<String, dynamic>?)
-          : null)
-      ?? (userMap['role'] is Map
-          ? Map<String, dynamic>.from(userMap['role'] as Map)
-          : null);
-  permissions = role?['permissions'] as Map<String, dynamic>?;
-}
+      if (body is Map) {
+        role = body['role'] as Map<String, dynamic>? ??
+            (body['data'] is Map
+                ? (body['data']['role'] as Map<String, dynamic>?)
+                : null) ??
+            (userMap['role'] is Map
+                ? Map<String, dynamic>.from(userMap['role'] as Map)
+                : null);
+        permissions = role?['permissions'] as Map<String, dynamic>?;
+      }
 
 // ✅ Save role name
-if (role != null && role['name'] != null) {
-  await prefs.setString('role', role['name']);
-}
+      if (role != null && role['name'] != null) {
+        await prefs.setString('role', role['name']);
+      }
 
 // ✅ Convert permissions map → list
-if (permissions != null) {
-  final allowedPermissions = permissions.entries
-      .where((e) => e.value == true)
-      .map((e) => e.key)
-      .toList();
+      if (permissions != null) {
+        final allowedPermissions = permissions.entries
+            .where((e) => e.value == true)
+            .map((e) => e.key)
+            .toList();
 
-  await prefs.setStringList('permissions', allowedPermissions);
-}
+        await prefs.setStringList('permissions', allowedPermissions);
+      }
 
 // ✅ ALWAYS LOAD (important)
-await PermissionHelper.load();
-
-
+      await PermissionHelper.load();
 
 // ADD: save user_id from login response
-String? userId;
-if (body is Map) {
-  userId = body['_id']    as String?
-        ?? body['id']     as String?
-        ?? body['userId'] as String?
-        ?? (body['data'] is Map ? (
-               body['data']['_id']    as String?
-            ?? body['data']['id']     as String?
-            ?? body['data']['userId'] as String?
-           ) : null);
-}
-if (userId != null && userId.isNotEmpty) {
-  await prefs.setString('user_id', userId);
-}
-String userName = '';
-String userEmail = '';
-String profileImage = '';
+// ADD: save user_id from login response
+      String? userId;
+      if (body is Map) {
+        userId = userMap['_id']?.toString() // ← check userMap FIRST
+            ??
+            userMap['id']?.toString() ??
+            body['_id']?.toString() ??
+            body['id']?.toString() ??
+            body['userId']?.toString() ??
+            (body['data'] is Map
+                ? (body['data']['_id']?.toString() ??
+                    body['data']['id']?.toString() ??
+                    body['data']['userId']?.toString())
+                : null);
+      }
+      if (userId != null && userId.isNotEmpty) {
+        await prefs.setString('user_id', userId);
+      }
+      String userName = '';
+      String userEmail = '';
+      String profileImage = '';
 
-final firstName = (userMap['firstName'] ?? userMap['first_name'] ?? '')
-    .toString()
-    .trim();
-final lastName = (userMap['lastName'] ?? userMap['last_name'] ?? '')
-    .toString()
-    .trim();
-final combinedName = '$firstName $lastName'.trim();
+      final firstName = (userMap['firstName'] ?? userMap['first_name'] ?? '')
+          .toString()
+          .trim();
+      final lastName =
+          (userMap['lastName'] ?? userMap['last_name'] ?? '').toString().trim();
+      final combinedName = '$firstName $lastName'.trim();
 
-userName = combinedName.isNotEmpty
-    ? combinedName
-    : (userMap['name'] ?? userMap['fullName'] ?? '').toString().trim();
-userEmail = (userMap['email'] ?? '').toString().trim();
-profileImage = _extractImagePath(userMap);
+      userName = combinedName.isNotEmpty
+          ? combinedName
+          : (userMap['name'] ?? userMap['fullName'] ?? '').toString().trim();
+      userEmail = (userMap['email'] ?? '').toString().trim();
+      profileImage = _extractImagePath(userMap);
 
-if (userName.isNotEmpty) {
-  await prefs.setString('user_name', userName);
-}
-if (userEmail.isNotEmpty) {
-  await prefs.setString('email', userEmail);
-}
-if (profileImage.isNotEmpty) {
-  await prefs.setString('profileImage', profileImage);
-  await prefs.setString('profile_image', profileImage);
-}
-
+      if (userName.isNotEmpty) {
+        await prefs.setString('user_name', userName);
+      }
+      if (userEmail.isNotEmpty) {
+        await prefs.setString('email', userEmail);
+      }
+      if (profileImage.isNotEmpty) {
+        await prefs.setString('profileImage', profileImage);
+        await prefs.setString('profile_image', profileImage);
+      }
 
       emit(LoginSuccess());
       debugPrint('[LoginCubit] full response body: $body');
-
     } on DioException catch (e) {
       final body = e.response?.data;
       String msg = 'Login failed';
@@ -190,15 +201,14 @@ if (profileImage.isNotEmpty) {
       if (e.response?.statusCode == 401 || e.response?.statusCode == 403) {
         msg = 'Invalid email or password';
       } else if (body is Map) {
-        msg = body['message'] as String?
-           ?? body['error']   as String?
-           ?? msg;
+        msg = body['message'] as String? ?? body['error'] as String? ?? msg;
       } else {
         msg = switch (e.type) {
           DioExceptionType.connectionTimeout ||
-          DioExceptionType.receiveTimeout  => 'Connection timed out',
+          DioExceptionType.receiveTimeout =>
+            'Connection timed out',
           DioExceptionType.connectionError => 'No internet connection',
-          _                                => 'Server error (${e.response?.statusCode})',
+          _ => 'Server error (${e.response?.statusCode})',
         };
       }
       emit(LoginError(msg));
@@ -209,7 +219,7 @@ if (profileImage.isNotEmpty) {
 
   /// POST /users/forgot-password
   Future<ForgotPasswordResult> requestPasswordReset(String email) async {
-    final cleanEmail = email.trim();   
+    final cleanEmail = email.trim();
     if (cleanEmail.isEmpty) {
       return const ForgotPasswordResult(
         success: false,
@@ -305,16 +315,16 @@ if (profileImage.isNotEmpty) {
 
   /// Clear saved token (logout)
   Future<void> logout() async {
-  final prefs = await SharedPreferences.getInstance();
-  await prefs.remove('token');
-await prefs.remove('user_id');
-await prefs.remove('permissions'); // ✅ ADD
-await prefs.remove('user_name');
-await prefs.remove('email');
-await prefs.remove('profileImage');
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('token');
+    await prefs.remove('user_id');
+    await prefs.remove('permissions'); // ✅ ADD
+    await prefs.remove('user_name');
+    await prefs.remove('email');
+    await prefs.remove('profileImage');
 
-PermissionHelper.clear(); // ✅ ADD// ✅ ADD
+    PermissionHelper.clear(); // ✅ ADD// ✅ ADD
 
-  emit(LoginIdle());
-}
+    emit(LoginIdle());
+  }
 }

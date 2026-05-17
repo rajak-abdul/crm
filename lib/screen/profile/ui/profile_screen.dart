@@ -5,10 +5,16 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 bool _isSessionExpiredMessage(String msg) {
   final m = msg.toLowerCase();
+
   return m.contains('session expired') ||
       m.contains('unauthorized') ||
       m.contains('401') ||
-      m.contains('login again');
+      m.contains('login again') ||
+      m.contains('token failed') ||
+      m.contains('invalid token') ||
+      m.contains('jwt expired') ||
+      m.contains('token expired') ||
+      m.contains('authentication failed');
 }
 
 class ProfileScreen extends StatelessWidget {
@@ -33,7 +39,8 @@ class _ProfileView extends StatelessWidget {
       appBar: AppBar(title: const Text('Profile')),
       body: BlocConsumer<ProfileCubit, ProfileState>(
         listener: (context, state) {
-          if (state is ProfileError && _isSessionExpiredMessage(state.message)) {
+          if (state is ProfileError &&
+              _isSessionExpiredMessage(state.message)) {
             Navigator.of(context, rootNavigator: true)
                 .pushNamedAndRemoveUntil('/login', (route) => false);
           }
@@ -50,7 +57,8 @@ class _ProfileView extends StatelessWidget {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.error_outline, color: AppColors.danger, size: 36),
+                    const Icon(Icons.error_outline,
+                        color: AppColors.danger, size: 36),
                     const SizedBox(height: 10),
                     Text(
                       state.message,
@@ -62,7 +70,8 @@ class _ProfileView extends StatelessWidget {
                     ),
                     const SizedBox(height: 14),
                     ElevatedButton.icon(
-                      onPressed: () => context.read<ProfileCubit>().loadProfile(),
+                      onPressed: () =>
+                          context.read<ProfileCubit>().loadProfile(),
                       icon: const Icon(Icons.refresh),
                       label: const Text('Retry'),
                     ),
@@ -75,7 +84,8 @@ class _ProfileView extends StatelessWidget {
           final user = (state as ProfileLoaded).user;
           final isAdmin = user.isAdmin;
           final roleColor = isAdmin ? AppColors.primary : AppColors.success;
-          final roleBg = isAdmin ? AppColors.primaryLight : AppColors.successLight;
+          final roleBg =
+              isAdmin ? AppColors.primaryLight : AppColors.successLight;
           return RefreshIndicator(
             color: AppColors.primary,
             onRefresh: () => context.read<ProfileCubit>().refresh(),
@@ -127,7 +137,8 @@ class _ProfileView extends StatelessWidget {
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Logout', style: TextStyle(color: AppColors.danger)),
+            child:
+                const Text('Logout', style: TextStyle(color: AppColors.danger)),
           ),
         ],
       ),
@@ -140,7 +151,6 @@ class _ProfileView extends StatelessWidget {
       }
     }
   }
-
 }
 
 class _HeaderCard extends StatelessWidget {

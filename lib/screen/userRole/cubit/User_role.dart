@@ -10,6 +10,7 @@ import 'package:dio/dio.dart'
         InterceptorsWrapper,
         FormData,
         MultipartFile;
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart' show Cubit;
 import 'package:shared_preferences/shared_preferences.dart'
     show SharedPreferences;
@@ -27,11 +28,20 @@ class UserRoleCubit extends Cubit<UserRoleState> {
       receiveTimeout: const Duration(seconds: 20),
     ));
     _dio.interceptors.add(InterceptorsWrapper(
+      // ↓ RIGHT HERE ↓
       onRequest: (opt, handler) async {
         final p = await SharedPreferences.getInstance();
         final t = p.getString('token');
+        debugPrint('🔑 Token: $t'); // ← change to print()
+        debugPrint('🌐 URL: ${opt.baseUrl}${opt.path}'); // ← change to print()
         if (t != null) opt.headers['Authorization'] = 'Bearer $t';
         handler.next(opt);
+      },
+
+      onError: (e, handler) {
+        debugPrint('❌ ${e.response?.statusCode} → ${e.requestOptions.path}');
+        debugPrint('❌ Response body: ${e.response?.data}');
+        handler.next(e);
       },
     ));
   }
@@ -54,7 +64,21 @@ class UserRoleCubit extends Cubit<UserRoleState> {
 
   // ── 🌐 LOAD ALL ────────────────────────────────────────────
   Future<void> loadAll() async {
-    emit(UserRoleLoading());
+    // Step 1: show cached data immediately (never block on network)
+    final cachedUsers = await _db.getAllCachedUsers();
+    final cachedRoles = await _db.getLocalRoles();
+
+    if (cachedUsers.isNotEmpty || cachedRoles.isNotEmpty) {
+      emit(UserRoleLoaded(
+        users: cachedUsers,
+        salesUsers: cachedUsers.where((u) => u.role != 'admin').toList(),
+        roles: cachedRoles,
+      ));
+    } else {
+      emit(UserRoleLoading());
+    }
+
+    // Step 2: try API in background — silently update if online
     try {
       final results = await Future.wait([
         _dio.get('/users'),
@@ -66,7 +90,11 @@ class UserRoleCubit extends Cubit<UserRoleState> {
       final apiSales = _toList(results[1].data).map(AppUser.fromJson).toList();
       final apiRoles = _toList(results[2].data).map(AppRole.fromJson).toList();
 
-      final localUsers = await _db.getLocalUsers();
+      // Persist to SQLite so next cold-start has fresh data
+      for (final u in apiUsers) await _db.upsertUserFromApi(u);
+      for (final r in apiRoles) await _db.upsertRoleFromApi(r);
+
+      final localUsers = await _db.getAllCachedUsers();
       final localRoles = await _db.getLocalRoles();
       final apiUserIds = apiUsers.map((u) => u.id).toSet();
       final apiRoleIds = apiRoles.map((r) => r.id).toSet();
@@ -83,9 +111,12 @@ class UserRoleCubit extends Cubit<UserRoleState> {
         ],
       ));
     } on DioException catch (e) {
-      emit(UserRoleError(_dioMsg(e)));
-    } catch (e) {
-      emit(UserRoleError(e.toString()));
+      // Network failed — keep showing whatever cache we already emitted
+      // Only emit error if we had nothing cached to show
+      if (state is UserRoleLoading) {
+        emit(UserRoleError(_dioMsg(e)));
+      }
+      // else: silently keep the cached state visible
     }
   }
 
@@ -97,31 +128,31 @@ class UserRoleCubit extends Cubit<UserRoleState> {
   }) async {
     try {
       final formData = FormData.fromMap({
-        'firstName':    user.firstName,
-        'lastName':     user.lastName,
-        'email':        user.email,
-        'password':     password ?? '',
+        'firstName': user.firstName,
+        'lastName': user.lastName,
+        'email': user.email,
+        'password': password ?? '',
         'mobileNumber': user.phone, // ✅ FIX: API field is 'mobileNumber'
-        'role':         user.role,
-        'status':       user.status,
-        'gender':       user.gender,
-        'dateOfBirth':  user.dob?.toIso8601String(),
-        'address':      user.address,
+        'role': user.role,
+        'status': user.status,
+        'gender': user.gender,
+        'dateOfBirth': user.dob?.toIso8601String(),
+        'address': user.address,
         if (imagePath != null)
           'profileImage': await MultipartFile.fromFile(imagePath),
       });
 
-      final res     = await _dio.post('/users/create', data: formData);
-      final newUser = AppUser.fromJson(
-          _unwrap(res.data, ['user', 'data', 'result']));
+      final res = await _dio.post('/users/create', data: formData);
+      final newUser =
+          AppUser.fromJson(_unwrap(res.data, ['user', 'data', 'result']));
 
       final cur = _loaded;
       if (cur != null) {
         emit(UserRoleActionSuccess(
-          users:      [newUser, ...cur.users],
-          roles:      cur.roles,
+          users: [newUser, ...cur.users],
+          roles: cur.roles,
           salesUsers: cur.salesUsers,
-          message:    'User created successfully ✅',
+          message: 'User created successfully ✅',
         ));
       }
       return null;
@@ -134,10 +165,10 @@ class UserRoleCubit extends Cubit<UserRoleState> {
           final cur = _loaded;
           if (cur != null) {
             emit(UserRoleActionSuccess(
-              users:      [localUser, ...cur.users],
-              roles:      cur.roles,
+              users: [localUser, ...cur.users],
+              roles: cur.roles,
               salesUsers: cur.salesUsers,
-              message:    'Saved locally (offline) 💾',
+              message: 'Saved locally (offline) 💾',
             ));
           }
           return null;
@@ -164,10 +195,10 @@ class UserRoleCubit extends Cubit<UserRoleState> {
         final cur = _loaded;
         if (cur != null) {
           emit(UserRoleActionSuccess(
-            users:      cur.users.map((u) => u.id == id ? localUser : u).toList(),
-            roles:      cur.roles,
+            users: cur.users.map((u) => u.id == id ? localUser : u).toList(),
+            roles: cur.roles,
             salesUsers: cur.salesUsers,
-            message:    'Local record updated 💾',
+            message: 'Local record updated 💾',
           ));
         }
         return null;
@@ -178,30 +209,30 @@ class UserRoleCubit extends Cubit<UserRoleState> {
 
     try {
       final formData = FormData.fromMap({
-        'firstName':    user.firstName,
-        'lastName':     user.lastName,
-        'email':        user.email,
+        'firstName': user.firstName,
+        'lastName': user.lastName,
+        'email': user.email,
         'mobileNumber': user.phone, // ✅ FIX: API field is 'mobileNumber'
-        'role':         user.role,
-        'status':       user.status,
-        'gender':       user.gender,
-        'dateOfBirth':  user.dob?.toIso8601String(),
-        'address':      user.address,
+        'role': user.role,
+        'status': user.status,
+        'gender': user.gender,
+        'dateOfBirth': user.dob?.toIso8601String(),
+        'address': user.address,
         if (imagePath != null)
           'profileImage': await MultipartFile.fromFile(imagePath),
       });
 
-      final res         = await _dio.put('/users/update-user/$id', data: formData);
-      final updatedUser = AppUser.fromJson(
-          _unwrap(res.data, ['user', 'data', 'result']));
+      final res = await _dio.put('/users/update-user/$id', data: formData);
+      final updatedUser =
+          AppUser.fromJson(_unwrap(res.data, ['user', 'data', 'result']));
 
       final cur = _loaded;
       if (cur != null) {
         emit(UserRoleActionSuccess(
-          users:      cur.users.map((u) => u.id == id ? updatedUser : u).toList(),
-          roles:      cur.roles,
+          users: cur.users.map((u) => u.id == id ? updatedUser : u).toList(),
+          roles: cur.roles,
           salesUsers: cur.salesUsers,
-          message:    'User updated successfully ✏️',
+          message: 'User updated successfully ✏️',
         ));
       }
       return null;
@@ -214,10 +245,10 @@ class UserRoleCubit extends Cubit<UserRoleState> {
           final cur = _loaded;
           if (cur != null) {
             emit(UserRoleActionSuccess(
-              users:      cur.users.map((u) => u.id == id ? localUser : u).toList(),
-              roles:      cur.roles,
+              users: cur.users.map((u) => u.id == id ? localUser : u).toList(),
+              roles: cur.roles,
               salesUsers: cur.salesUsers,
-              message:    'Updated locally (offline) 💾',
+              message: 'Updated locally (offline) 💾',
             ));
           }
           return null;
@@ -248,10 +279,10 @@ class UserRoleCubit extends Cubit<UserRoleState> {
       final cur = _loaded;
       if (cur != null) {
         emit(UserRoleActionSuccess(
-          users:      cur.users.where((u) => u.id != id).toList(),
-          roles:      cur.roles,
+          users: cur.users.where((u) => u.id != id).toList(),
+          roles: cur.roles,
           salesUsers: cur.salesUsers,
-          message:    'User deleted 🗑️',
+          message: 'User deleted 🗑️',
         ));
       }
       return null;
@@ -266,20 +297,20 @@ class UserRoleCubit extends Cubit<UserRoleState> {
   Future<String?> createRole(AppRole role) async {
     try {
       final res = await _dio.post('/roles', data: {
-        'name':        role.name,
+        'name': role.name,
         'permissions': _buildPermissions(role.permissions),
       });
 
-      final newRole = AppRole.fromJson(
-          _unwrap(res.data, ['role', 'data', 'result']));
+      final newRole =
+          AppRole.fromJson(_unwrap(res.data, ['role', 'data', 'result']));
 
       final cur = _loaded;
       if (cur != null) {
         emit(UserRoleActionSuccess(
-          users:      cur.users,
-          roles:      [...cur.roles, newRole],
+          users: cur.users,
+          roles: [...cur.roles, newRole],
           salesUsers: cur.salesUsers,
-          message:    'Role created successfully ✅',
+          message: 'Role created successfully ✅',
         ));
       }
       return null;
@@ -292,10 +323,10 @@ class UserRoleCubit extends Cubit<UserRoleState> {
           final cur = _loaded;
           if (cur != null) {
             emit(UserRoleActionSuccess(
-              users:      cur.users,
-              roles:      [...cur.roles, localRole],
+              users: cur.users,
+              roles: [...cur.roles, localRole],
               salesUsers: cur.salesUsers,
-              message:    'Role saved locally (offline) 💾',
+              message: 'Role saved locally (offline) 💾',
             ));
           }
           return null;
@@ -315,8 +346,8 @@ class UserRoleCubit extends Cubit<UserRoleState> {
       final cur = _loaded;
       if (cur != null) {
         emit(UserRoleActionSuccess(
-          users:  cur.users,
-          roles:  cur.roles
+          users: cur.users,
+          roles: cur.roles
               .map((r) => r.id == id
                   ? AppRole(
                       id: id,
@@ -326,7 +357,7 @@ class UserRoleCubit extends Cubit<UserRoleState> {
                   : r)
               .toList(),
           salesUsers: cur.salesUsers,
-          message:    'Local role updated 💾',
+          message: 'Local role updated 💾',
         ));
       }
       return null;
@@ -334,20 +365,20 @@ class UserRoleCubit extends Cubit<UserRoleState> {
 
     try {
       final res = await _dio.put('/roles/$id', data: {
-        'name':        role.name,
+        'name': role.name,
         'permissions': _buildPermissions(role.permissions),
       });
 
-      final updatedRole = AppRole.fromJson(
-          _unwrap(res.data, ['role', 'data', 'result']));
+      final updatedRole =
+          AppRole.fromJson(_unwrap(res.data, ['role', 'data', 'result']));
 
       final cur = _loaded;
       if (cur != null) {
         emit(UserRoleActionSuccess(
-          users:      cur.users,
-          roles:      cur.roles.map((r) => r.id == id ? updatedRole : r).toList(),
+          users: cur.users,
+          roles: cur.roles.map((r) => r.id == id ? updatedRole : r).toList(),
           salesUsers: cur.salesUsers,
-          message:    'Role updated successfully ✏️',
+          message: 'Role updated successfully ✏️',
         ));
       }
       return null;
@@ -374,10 +405,10 @@ class UserRoleCubit extends Cubit<UserRoleState> {
       final cur = _loaded;
       if (cur != null) {
         emit(UserRoleActionSuccess(
-          users:      cur.users,
-          roles:      cur.roles.where((r) => r.id != id).toList(),
+          users: cur.users,
+          roles: cur.roles.where((r) => r.id != id).toList(),
           salesUsers: cur.salesUsers,
-          message:    'Role deleted 🗑️',
+          message: 'Role deleted 🗑️',
         ));
       }
       return null;
@@ -395,8 +426,8 @@ class UserRoleCubit extends Cubit<UserRoleState> {
     if (body == null) return null;
     if (body is Map) {
       if (body['message'] is String) return body['message'] as String;
-      if (body['error']   is String) return body['error']   as String;
-      if (body['errors']  is List) {
+      if (body['error'] is String) return body['error'] as String;
+      if (body['errors'] is List) {
         final list = body['errors'] as List;
         if (list.isNotEmpty) return list.first.toString();
       }
@@ -416,10 +447,20 @@ class UserRoleCubit extends Cubit<UserRoleState> {
     final normalizedSelected = selected.map(normalize).toSet();
 
     const allPerms = [
-      'dashboard', 'leads', 'deals_all', 'deals_pipeline',
-      'invoices', 'proposal', 'activities', 'activities_calendar',
-      'activities_list', 'users_roles', 'admin_access',
-      'email_chat', 'whatsapp_chat', 'reports',
+      'dashboard',
+      'leads',
+      'deals_all',
+      'deals_pipeline',
+      'invoices',
+      'proposal',
+      'activities',
+      'activities_calendar',
+      'activities_list',
+      'users_roles',
+      'admin_access',
+      'email_chat',
+      'whatsapp_chat',
+      'reports',
     ];
 
     return {for (final p in allPerms) p: normalizedSelected.contains(p)};
@@ -445,9 +486,11 @@ class UserRoleCubit extends Cubit<UserRoleState> {
 
   String _dioMsg(DioException e) => switch (e.type) {
         DioExceptionType.connectionTimeout ||
-        DioExceptionType.receiveTimeout   => 'Connection timed out.',
-        DioExceptionType.connectionError  => 'No internet connection.',
-        DioExceptionType.badResponse      => 'Server error (${e.response?.statusCode}).',
-        _                                 => 'Something went wrong.',
+        DioExceptionType.receiveTimeout =>
+          'Connection timed out.',
+        DioExceptionType.connectionError => 'No internet connection.',
+        DioExceptionType.badResponse =>
+          'Server error (${e.response?.statusCode}).',
+        _ => 'Something went wrong.',
       };
 }

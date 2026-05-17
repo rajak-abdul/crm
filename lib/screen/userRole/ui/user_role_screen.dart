@@ -1,5 +1,6 @@
 import 'package:crm_app/modals/modals.dart' show AppConstants, AppRole, AppUser;
-import 'package:crm_app/screen/userRole/cubit/user_role.dart' show UserRoleCubit;
+import 'package:crm_app/screen/userRole/cubit/user_role.dart'
+    show UserRoleCubit;
 import 'package:crm_app/screen/userRole/cubit/user_role_state.dart';
 import 'package:crm_app/shareWidgets/share_widgets.dart'
     show
@@ -109,8 +110,8 @@ class _UserRoleViewState extends State<_UserRoleView>
               unselectedLabelColor: AppColors.textSecondary,
               indicatorColor: AppColors.primary,
               indicatorWeight: 2.5,
-              labelStyle: const TextStyle(
-                  fontWeight: FontWeight.w600, fontSize: 14),
+              labelStyle:
+                  const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
               tabs: [
                 Tab(
                   child: Row(
@@ -249,8 +250,7 @@ class _UsersTabState extends State<_UsersTab> {
           onRetry: () => ctx.read<UserRoleCubit>().loadAll());
     }
     if (state is! UserRoleLoaded) {
-      return const EmptyState(
-          message: 'No users', icon: Icons.group_outlined);
+      return const EmptyState(message: 'No users', icon: Icons.group_outlined);
     }
 
     final users = state.users;
@@ -279,8 +279,9 @@ class _UsersTabState extends State<_UsersTab> {
                 roles: state.roles,
                 onEdit: () => widget.onEditUser(listCtx, visibleUsers[i]),
                 onDelete: () async {
-                  final err =
-                      await ctx.read<UserRoleCubit>().deleteUser(visibleUsers[i].id);
+                  final err = await ctx
+                      .read<UserRoleCubit>()
+                      .deleteUser(visibleUsers[i].id);
                   if (err != null && ctx.mounted) {
                     showApiSnack(ctx, err, isError: true);
                   }
@@ -295,7 +296,8 @@ class _UsersTabState extends State<_UsersTab> {
           totalItems: users.length,
           pageSize: _pageSize,
           onPrev: safePage > 1 ? () => setState(() => _page -= 1) : null,
-          onNext: safePage < totalPages ? () => setState(() => _page += 1) : null,
+          onNext:
+              safePage < totalPages ? () => setState(() => _page += 1) : null,
         ),
       ],
     );
@@ -318,10 +320,14 @@ class _UserCard extends StatelessWidget {
   // BUG FIX: role field is an ObjectId string — look up the display name
   // from the roles list. Falls back to the raw value if not found.
   String get _roleName {
+    if (roles.isEmpty) {
+      return 'Loading...';
+    }
+
     try {
       return roles.firstWhere((r) => r.id == user.role).name;
     } catch (_) {
-      return user.role;
+      return 'Role Not Assigned';
     }
   }
 
@@ -342,35 +348,34 @@ class _UserCard extends StatelessWidget {
           UserAvatar(user: user, size: 48),
           const SizedBox(width: 14),
           Expanded(
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(user.fullName,
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(user.fullName,
+                  style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary)),
+              Text(user.email,
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.textSecondary)),
+              const SizedBox(height: 6),
+              Row(children: [
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                      color: AppColors.primaryLight,
+                      borderRadius: BorderRadius.circular(6)),
+                  child: Text(_roleName,
                       style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textPrimary)),
-                  Text(user.email,
-                      style: const TextStyle(
-                          fontSize: 12, color: AppColors.textSecondary)),
-                  const SizedBox(height: 6),
-                  Row(children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                          color: AppColors.primaryLight,
-                          borderRadius: BorderRadius.circular(6)),
-                      child: Text(_roleName,
-                          style: const TextStyle(
-                              fontSize: 11,
-                              color: AppColors.primary,
-                              fontWeight: FontWeight.w600)),
-                    ),
-                    const SizedBox(width: 8),
-                    StatusBadge(status: user.status),
-                  ]),
-                ]),
+                          fontSize: 11,
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w600)),
+                ),
+                const SizedBox(width: 8),
+                StatusBadge(status: user.status),
+              ]),
+            ]),
           ),
           Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
             if (user.dob != null)
@@ -423,15 +428,13 @@ class _RolesTabState extends State<_RolesTab> {
   Widget build(BuildContext ctx) {
     final state = widget.state;
     if (state is! UserRoleLoaded) {
-      return const EmptyState(
-          message: 'No roles', icon: Icons.shield_outlined);
+      return const EmptyState(message: 'No roles', icon: Icons.shield_outlined);
     }
 
     final roles = state.roles;
     if (roles.isEmpty) {
       return const EmptyState(
-          message: 'No roles yet. Create one!',
-          icon: Icons.shield_outlined);
+          message: 'No roles yet. Create one!', icon: Icons.shield_outlined);
     }
 
     final totalPages = (roles.length / _pageSize).ceil();
@@ -449,8 +452,9 @@ class _RolesTabState extends State<_RolesTab> {
             itemBuilder: (listCtx, i) => _RoleCard(
               role: visibleRoles[i],
               onDelete: () async {
-                final err =
-                    await ctx.read<UserRoleCubit>().deleteRole(visibleRoles[i].id);
+                final err = await ctx
+                    .read<UserRoleCubit>()
+                    .deleteRole(visibleRoles[i].id);
                 if (err != null && ctx.mounted) {
                   showApiSnack(ctx, err, isError: true);
                 }
@@ -465,7 +469,8 @@ class _RolesTabState extends State<_RolesTab> {
           totalItems: roles.length,
           pageSize: _pageSize,
           onPrev: safePage > 1 ? () => setState(() => _page -= 1) : null,
-          onNext: safePage < totalPages ? () => setState(() => _page += 1) : null,
+          onNext:
+              safePage < totalPages ? () => setState(() => _page += 1) : null,
         ),
       ],
     );
@@ -496,8 +501,7 @@ class _RoleCard extends StatelessWidget {
                   blurRadius: 8,
                   offset: const Offset(0, 2))
             ]),
-        child:
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Container(
               padding: const EdgeInsets.all(10),
@@ -519,8 +523,7 @@ class _RoleCard extends StatelessWidget {
                             color: AppColors.textPrimary)),
                     Text('${role.permissions.length} permissions',
                         style: const TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textSecondary)),
+                            fontSize: 12, color: AppColors.textSecondary)),
                   ]),
             ),
             GestureDetector(
@@ -592,7 +595,8 @@ class _ListPaginationBar extends StatelessWidget {
         children: [
           Text(
             '$start-$end of $totalItems',
-            style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            style:
+                const TextStyle(fontSize: 12, color: AppColors.textSecondary),
           ),
           const Spacer(),
           IconButton(
@@ -627,8 +631,12 @@ class _PasswordField extends StatelessWidget {
   final TextEditingController controller;
   final bool obscure;
   final VoidCallback onToggle;
+  final String? errorText;
+  final bool? required;
 
   const _PasswordField({
+    this.errorText,
+    this.required,
     required this.label,
     required this.controller,
     required this.obscure,
@@ -646,19 +654,17 @@ class _PasswordField extends StatelessWidget {
                   fontWeight: FontWeight.w600,
                   color: AppColors.textSecondary),
               children: const [
-                TextSpan(
-                    text: ' *',
-                    style: TextStyle(color: AppColors.danger)),
+                TextSpan(text: ' *', style: TextStyle(color: AppColors.danger)),
               ])),
           const SizedBox(height: 6),
           TextFormField(
             controller: controller,
             obscureText: obscure,
-            style:
-                const TextStyle(fontSize: 14, color: AppColors.textPrimary),
+            style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
             decoration: InputDecoration(
               hintText: '••••••••',
               hintStyle: const TextStyle(color: AppColors.textHint),
+              errorText: errorText,
               suffixIcon: GestureDetector(
                 onTap: onToggle,
                 child: Icon(
@@ -704,89 +710,111 @@ class _AddUserModal extends StatefulWidget {
 }
 
 class _AddUserModalState extends State<_AddUserModal> {
-  final _fn  = TextEditingController();
-  final _ln  = TextEditingController();
-  final _ph  = TextEditingController();
-  final _em  = TextEditingController();
-  final _pw  = TextEditingController();
+  final _fn = TextEditingController();
+  final _ln = TextEditingController();
+  final _ph = TextEditingController();
+  final _em = TextEditingController();
+  final _pw = TextEditingController();
   final _cpw = TextEditingController();
-  final _ad  = TextEditingController();  
+  final _ad = TextEditingController();
 
   // BUG FIX: store the full AppRole object so we can send role.id to API
-  AppRole?  _selectedRole;
-  String?   _gender;
+  AppRole? _selectedRole;
+  String? _gender;
   DateTime? _dob;
-  String    _status    = 'Active';
-  bool      _saving    = false;
-  bool      _pwObscure  = true;
-  bool      _cpwObscure = true;
+  String _status = 'Active';
+  bool _saving = false;
+  bool _pwObscure = true;
+  bool _cpwObscure = true;
 
   String? _pickedImagePath; // Optional profile image
   Uint8List? _pickedImageBytes; // Optional preview source (path can be null)
 
+  // Add user
+  String? firstNameError;
+  String? lastNameError;
+  String? phoneError;
+  String? emailError;
+  String? passwordError;
+  String? confirmPasswordError;
+  String? addressError;
+  String? genderError;
+  String? dobError;
+  String? roleError;
+//bool _saving = false;
+
   @override
   void dispose() {
-    _fn.dispose(); _ln.dispose(); _ph.dispose();
-    _em.dispose(); _pw.dispose(); _cpw.dispose(); _ad.dispose();
+    _fn.dispose();
+    _ln.dispose();
+    _ph.dispose();
+    _em.dispose();
+    _pw.dispose();
+    _cpw.dispose();
+    _ad.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
     // Validate all required fields
-    for (final e in {
-      'First Name':       _fn.text,
-      'Last Name':        _ln.text,
-      'Phone':            _ph.text,
-      'Email':            _em.text,
-      'Password':         _pw.text,
-      'Confirm Password': _cpw.text,
-      'Address':          _ad.text,
-    }.entries) {
-      if (e.value.trim().isEmpty) {
-        showApiSnack(context, '${e.key} is required', isError: true);
-        return;
+    setState(() {
+      firstNameError =
+          _fn.text.trim().isEmpty ? 'First Name is required' : null;
+      lastNameError = _ln.text.trim().isEmpty ? 'Last Name is required' : null;
+      phoneError = _ph.text.trim().isEmpty ? 'Phone is required' : null;
+      passwordError = _pw.text.trim().isEmpty ? 'Password is required' : null;
+      confirmPasswordError =
+          _cpw.text.trim().isEmpty ? 'Confirm Password is required' : null;
+
+      genderError = _gender == null ? 'Gender is required' : null;
+      dobError = _dob == null ? 'Date of birth is required' : null;
+      roleError = _selectedRole == null ? 'Role is required' : null;
+
+      if (_pw.text.isNotEmpty &&
+          _cpw.text.isNotEmpty &&
+          _pw.text != _cpw.text) {
+        confirmPasswordError = 'Passwords do not match';
       }
-    }
-    if (_pw.text != _cpw.text) {
-      showApiSnack(context, 'Passwords do not match', isError: true);
-      return;
-    }
-    if (_gender == null) {
-      showApiSnack(context, 'Gender is required', isError: true);
-      return;
-    }
-    if (_dob == null) {
-      showApiSnack(context, 'Date of birth is required', isError: true);
-      return;
-    }
-    if (_selectedRole == null) {
-      showApiSnack(context, 'Role is required', isError: true);
+    });
+
+    if (firstNameError != null ||
+        lastNameError != null ||
+        phoneError != null ||
+        emailError != null ||
+        passwordError != null ||
+        confirmPasswordError != null ||
+        addressError != null ||
+        genderError != null ||
+        dobError != null ||
+        roleError != null) {
       return;
     }
 
     setState(() => _saving = true);
 
     final user = AppUser(
-      id:        '',
+      id: '',
       firstName: _fn.text.trim(),
-      lastName:  _ln.text.trim(),
-      gender:    _gender!,
-      dob:       _dob,
-      phone:     _ph.text.trim(),
-      email:     _em.text.trim(),
-      role:      _selectedRole!.id,   // ✅ send ObjectId, not name
-      status:    _status,
-      address:   _ad.text.trim(),
+      lastName: _ln.text.trim(),
+      gender: _gender!,
+      dob: _dob,
+      phone: _ph.text.trim(),
+      email: _em.text.trim(),
+      role: _selectedRole!.id,
+      status: _status,
+      address: _ad.text.trim(),
     );
 
     final err = await context.read<UserRoleCubit>().createUser(
           user,
-          password: _pw.text.trim(), // ✅ password correctly passed
+          password: _pw.text.trim(),
           imagePath: _pickedImagePath,
         );
 
     setState(() => _saving = false);
+
     if (!mounted) return;
+
     if (err == null) {
       Navigator.pop(context);
     } else {
@@ -831,10 +859,12 @@ class _AddUserModalState extends State<_AddUserModal> {
               backgroundImage: _pickedImageBytes != null
                   ? MemoryImage(_pickedImageBytes!) as ImageProvider<Object>
                   : (_pickedImagePath != null
-                      ? FileImage(File(_pickedImagePath!)) as ImageProvider<Object>
+                      ? FileImage(File(_pickedImagePath!))
+                          as ImageProvider<Object>
                       : null),
               child: (_pickedImageBytes == null && _pickedImagePath == null)
-                  ? const Icon(Icons.person_outline, size: 40, color: AppColors.textHint)
+                  ? const Icon(Icons.person_outline,
+                      size: 40, color: AppColors.textHint)
                   : null,
             ),
           ),
@@ -871,135 +901,150 @@ class _AddUserModalState extends State<_AddUserModal> {
         initialChildSize: 0.92,
         maxChildSize: 0.97,
         minChildSize: 0.5,
-        builder: (_, ctrl) => Container(
-          decoration: const BoxDecoration(
-              color: AppColors.surface,
-              borderRadius:
-                  BorderRadius.vertical(top: Radius.circular(24))),
-          child: Column(children: [
-            _sheetHandle(),
-            _sheetHeader(ctx, 'Add New User'),
-            const Divider(height: 1, color: AppColors.divider),
-            Expanded(
-              child: ListView(
-                  controller: ctrl,
-                  padding: const EdgeInsets.all(20),
-                  children: [
-                    _userImageUploadWidget(),
-                    const SizedBox(height: 18),
-                    Row(children: [
-                      Expanded(
-                          child: CrmTextField(
-                              label: 'First Name',
-                              required: true,
-                              hint: 'Enter first name',
-                              controller: _fn)),
-                      const SizedBox(width: 12),
-                      Expanded(
-                          child: CrmTextField(
-                              label: 'Last Name',
-                              required: true,
-                              hint: 'Enter last name',
-                              controller: _ln)),
-                    ]),
-                    const SizedBox(height: 16),
-                    Row(children: [
-                      Expanded(
-                        child: CrmDropdown(
-                          label: 'Gender',
+        builder: (_, ctrl) => Scaffold(
+          backgroundColor: Colors.transparent,
+          body: Container(
+            decoration: const BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+            child: Column(children: [
+              _sheetHandle(),
+              _sheetHeader(ctx, 'Add New User'),
+              const Divider(height: 1, color: AppColors.divider),
+              Expanded(
+                child: ListView(
+                    controller: ctrl,
+                    padding: const EdgeInsets.all(20),
+                    children: [
+                      _userImageUploadWidget(),
+                      const SizedBox(height: 18),
+                      Row(children: [
+                        Expanded(
+                            child: CrmTextField(
+                          label: 'First Name',
                           required: true,
-                          value: _gender,
-                          items: AppConstants.genders,
-                          hint: 'Select Gender',
-                          onChanged: (v) => setState(() => _gender = v),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(child: _dobPicker(ctx)),
-                    ]),
-                    const SizedBox(height: 16),
-                    CrmTextField(
-                        label: 'Phone Number',
-                        required: true,
-                        hint: 'enter phone number',
-                        controller: _ph,
-                        keyboardType: TextInputType.phone),
-                    const SizedBox(height: 16),
-                    CrmTextField(
-                        label: 'Email',
-                        required: true,
-                        hint: 'Enter email address',
-                        controller: _em,
-                        keyboardType: TextInputType.emailAddress),
-                    const SizedBox(height: 16),
-                    Row(children: [
-                      Expanded(
-                        child: _PasswordField(
-                          label: 'Password',
-                          controller: _pw,
-                          obscure: _pwObscure,
-                          onToggle: () =>
-                              setState(() => _pwObscure = !_pwObscure),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _PasswordField(
-                          label: 'Confirm Password',
-                          controller: _cpw,
-                          obscure: _cpwObscure,
-                          onToggle: () =>
-                              setState(() => _cpwObscure = !_cpwObscure),
-                        ),
-                      ),
-                    ]),
-                    const SizedBox(height: 16),
-                    CrmTextField(
-                        label: 'Address',
-                        hint: 'Enter address',
-                        controller: _ad,
-                        maxLines: 2),
-                    const SizedBox(height: 16),
-                    Row(children: [
-                      Expanded(
-                        // BUG FIX: display role.name in dropdown but store
-                        // the full AppRole so we can send role.id to API
-                        child: CrmDropdown(
-                          label: 'Role',
+                          controller: _fn,
+                          errorText: firstNameError,
+                        )),
+                        const SizedBox(width: 12),
+                        Expanded(
+                            child: CrmTextField(
+                          label: 'Last Name',
                           required: true,
-                          value: _selectedRole?.name,
-                          items: widget.roles.map((r) => r.name).toList(),
-                          hint: 'Select Role',
-                          onChanged: (v) {
-                            setState(() {
-                              _selectedRole = widget.roles
-                                  .firstWhere((r) => r.name == v);
-                            });
-                          },
+                          controller: _ln,
+                          errorText: lastNameError,
+                        )),
+                      ]),
+                      const SizedBox(height: 16),
+                      Row(children: [
+                        Expanded(
+                          child: CrmDropdown(
+                            label: 'Gender',
+                            required: true,
+                            value: _gender,
+                            errorText: genderError,
+                            items: AppConstants.genders,
+                            hint: 'Select Gender',
+                            onChanged: (v) => setState(() => _gender = v),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: CrmDropdown(
-                          label: 'Status',
-                          value: _status,
-                          items: AppConstants.userStatuses,
-                          onChanged: (v) =>
-                              setState(() => _status = v ?? 'Active'),
+                        const SizedBox(width: 12),
+                        Expanded(child: _dobPicker(ctx)),
+                      ]),
+                      const SizedBox(height: 16),
+                      CrmTextField(
+                          label: 'Phone Number',
+                          errorText: phoneError,
+                          required: true,
+                          controller: _ph,
+                          keyboardType: TextInputType.phone),
+                      const SizedBox(height: 16),
+                      CrmTextField(
+                          label: 'Email',
+                          errorText: emailError,
+                          controller: _em,
+                          keyboardType: TextInputType.emailAddress),
+                      const SizedBox(height: 16),
+                      Row(children: [
+                        Expanded(
+                          child: _PasswordField(
+                            label: 'Password',
+                            required: true,
+                            controller: _pw,
+                            obscure: _pwObscure,
+                            errorText: passwordError,
+                            onToggle: () =>
+                                setState(() => _pwObscure = !_pwObscure),
+                          ),
                         ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _PasswordField(
+                            label: 'Confirm Password',
+                            required: true,
+                            controller: _cpw,
+                            obscure: _cpwObscure,
+                            errorText: confirmPasswordError,
+                            onToggle: () =>
+                                setState(() => _cpwObscure = !_cpwObscure),
+                          ),
+                        ),
+                      ]),
+                      const Text(
+                          'Minimum 8 characters with uppercase, lowercase and numbers',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textSecondary,
+                          )),
+                      const SizedBox(height: 16),
+                      CrmTextField(
+                          label: 'Address',
+                          errorText: addressError,
+                          controller: _ad,
+                          maxLines: 2),
+                      const SizedBox(height: 16),
+                      Row(children: [
+                        Expanded(
+                          // BUG FIX: display role.name in dropdown but store
+                          // the full AppRole so we can send role.id to API
+                          child: CrmDropdown(
+                            label: 'Role',
+                            required: true,
+                            errorText: roleError,
+                            value: _selectedRole?.name,
+                            items: widget.roles.map((r) => r.name).toList(),
+                            hint: 'Select Role',
+                            onChanged: (v) {
+                              setState(() {
+                                _selectedRole =
+                                    widget.roles.firstWhere((r) => r.name == v);
+                              });
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: CrmDropdown(
+                            label: 'Status',
+                            value: _status,
+                            items: AppConstants.userStatuses,
+                            onChanged: (v) =>
+                                setState(() => _status = v ?? 'Active'),
+                          ),
+                        ),
+                      ]),
+                      const SizedBox(height: 28),
+                      FormActionButtons(
+                        onCancel: () => Navigator.pop(ctx),
+                        onSubmit: _submit,
+                        submitLabel: 'Create User',
+                        isLoading: _saving,
                       ),
+                      const SizedBox(height: 20),
                     ]),
-                    const SizedBox(height: 28),
-                    FormActionButtons(
-                      onCancel: () => Navigator.pop(ctx),
-                      onSubmit: _submit,
-                      submitLabel: 'Create User',
-                      isLoading: _saving,
-                    ),
-                    const SizedBox(height: 20),
-                  ]),
-            ),
-          ]),
+              ),
+            ]),
+          ),
         ),
       );
 
@@ -1007,16 +1052,12 @@ class _AddUserModalState extends State<_AddUserModal> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text.rich(TextSpan(
-              text: 'Date of Birth',
-              style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textSecondary),
-              children: [
-                TextSpan(
-                    text: ' *',
-                    style: TextStyle(color: AppColors.danger))
-              ])),
+            text: 'Date of Birth',
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textSecondary),
+          )),
           const SizedBox(height: 6),
           GestureDetector(
             onTap: () async {
@@ -1027,16 +1068,15 @@ class _AddUserModalState extends State<_AddUserModal> {
                 lastDate: DateTime.now(),
                 builder: (c, child) => Theme(
                   data: Theme.of(c).copyWith(
-                      colorScheme: const ColorScheme.light(
-                          primary: AppColors.primary)),
+                      colorScheme:
+                          const ColorScheme.light(primary: AppColors.primary)),
                   child: child!,
                 ),
               );
               if (picked != null) setState(() => _dob = picked);
             },
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 14, vertical: 14),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
               decoration: BoxDecoration(
                   color: AppColors.surface,
                   borderRadius: BorderRadius.circular(12),
@@ -1081,8 +1121,8 @@ class _EditUserModalState extends State<_EditUserModal> {
   late final TextEditingController _em;
   late final TextEditingController _ad;
 
-  String?   _gender;
-  AppRole?  _selectedRole;
+  String? _gender;
+  AppRole? _selectedRole;
   DateTime? _dob;
   late String _status;
   bool _saving = false;
@@ -1093,20 +1133,20 @@ class _EditUserModalState extends State<_EditUserModal> {
   @override
   void initState() {
     super.initState();
-    _fn     = TextEditingController(text: widget.user.firstName);
-    _ln     = TextEditingController(text: widget.user.lastName);
-    _ph     = TextEditingController(text: widget.user.phone);
-    _em     = TextEditingController(text: widget.user.email);
-    _ad     = TextEditingController(text: widget.user.address);
+    _fn = TextEditingController(text: widget.user.firstName);
+    _ln = TextEditingController(text: widget.user.lastName);
+    _ph = TextEditingController(text: widget.user.phone);
+    _em = TextEditingController(text: widget.user.email);
+    _ad = TextEditingController(text: widget.user.address);
     _gender = widget.user.gender.isEmpty ? null : widget.user.gender;
-    _dob    = widget.user.dob;
+    _dob = widget.user.dob;
     _status = widget.user.status;
 
     // BUG FIX: safe lookup — don't crash if roles list is empty or role not found
     if (widget.roles.isNotEmpty) {
       try {
-        _selectedRole = widget.roles
-            .firstWhere((r) => r.id == widget.user.role);
+        _selectedRole =
+            widget.roles.firstWhere((r) => r.id == widget.user.role);
       } catch (_) {
         // role id not found in list — default to first role
         _selectedRole = widget.roles.first;
@@ -1116,18 +1156,20 @@ class _EditUserModalState extends State<_EditUserModal> {
 
   @override
   void dispose() {
-    _fn.dispose(); _ln.dispose(); _ph.dispose();
-    _em.dispose(); _ad.dispose();
+    _fn.dispose();
+    _ln.dispose();
+    _ph.dispose();
+    _em.dispose();
+    _ad.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
     for (final e in {
       'First Name': _fn.text,
-      'Last Name':  _ln.text,
-      'Phone Number':      _ph.text,
-      'Email':      _em.text,
-      
+      'Last Name': _ln.text,
+      'Phone Number': _ph.text,
+      'Email': _em.text,
     }.entries) {
       if (e.value.trim().isEmpty) {
         showApiSnack(context, '${e.key} is required', isError: true);
@@ -1146,16 +1188,16 @@ class _EditUserModalState extends State<_EditUserModal> {
     setState(() => _saving = true);
 
     final updated = AppUser(
-      id:        widget.user.id,
+      id: widget.user.id,
       firstName: _fn.text.trim(),
-      lastName:  _ln.text.trim(),
-      gender:    _gender!,
-      dob:       _dob,
-      phone:     _ph.text.trim(),
-      email:     _em.text.trim(),
-      role:      _selectedRole!.id,   // ✅ send ObjectId
-      status:    _status,
-      address:   _ad.text.trim(),
+      lastName: _ln.text.trim(),
+      gender: _gender!,
+      dob: _dob,
+      phone: _ph.text.trim(),
+      email: _em.text.trim(),
+      role: _selectedRole!.id, // ✅ send ObjectId
+      status: _status,
+      address: _ad.text.trim(),
     );
 
     // BUG FIX: was hardcoded `final err = "err"` — now actually calls cubit
@@ -1228,8 +1270,7 @@ class _EditUserModalState extends State<_EditUserModal> {
     if (_pickedImageBytes != null) {
       provider = MemoryImage(_pickedImageBytes!) as ImageProvider<Object>;
     } else if (_pickedImagePath != null) {
-      provider =
-          FileImage(File(_pickedImagePath!)) as ImageProvider<Object>;
+      provider = FileImage(File(_pickedImagePath!)) as ImageProvider<Object>;
     } else if (existingUrl != null) {
       provider = NetworkImage(existingUrl) as ImageProvider<Object>;
     }
@@ -1283,112 +1324,116 @@ class _EditUserModalState extends State<_EditUserModal> {
         initialChildSize: 0.92,
         maxChildSize: 0.97,
         minChildSize: 0.5,
-        builder: (_, ctrl) => Container(
-          decoration: const BoxDecoration(
+        builder: (_, ctrl) => Scaffold(
+          backgroundColor: Colors.transparent,
+          body: Container(
+            decoration: const BoxDecoration(
               color: AppColors.surface,
-              borderRadius:
-                  BorderRadius.vertical(top: Radius.circular(24))),
-          child: Column(children: [
-            _sheetHandle(),
-            _sheetHeader(ctx, 'Edit User', isEdit: true),
-            const Divider(height: 1, color: AppColors.divider),
-            Expanded(
-              child: ListView(
-                  controller: ctrl,
-                  padding: const EdgeInsets.all(20),
-                  children: [
-                    _userImageUploadWidget(),
-                    const SizedBox(height: 18),
-                    Row(children: [
-                      Expanded(
-                          child: CrmTextField(
-                              label: 'First Name',
-                              required: true,
-                              hint: 'Enter first name',
-                              controller: _fn)),
-                      const SizedBox(width: 12),
-                      Expanded(
-                          child: CrmTextField(
-                              label: 'Last Name',
-                              required: true,
-                              hint: 'Enter last name',
-                              controller: _ln)),
-                    ]),
-                    const SizedBox(height: 16),
-                    Row(children: [
-                      Expanded(
-                        child: CrmDropdown(
-                          label: 'Gender',
-                          required: true,
-                          value: _gender,
-                          items: AppConstants.genders,
-                          hint: 'Select Gender',
-                          onChanged: (v) => setState(() => _gender = v),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(child: _dobPicker(ctx)),
-                    ]),
-                    const SizedBox(height: 16),
-                    CrmTextField(
-                        label: 'Phone',
-                        required: true,
-                        hint: 'enter phone number',
-                        controller: _ph,
-                        keyboardType: TextInputType.phone),
-                    const SizedBox(height: 16),
-                    CrmTextField(
-                        label: 'Email',
-                        required: true,
-                        hint: 'Enter email address',
-                        controller: _em,
-                        keyboardType: TextInputType.emailAddress),
-                    const SizedBox(height: 16),
-                    CrmTextField(
-                        label: 'Address',
-                        hint: 'Enter address',
-                        controller: _ad,
-                        maxLines: 2),
-                    const SizedBox(height: 16),
-                    Row(children: [
-                      Expanded(
-                        child: CrmDropdown(
-                          label: 'Role',
-                          required: true,
-                          value: _selectedRole?.name,
-                          items:
-                              widget.roles.map((r) => r.name).toList(),
-                          hint: 'Select Role',
-                          onChanged: (v) {
-                            setState(() {
-                              _selectedRole = widget.roles
-                                  .firstWhere((r) => r.name == v);
-                            });
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: CrmDropdown(
-                          label: 'Status',
-                          value: _status,
-                          items: AppConstants.userStatuses,
-                          onChanged: (v) =>
-                              setState(() => _status = v ?? 'Active'),
-                        ),
-                      ),
-                    ]),
-                    const SizedBox(height: 28),
-                    FormActionButtons(
-                      onCancel: () => Navigator.pop(ctx),
-                      onSubmit: _submit,
-                      submitLabel: 'Update User',
-                      isLoading: _saving,
-                    ),
-                    const SizedBox(height: 20),
-                  ]),
+              borderRadius: BorderRadius.vertical(
+                top: Radius.circular(24),
+              ),
             ),
-          ]),
+            child: Column(children: [
+              _sheetHandle(),
+              _sheetHeader(ctx, 'Edit User', isEdit: true),
+              const Divider(height: 1, color: AppColors.divider),
+              Expanded(
+                child: ListView(
+                    controller: ctrl,
+                    padding: const EdgeInsets.all(20),
+                    children: [
+                      _userImageUploadWidget(),
+                      const SizedBox(height: 18),
+                      Row(children: [
+                        Expanded(
+                            child: CrmTextField(
+                                label: 'First Name',
+                                required: true,
+                                hint: 'Enter first name',
+                                controller: _fn)),
+                        const SizedBox(width: 12),
+                        Expanded(
+                            child: CrmTextField(
+                                label: 'Last Name',
+                                required: true,
+                                hint: 'Enter last name',
+                                controller: _ln)),
+                      ]),
+                      const SizedBox(height: 16),
+                      Row(children: [
+                        Expanded(
+                          child: CrmDropdown(
+                            label: 'Gender',
+                            required: true,
+                            value: _gender,
+                            items: AppConstants.genders,
+                            hint: 'Select Gender',
+                            onChanged: (v) => setState(() => _gender = v),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(child: _dobPicker(ctx)),
+                      ]),
+                      const SizedBox(height: 16),
+                      CrmTextField(
+                          label: 'Phone',
+                          required: true,
+                          hint: 'enter phone number',
+                          controller: _ph,
+                          keyboardType: TextInputType.phone),
+                      const SizedBox(height: 16),
+                      CrmTextField(
+                          label: 'Email',
+                          required: true,
+                          hint: 'Enter email address',
+                          controller: _em,
+                          keyboardType: TextInputType.emailAddress),
+                      const SizedBox(height: 16),
+                      CrmTextField(
+                          label: 'Address',
+                          hint: 'Enter address',
+                          controller: _ad,
+                          maxLines: 2),
+                      const SizedBox(height: 16),
+                      Row(children: [
+                        Expanded(
+                          child: CrmDropdown(
+                            label: 'Role',
+                            required: true,
+                            value: _selectedRole?.name,
+                            items: widget.roles.map((r) => r.name).toList(),
+                            hint: 'Select Role',
+                            onChanged: (v) {
+                              setState(() {
+                                _selectedRole =
+                                    widget.roles.firstWhere((r) => r.name == v);
+                              });
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: CrmDropdown(
+                            label: 'Status',
+                            value: _status,
+                            items: AppConstants.userStatuses,
+                            onChanged: (v) =>
+                                setState(() => _status = v ?? 'Active'),
+                          ),
+                        ),
+                      ]),
+                      const SizedBox(height: 28),
+                      FormActionButtons(
+                        onCancel: () => Navigator.pop(ctx),
+                        onSubmit: _submit,
+                        submitLabel: 'Update User',
+                        isLoading: _saving,
+                      ),
+                      const SizedBox(height: 20),
+                    ]),
+              ),
+            ]),
+          ),
         ),
       );
 
@@ -1410,16 +1455,15 @@ class _EditUserModalState extends State<_EditUserModal> {
                 lastDate: DateTime.now(),
                 builder: (c, child) => Theme(
                   data: Theme.of(c).copyWith(
-                      colorScheme: const ColorScheme.light(
-                          primary: AppColors.primary)),
+                      colorScheme:
+                          const ColorScheme.light(primary: AppColors.primary)),
                   child: child!,
                 ),
               );
               if (picked != null) setState(() => _dob = picked);
             },
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 14, vertical: 14),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
               decoration: BoxDecoration(
                   color: AppColors.surface,
                   borderRadius: BorderRadius.circular(12),
@@ -1484,8 +1528,8 @@ class _CreateRoleModalState extends State<_CreateRoleModal> {
     setState(() => _saving = true);
     final cubit = context.read<UserRoleCubit>();
     final role = AppRole(
-      id:          widget.role?.id ?? '',
-      name:        _nameCtrl.text.trim(),
+      id: widget.role?.id ?? '',
+      name: _nameCtrl.text.trim(),
       permissions: _perms.toList(),
     );
     final err = widget.role == null
@@ -1501,130 +1545,132 @@ class _CreateRoleModalState extends State<_CreateRoleModal> {
   }
 
   @override
-  Widget build(BuildContext ctx) => Container(
-        decoration: const BoxDecoration(
+  Widget build(BuildContext ctx) => Scaffold(
+        resizeToAvoidBottomInset: true,
+        backgroundColor: AppColors.surface,
+        body: Container(
+          decoration: const BoxDecoration(
             color: AppColors.surface,
-            borderRadius:
-                BorderRadius.vertical(top: Radius.circular(24))),
-        padding:
-            EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          _sheetHandle(),
-          _sheetHeader(
-            ctx,
-            widget.role == null ? 'Create Role' : 'Edit Role',
-            isEdit: widget.role != null,
-          ),
-          const Divider(height: 1, color: AppColors.divider),
-          Flexible(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    CrmTextField(
-                        label: 'Role Name',
-                        required: true,
-                        hint: 'e.g. Sales Manager',
-                        controller: _nameCtrl),
-                    const SizedBox(height: 20),
-                    const Text('Permissions',
-                        style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textPrimary)),
-                    const SizedBox(height: 4),
-                    const Text('Select modules this role can access',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textSecondary)),
-                    const SizedBox(height: 14),
-                    Container(
-                      decoration: BoxDecoration(
-                          color: AppColors.background,
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: AppColors.border)),
-                      child: Column(
-                        children: AppConstants.permissions
-                            .asMap()
-                            .entries
-                            .map((entry) {
-                          final isLast = entry.key ==
-                              AppConstants.permissions.length - 1;
-                          final perm    = entry.value;
-                          final checked = _perms.contains(perm);
-                          return Column(children: [
-                            InkWell(
-                              onTap: () => setState(() => checked
-                                  ? _perms.remove(perm)
-                                  : _perms.add(perm)),
-                              borderRadius: BorderRadius.circular(14),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 16, vertical: 12),
-                                child: Row(children: [
-                                  _permIcon(perm),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                      child: Text(perm,
-                                          style: const TextStyle(
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.w500,
-                                              color:
-                                                  AppColors.textPrimary))),
-                                  Checkbox(
-                                    value: checked,
-                                    activeColor: AppColors.primary,
-                                    shape: RoundedRectangleBorder(
-                                        borderRadius:
-                                            BorderRadius.circular(4)),
-                                    onChanged: (v) => setState(() => v!
-                                        ? _perms.add(perm)
-                                        : _perms.remove(perm)),
-                                  ),
-                                ]),
-                              ),
-                            ),
-                            if (!isLast)
-                              const Divider(
-                                  height: 1,
-                                  color: AppColors.divider,
-                                  indent: 16,
-                                  endIndent: 16),
-                          ]);
-                        }).toList(),
-                      ),
-                    ),
-                    const SizedBox(height: 28),
-                    FormActionButtons(
-                      onCancel: () => Navigator.pop(ctx),
-                      onSubmit: _submit,
-                      submitLabel: widget.role == null
-                          ? 'Create Role'
-                          : 'Update Role',
-                      isLoading: _saving,
-                    ),
-                    const SizedBox(height: 16),
-                  ]),
+            borderRadius: BorderRadius.vertical(
+              top: Radius.circular(24),
             ),
           ),
-        ]),
+          padding: const EdgeInsets.only(bottom: 0),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            _sheetHandle(),
+            _sheetHeader(
+              ctx,
+              widget.role == null ? 'Create Role' : 'Edit Role',
+              isEdit: widget.role != null,
+            ),
+            const Divider(height: 1, color: AppColors.divider),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      CrmTextField(
+                          label: 'Role Name',
+                          required: true,
+                          hint: 'e.g. Sales Manager',
+                          controller: _nameCtrl),
+                      const SizedBox(height: 20),
+                      const Text('Permissions',
+                          style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textPrimary)),
+                      const SizedBox(height: 4),
+                      const Text('Select modules this role can access',
+                          style: TextStyle(
+                              fontSize: 12, color: AppColors.textSecondary)),
+                      const SizedBox(height: 14),
+                      Container(
+                        decoration: BoxDecoration(
+                            color: AppColors.background,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: AppColors.border)),
+                        child: Column(
+                          children: AppConstants.permissions
+                              .asMap()
+                              .entries
+                              .map((entry) {
+                            final isLast = entry.key ==
+                                AppConstants.permissions.length - 1;
+                            final perm = entry.value;
+                            final checked = _perms.contains(perm);
+                            return Column(children: [
+                              InkWell(
+                                onTap: () => setState(() => checked
+                                    ? _perms.remove(perm)
+                                    : _perms.add(perm)),
+                                borderRadius: BorderRadius.circular(14),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 12),
+                                  child: Row(children: [
+                                    _permIcon(perm),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                        // .\\ .//
+                                        child: Text(perm,
+                                            style: const TextStyle(
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.w500,
+                                                color: AppColors.textPrimary))),
+                                    Checkbox(
+                                      value: checked,
+                                      activeColor: AppColors.primary,
+                                      shape: RoundedRectangleBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(4)),
+                                      onChanged: (v) => setState(() => v!
+                                          ? _perms.add(perm)
+                                          : _perms.remove(perm)),
+                                    ),
+                                  ]),
+                                ),
+                              ),
+                              if (!isLast)
+                                const Divider(
+                                    height: 1,
+                                    color: AppColors.divider,
+                                    indent: 16,
+                                    endIndent: 16),
+                            ]);
+                          }).toList(),
+                        ),
+                      ),
+                      const SizedBox(height: 28),
+                      FormActionButtons(
+                        onCancel: () => Navigator.pop(ctx),
+                        onSubmit: _submit,
+                        submitLabel:
+                            widget.role == null ? 'Create Role' : 'Update Role',
+                        isLoading: _saving,
+                      ),
+                      const SizedBox(height: 16),
+                    ]),
+              ),
+            ),
+          ]),
+        ),
       );
 
   Widget _permIcon(String perm) {
     final d = switch (perm) {
-      'Dashboard'     => (Icons.dashboard_outlined,       AppColors.primary),
-      'Leads'         => (Icons.people_outline,           AppColors.success),
-      'Deals'         => (Icons.handshake_outlined,       AppColors.purple),
-      'Invoices'      => (Icons.receipt_outlined,         AppColors.warning),
+      'Dashboard' => (Icons.dashboard_outlined, AppColors.primary),
+      'Leads' => (Icons.people_outline, AppColors.success),
+      'Deals' => (Icons.handshake_outlined, AppColors.purple),
+      'Invoices' => (Icons.receipt_outlined, AppColors.warning),
       'Users & Roles' => (Icons.manage_accounts_outlined, AppColors.danger),
-      _               => (Icons.circle_outlined,          AppColors.textSecondary),
+      _ => (Icons.circle_outlined, AppColors.textSecondary),
     };
     return Container(
       padding: const EdgeInsets.all(7),
       decoration: BoxDecoration(
-          color: d.$2.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(8)),
+          color: d.$2.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
       child: Icon(d.$1, size: 16, color: d.$2),
     );
   }
@@ -1641,8 +1687,7 @@ Widget _sheetHandle() => Container(
           color: AppColors.border, borderRadius: BorderRadius.circular(2)),
     );
 
-Widget _sheetHeader(BuildContext ctx, String title,
-        {bool isEdit = false}) =>
+Widget _sheetHeader(BuildContext ctx, String title, {bool isEdit = false}) =>
     Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
       child: Row(children: [
@@ -1653,12 +1698,9 @@ Widget _sheetHeader(BuildContext ctx, String title,
                 color: AppColors.textPrimary)),
         const SizedBox(width: 8),
         Container(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
           decoration: BoxDecoration(
-              color: isEdit
-                  ? AppColors.warningLight
-                  : AppColors.primaryLight,
+              color: isEdit ? AppColors.warningLight : AppColors.primaryLight,
               borderRadius: BorderRadius.circular(6)),
         ),
         const Spacer(),

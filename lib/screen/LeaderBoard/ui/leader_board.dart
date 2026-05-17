@@ -1,112 +1,160 @@
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:crm_app/screen/LeaderBoard/cubit/leaderBoard_cubit.dart';
 import 'package:crm_app/screen/LeaderBoard/modal/leaderBoard_modal.dart';
 import 'package:crm_app/screen/LeaderBoard/utils/utils.dart';
+import 'package:crm_app/screen/LeaderBoard/utils/utils.dart' as AppColors;
 import 'package:flutter/material.dart';
 
 class LeaderboardPage extends StatefulWidget {
-
   final String authToken;
- 
+
   const LeaderboardPage({super.key, required this.authToken});
- 
+
   @override
   State<LeaderboardPage> createState() => _LeaderboardPageState();
 }
- 
+
 class _LeaderboardPageState extends State<LeaderboardPage> {
   // ── Filter state ──
-  int _filterIndex = 1; // 0=Single Day  1=Date Range  2=All Time
+  int _filterIndex = 2; // 0=Single Day  1=Date Range  2=All Time
   DateTime? _startDate;
   DateTime? _endDate;
- 
+
   // ── Search ──
   final _searchCtrl = TextEditingController();
   String _searchQuery = '';
- 
+
   // ── Async state ──
   bool _isLoading = false;
   String? _error;
   LeaderboardResponse? _response;
- 
+
+  // Pagination
+  static const int _kPageSize = 10;
+  int _currentPage = 1;
+
   // ─────────────────────────────────────────────────────────────────────────────
- 
+
   @override
   void initState() {
     super.initState();
-    _loadData();
+    _loadData(); // loads "All Time" by default (filterIndex = 2)
+    _watchInternet();
   }
- 
+
   @override
   void dispose() {
     _searchCtrl.dispose();
     super.dispose();
   }
- 
-  // ── Data ──────────────────────────────────────────────────────────────────
- 
-  Future<void> _loadData() async {
+
+  List<SalesPerson> _paginate(List<SalesPerson> filtered) {
+    final start = (_currentPage - 1) * _kPageSize;
+
+    if (start >= filtered.length) return [];
+
+    final end = (start + _kPageSize).clamp(0, filtered.length);
+
+    return filtered.sublist(start, end);
+  }
+  // ── Data ─────────────────────────────────────────────────────────────────────
+
+  Future<void> _loadData({bool forceRefresh = false}) async {
+    // Guard: don't fetch if required dates are missing
+    if (_filterIndex == 0 && _startDate == null)
+      return; // Single Day needs a date
+    if (_filterIndex == 1 && _startDate == null)
+      return; // Range needs at least start
+
     setState(() {
       _isLoading = true;
       _error = null;
     });
+
     try {
       String? start, end, filterType;
- 
+
       switch (_filterIndex) {
         case 0: // Single Day
-          if (_startDate != null) {
-            start = _startDate!.toIso8601String();
-            end = _startDate!.toIso8601String();
-            filterType = 'single';
-          }
+          start = _startDate!.toIso8601String().split('T').first;
+          end = start;
+          filterType = 'single';
           break;
         case 1: // Date Range
-          if (_startDate != null) start = _startDate!.toIso8601String();
-          if (_endDate != null) end = _endDate!.toIso8601String();
+          start = _startDate!.toIso8601String().split('T').first;
+          end = _endDate?.toIso8601String().split('T').first ?? start;
           filterType = 'range';
           break;
         case 2: // All Time
           filterType = 'allTime';
           break;
       }
- 
+
       final result = await LeaderboardService.fetchLeaderboard(
         token: widget.authToken,
         startDate: start,
         endDate: end,
         filterType: filterType,
+        forceRefresh: forceRefresh,
       );
-      setState(() => _response = result);
+
+      if (mounted) setState(() => _response = result);
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = e.toString());
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
- 
-  // ── Derived ───────────────────────────────────────────────────────────────
- 
-  List<SalesPerson> get _filtered {
-    final list = _response?.data ?? [];
-    if (_searchQuery.isEmpty) return list;
-    final q = _searchQuery.toLowerCase();
-    return list
-        .where((p) =>
-            p.name.toLowerCase().contains(q) ||
-            p.email.toLowerCase().contains(q))
-        .toList();
+
+  // ── Derived ───────────────────────────────────────────────────────────────────
+
+List<SalesPerson> get _filtered {
+  final role = _response?.userRole ?? '';
+  List<SalesPerson> list = _response?.data ?? [];
+
+  // If salesman → show only current user
+  if (role != 'admin') {
+    list = list.where((p) => p.isCurrentUser == true).toList();
   }
- 
+
+  if (_searchQuery.isEmpty) return list;
+
+  final q = _searchQuery.toLowerCase();
+
+  return list.where((p) =>
+      p.name.toLowerCase().contains(q) ||
+      p.email.toLowerCase().contains(q),
+  ).toList();
+}
   // ─────────────────────────────────────────────────────────────────────────────
- 
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: bg,
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+      floatingActionButton: _filtered.isNotEmpty
+          ? _PaginationBar(
+              page: _currentPage,
+              totalPages: (_filtered.length / _kPageSize).ceil().clamp(1, 999),
+              totalItems: _filtered.length,
+              pageSize: _kPageSize,
+              onPrev: _currentPage > 1
+                  ? () => setState(() {
+                        _currentPage--;
+                      })
+                  : null,
+              onNext: _currentPage < (_filtered.length / _kPageSize).ceil()
+                  ? () => setState(() {
+                        _currentPage++;
+                      })
+                  : null,
+            )
+          : null,
       body: SafeArea(
         child: RefreshIndicator(
           color: orange,
-          onRefresh: _loadData,
+          onRefresh: () => _loadData(forceRefresh: true),
           child: CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
@@ -124,51 +172,59 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
       ),
     );
   }
- 
+
   Widget _buildBody() {
+    final members = _paginate(_filtered);
+
     if (_isLoading) {
       return const SliverFillRemaining(
         hasScrollBody: false,
-        child: Center(child: CircularProgressIndicator(color: orange)),
+        child: Center(
+          child: CircularProgressIndicator(color: orange),
+        ),
       );
     }
+
     if (_error != null) {
       return SliverFillRemaining(
-          hasScrollBody: false, child: _buildError());
+        hasScrollBody: false,
+        child: _buildError(),
+      );
     }
-    if (_filtered.isEmpty) {
+
+    if (members.isEmpty) {
       return const SliverFillRemaining(
-          hasScrollBody: false, child: _EmptyState());
+        hasScrollBody: false,
+        child: _EmptyState(),
+      );
     }
+
     return SliverList(
       delegate: SliverChildBuilderDelegate(
-        (ctx, i) => _buildCard(_filtered[i], i + 1),
-        childCount: _filtered.length,
+        (ctx, i) => _buildCard(
+          members[i],
+          ((_currentPage - 1) * _kPageSize) + i + 1,
+        ),
+        childCount: members.length,
       ),
     );
   }
- 
-  // ── Header ────────────────────────────────────────────────────────────────
- 
+  // ── Header ────────────────────────────────────────────────────────────────────
+
   Widget _buildHeader() {
     final role = _response?.userRole ?? '';
     final dateLabel = _response?.dateRange.formatted ?? '';
- 
+
     return Container(
       color: surface,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       child: Row(
         children: [
           IconButton(
-  onPressed: () {
-    Navigator.pop(context); // closes current screen
-  },
-  icon: const Icon(
-    Icons.arrow_back_rounded, // or Icons.arrow_back_ios_new_rounded
-    color: textPrimary,
-    size: 24,
-  ),
-),
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.arrow_back_rounded,
+                color: textPrimary, size: 24),
+          ),
           Container(
             width: 44,
             height: 44,
@@ -228,23 +284,23 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
       ),
     );
   }
- 
+
   Widget _pill(String label, {required Color bg, required Color fg}) =>
       Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-            color: bg, borderRadius: BorderRadius.circular(20)),
+        decoration:
+            BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
         child: Text(label,
             style: TextStyle(
                 fontSize: 10, fontWeight: FontWeight.w600, color: fg)),
       );
- 
-  // ── KPI Grid ──────────────────────────────────────────────────────────────
- 
+
+  // ── KPI Grid ──────────────────────────────────────────────────────────────────
+
   Widget _buildKpiGrid() {
     final s = _response?.stats;
     final dateLabel = _response?.dateRange.formatted ?? '—';
- 
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: GridView.count(
@@ -255,26 +311,33 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
         crossAxisSpacing: 12,
         childAspectRatio: 1.55,
         children: [
-          _kpiCard('Active Salespeople',
+          _kpiCard(
+              'Active Salespeople',
               s != null ? '${s.activeSalespeople}' : '—',
               s != null ? 'Out of ${s.totalSalespeople} total' : '—',
-              Icons.group_outlined, orange),
-          _kpiCard('Conversion Rate',
+              Icons.group_outlined,
+              orange),
+          _kpiCard(
+              'Conversion Rate',
               s != null ? '${s.avgConversionRate.toStringAsFixed(1)}%' : '—',
-              dateLabel, Icons.gps_fixed_rounded, green),
-          _kpiCard('Total Leads',
-              s != null ? '${s.totalLeads}' : '—',
+              dateLabel,
+              Icons.gps_fixed_rounded,
+              green),
+          _kpiCard('Total Leads', s != null ? '${s.totalLeads}' : '—',
               dateLabel, Icons.radar_rounded, const Color(0xFF06B6D4)),
-          _kpiCard('Converted Leads',
+          _kpiCard(
+              'Converted Leads',
               s != null ? '${s.totalConvertedLeads}' : '—',
-              'Deals with Lead ID', Icons.trending_up_rounded, purple),
+              'Deals with Lead ID',
+              Icons.trending_up_rounded,
+              purple),
         ],
       ),
     );
   }
- 
-  Widget _kpiCard(String title, String value, String sub,
-      IconData icon, Color accent) {
+
+  Widget _kpiCard(
+      String title, String value, String sub, IconData icon, Color accent) {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -328,9 +391,9 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
       ),
     );
   }
- 
-  // ── Section Title ─────────────────────────────────────────────────────────
- 
+
+  // ── Section Title ─────────────────────────────────────────────────────────────
+
   Widget _buildSectionTitle() => Padding(
         padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
         child: Row(
@@ -344,14 +407,13 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                     letterSpacing: -0.3)),
             if (_response != null)
               Text('${_filtered.length} members',
-                  style: const TextStyle(
-                      fontSize: 12, color: textSecondary)),
+                  style: const TextStyle(fontSize: 12, color: textSecondary)),
           ],
         ),
       );
- 
-  // ── Filter Row ────────────────────────────────────────────────────────────
- 
+
+  // ── Filter Row ────────────────────────────────────────────────────────────────
+
   Widget _buildFilterRow() {
     final labels = ['Single Day', 'Date Range', 'All Time'];
     return Padding(
@@ -370,12 +432,12 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                   if (_filterIndex == i) return;
                   setState(() {
                     _filterIndex = i;
-                    if (i == 2) {
-                      _startDate = null;
-                      _endDate = null;
-                    }
+                    // Reset dates when switching filter type
+                    _startDate = null;
+                    _endDate = null;
                   });
-                  _loadData();
+                  // All Time loads immediately; others wait for date selection
+                  if (i == 2) _loadData();
                 },
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
@@ -396,9 +458,8 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                   child: Text(labels[i],
                       style: TextStyle(
                           fontSize: 12,
-                          fontWeight: selected
-                              ? FontWeight.w700
-                              : FontWeight.w500,
+                          fontWeight:
+                              selected ? FontWeight.w700 : FontWeight.w500,
                           color: selected ? orange : textSecondary)),
                 ),
               ),
@@ -408,61 +469,92 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
       ),
     );
   }
- 
-  // ── Date Row ──────────────────────────────────────────────────────────────
- 
+
+  // ── Date Row ──────────────────────────────────────────────────────────────────
+
   Widget _buildDateRow() {
+    // Hide date pickers for "All Time"
     if (_filterIndex == 2) return const SizedBox.shrink();
-    final showEnd = _filterIndex == 1;
- 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-      child: Row(
-        children: [
-          Expanded(
-            child: GestureDetector(
-              onTap: () => _pickDate(true),
-              child: _dateField(_startDate != null
-                  ? '${_startDate!.month}/${_startDate!.day}/${_startDate!.year}'
-                  : 'Start date'),
+
+    final showEnd = _filterIndex == 1; // Date Range needs end date
+    final needsEndDate = showEnd && _startDate != null && _endDate == null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => _pickDate(true),
+                  child: _dateField(
+                    _startDate != null
+                        ? '${_startDate!.month}/${_startDate!.day}/${_startDate!.year}'
+                        : (_filterIndex == 0 ? 'Pick a day' : 'Start date'),
+                    highlight: _startDate != null,
+                  ),
+                ),
+              ),
+              if (showEnd) ...[
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8),
+                  child: Text('→',
+                      style: TextStyle(color: textSecondary, fontSize: 16)),
+                ),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => _pickDate(false),
+                    child: _dateField(
+                      _endDate != null
+                          ? '${_endDate!.month}/${_endDate!.day}/${_endDate!.year}'
+                          : 'End date',
+                      highlight: _endDate != null,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        // Hint shown while waiting for end date
+        if (needsEndDate)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 4, 16, 0),
+            child: Text(
+              'Now pick an end date to apply the filter',
+              style: TextStyle(fontSize: 11, color: orange),
             ),
           ),
-          if (showEnd) ...[
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 8),
-              child: Text('→',
-                  style: TextStyle(color: textSecondary, fontSize: 16)),
-            ),
-            Expanded(
-              child: GestureDetector(
-                onTap: () => _pickDate(false),
-                child: _dateField(_endDate != null
-                    ? '${_endDate!.month}/${_endDate!.day}/${_endDate!.year}'
-                    : 'End date'),
-              ),
-            ),
-          ],
-        ],
-      ),
+      ],
     );
   }
- 
-  Widget _dateField(String label) => Container(
+
+  Widget _dateField(String label, {bool highlight = false}) => Container(
         height: 38,
         padding: const EdgeInsets.symmetric(horizontal: 10),
         decoration: BoxDecoration(
-            color: surface,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFFE5E7EB))),
+          color: highlight ? const Color(0xFFFFF7ED) : surface,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: highlight ? orange : const Color(0xFFE5E7EB),
+          ),
+        ),
         child: Row(children: [
-          const Icon(Icons.calendar_today_outlined,
-              size: 14, color: textSecondary),
+          Icon(Icons.calendar_today_outlined,
+              size: 14, color: highlight ? orange : textSecondary),
           const SizedBox(width: 6),
           Text(label,
-              style: const TextStyle(fontSize: 12, color: textSecondary)),
+              style: TextStyle(
+                  fontSize: 12,
+                  color: highlight ? orange : textSecondary,
+                  fontWeight: highlight ? FontWeight.w600 : FontWeight.normal)),
         ]),
       );
- 
+
+  // ── Date Picker ───────────────────────────────────────────────────────────────
+
   Future<void> _pickDate(bool isStart) async {
     final picked = await showDatePicker(
       context: context,
@@ -470,19 +562,25 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
       firstDate: DateTime(2020),
       lastDate: DateTime(2030),
       builder: (ctx, child) => Theme(
-        data: Theme.of(ctx).copyWith(
-            colorScheme: const ColorScheme.light(primary: orange)),
+        data: Theme.of(ctx)
+            .copyWith(colorScheme: const ColorScheme.light(primary: orange)),
         child: child!,
       ),
     );
-    if (picked != null) {
-      setState(() => isStart ? _startDate = picked : _endDate = picked);
-      _loadData();
-    }
+    if (picked == null) return;
+
+    setState(() => isStart ? _startDate = picked : _endDate = picked);
+
+    // Single Day  → load immediately after picking
+    // Date Range  → load only when BOTH dates are selected
+    final shouldLoad = _filterIndex == 0 ||
+        (_filterIndex == 1 && _startDate != null && _endDate != null);
+
+    if (shouldLoad) _loadData();
   }
- 
-  // ── Search ────────────────────────────────────────────────────────────────
- 
+
+  // ── Search ────────────────────────────────────────────────────────────────────
+
   Widget _buildSearch() => Padding(
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
         child: Row(
@@ -511,7 +609,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
             ),
             const SizedBox(width: 8),
             GestureDetector(
-              onTap: _loadData,
+              onTap: () => _loadData(forceRefresh: true),
               child: Container(
                 width: 40,
                 height: 40,
@@ -531,9 +629,9 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
           ],
         ),
       );
- 
-  // ── Error State ───────────────────────────────────────────────────────────
- 
+
+  // ── Error State ───────────────────────────────────────────────────────────────
+
   Widget _buildError() => Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
@@ -548,8 +646,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                       fontWeight: FontWeight.w700, color: textPrimary)),
               const SizedBox(height: 6),
               Text(_error ?? '',
-                  style: const TextStyle(
-                      fontSize: 12, color: textSecondary),
+                  style: const TextStyle(fontSize: 12, color: textSecondary),
                   textAlign: TextAlign.center),
               const SizedBox(height: 16),
               ElevatedButton.icon(
@@ -558,7 +655,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10))),
-                onPressed: _loadData,
+                onPressed: () => _loadData(forceRefresh: true),
                 icon: const Icon(Icons.refresh, size: 16),
                 label: const Text('Retry'),
               ),
@@ -566,9 +663,9 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
           ),
         ),
       );
- 
-  // ── Salesperson Card ──────────────────────────────────────────────────────
- 
+
+  // ── Salesperson Card ──────────────────────────────────────────────────────────
+
   Widget _buildCard(SalesPerson p, int rank) => Container(
         margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
         decoration: BoxDecoration(
@@ -589,7 +686,6 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Top row
               Row(
                 children: [
                   _rankBadge(rank),
@@ -598,9 +694,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                     radius: 16,
                     backgroundColor: _avatarColor(p.avatar),
                     child: Text(
-                      p.avatar.isNotEmpty
-                          ? p.avatar[0].toUpperCase()
-                          : '?',
+                      p.avatar.isNotEmpty ? p.avatar[0].toUpperCase() : '?',
                       style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w700,
@@ -629,8 +723,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                                     horizontal: 5, vertical: 1),
                                 decoration: BoxDecoration(
                                     color: orange.withOpacity(0.15),
-                                    borderRadius:
-                                        BorderRadius.circular(4)),
+                                    borderRadius: BorderRadius.circular(4)),
                                 child: const Text('You',
                                     style: TextStyle(
                                         fontSize: 9,
@@ -655,38 +748,31 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                   _statusBadge(p),
                 ],
               ),
- 
               const SizedBox(height: 14),
               const Divider(height: 1, color: Color(0xFFF3F4F6)),
               const SizedBox(height: 12),
- 
-              // Stats
               Row(
                 children: [
                   _stat('Conversion', p.conversionDisplay),
                   _stat('Total Leads', '${p.totalLeads}'),
                   _stat('Converted', '${p.convertedLeads}',
-                      valueColor:
-                          p.convertedLeads > 0 ? green : textPrimary),
-                  _stat('Work Hrs', p.workHours),
+                      valueColor: p.convertedLeads > 0 ? green : textPrimary),
+                  _stat('Work Hrs', p.workHours, isSmallValue: true),
                   _stat('Active Days', '${p.productiveDays}d'),
                 ],
               ),
- 
-              // Streak
               if (p.streak > 0) ...[
                 const SizedBox(height: 10),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 3),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
                       color: const Color(0xFFFFF3CD),
                       borderRadius: BorderRadius.circular(20)),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Text('🔥',
-                          style: TextStyle(fontSize: 11)),
+                      const Text('🔥', style: TextStyle(fontSize: 11)),
                       const SizedBox(width: 4),
                       Text('${p.streak} day streak',
                           style: const TextStyle(
@@ -697,8 +783,6 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                   ),
                 ),
               ],
- 
-              // Progress bar
               if (p.conversionRate > 0) ...[
                 const SizedBox(height: 10),
                 ClipRRect(
@@ -707,8 +791,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                     value: (p.conversionRate / 100).clamp(0.0, 1.0),
                     minHeight: 4,
                     backgroundColor: const Color(0xFFF3F4F6),
-                    valueColor:
-                        const AlwaysStoppedAnimation<Color>(green),
+                    valueColor: const AlwaysStoppedAnimation<Color>(green),
                   ),
                 ),
               ],
@@ -716,25 +799,35 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
           ),
         ),
       );
- 
+
   Color _avatarColor(String initial) {
     const colors = [
-      Color(0xFF7C3AED), Color(0xFF2563EB), Color(0xFF059669),
-      Color(0xFFDC2626), Color(0xFFD97706), Color(0xFF0891B2),
+      Color(0xFF7C3AED),
+      Color(0xFF2563EB),
+      Color(0xFF059669),
+      Color(0xFFDC2626),
+      Color(0xFFD97706),
+      Color(0xFF0891B2),
       Color(0xFFDB2777),
     ];
     if (initial.isEmpty) return colors[0];
     return colors[initial.codeUnitAt(0) % colors.length];
   }
- 
+
   Widget _rankBadge(int rank) {
     Color bg;
     Color fg = Colors.white;
-    if (rank == 1) bg = orange;
-    else if (rank == 2) bg = const Color(0xFF9CA3AF);
-    else if (rank == 3) bg = const Color(0xFFD97706);
-    else { bg = const Color(0xFFF3F4F6); fg = textSecondary; }
- 
+    if (rank == 1) {
+      bg = orange;
+    } else if (rank == 2) {
+      bg = const Color(0xFF9CA3AF);
+    } else if (rank == 3) {
+      bg = const Color(0xFFD97706);
+    } else {
+      bg = const Color(0xFFF3F4F6);
+      fg = textSecondary;
+    }
+
     return Container(
       width: 32,
       height: 32,
@@ -742,60 +835,87 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
           BoxDecoration(color: bg, borderRadius: BorderRadius.circular(9)),
       alignment: Alignment.center,
       child: Text('$rank',
-          style: TextStyle(
-              color: fg, fontWeight: FontWeight.w800, fontSize: 14)),
+          style:
+              TextStyle(color: fg, fontWeight: FontWeight.w800, fontSize: 14)),
     );
   }
- 
-  Widget _statusBadge(SalesPerson p) => Container(
-        padding:
-            const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: p.isActive
-              ? const Color(0xFFD1FAE5)
-              : const Color(0xFFF3F4F6),
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(p.statusIcon, style: const TextStyle(fontSize: 10)),
+
+  Widget _statusBadge(SalesPerson p) {
+    final bool isStar =
+        p.convertedLeads > 0 || p.conversionRate > 20 || p.productiveDays > 0;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: 10,
+        vertical: 4,
+      ),
+      decoration: BoxDecoration(
+        color: isStar ? const Color(0xFFFFF3CD) : const Color(0xFFF3F4F6),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isStar) ...[
+            const Text(
+              "⭐",
+              style: TextStyle(fontSize: 12),
+            ),
             const SizedBox(width: 4),
-            Text(p.isActive ? 'Active' : 'Inactive',
-                style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: p.isActive ? green : textSecondary)),
           ],
-        ),
-      );
- 
-  Widget _stat(String label, String value,
-          {Color valueColor = textPrimary}) =>
+          Text(
+            isStar ? "Star" : "Inactive",
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: isStar ? const Color(0xFF92400E) : textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _stat(
+    String label,
+    String value, {
+    Color valueColor = textPrimary,
+    bool isSmallValue = false,
+  }) =>
       Expanded(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(label,
-                style: const TextStyle(
-                    fontSize: 9, color: textSecondary),
+                style: const TextStyle(fontSize: 9, color: textSecondary),
                 maxLines: 1),
             const SizedBox(height: 2),
             Text(value,
                 style: TextStyle(
-                    fontSize: 13,
+                    fontSize: isSmallValue ? 7 : 13,
                     fontWeight: FontWeight.w700,
                     color: valueColor)),
           ],
         ),
       );
+
+  void _watchInternet() {
+    Connectivity().onConnectivityChanged.listen((result) {
+      if (result == ConnectivityResult.none && mounted) {
+        Navigator.of(context, rootNavigator: true).pushNamedAndRemoveUntil(
+          '/home',
+          (route) => false,
+        );
+      }
+    });
+  }
 }
- 
+
 // ─── Empty State ──────────────────────────────────────────────────────────────
- 
+
 class _EmptyState extends StatelessWidget {
   const _EmptyState();
- 
+
   @override
   Widget build(BuildContext context) => const Center(
         child: Padding(
@@ -815,4 +935,75 @@ class _EmptyState extends StatelessWidget {
           ),
         ),
       );
+}
+
+class _PaginationBar extends StatelessWidget {
+  final int page;
+  final int totalPages;
+  final int totalItems;
+  final int pageSize;
+  final VoidCallback? onPrev;
+  final VoidCallback? onNext;
+
+  const _PaginationBar({
+    required this.page,
+    required this.totalPages,
+    required this.totalItems,
+    required this.pageSize,
+    required this.onPrev,
+    required this.onNext,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final int start = totalItems == 0 ? 0 : ((page - 1) * pageSize) + 1;
+
+    final int end =
+        (page * pageSize) > totalItems ? totalItems : (page * pageSize);
+
+    return Container(
+      width: double.infinity,
+      margin: EdgeInsets.zero,
+      padding: const EdgeInsets.symmetric(
+        horizontal: 16,
+        vertical: 12,
+      ),
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        border: Border(
+          top: BorderSide(
+            color: Color(0xFFE2E8F0),
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          Text(
+            '$start-$end of $totalItems',
+            style: const TextStyle(
+              fontSize: 12,
+              color: AppColors.textSecondary,
+            ),
+          ),
+          const Spacer(),
+          IconButton(
+            onPressed: onPrev,
+            icon: const Icon(Icons.chevron_left_rounded),
+          ),
+          Text(
+            '$page / $totalPages',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          IconButton(
+            onPressed: onNext,
+            icon: const Icon(Icons.chevron_right_rounded),
+          ),
+        ],
+      ),
+    );
+  }
 }

@@ -2,12 +2,14 @@
 // ║           lib/screen/deals/cubit/deals_cubit.dart            ║
 // ╚══════════════════════════════════════════════════════════════╝
 
+import 'package:crm_app/screen/deals/modal/deal_modal.dart';
 import 'package:dio/dio.dart'
     show
         Dio,
         BaseOptions,
         InterceptorsWrapper,
         DioException,
+        DioExceptionType,
         MultipartFile,
         FormData,
         Options;
@@ -18,324 +20,39 @@ import 'package:flutter_bloc/flutter_bloc.dart' show Cubit;
 import 'package:shared_preferences/shared_preferences.dart'
     show SharedPreferences;
 import 'package:crm_app/utils/permission_helper.dart';
-
-// ══════════════════════════════════════════════════════════════
-// ATTACHMENT MODEL
-// ══════════════════════════════════════════════════════════════
-class Attachment {
-  final String name;
-  final String path;
-  final String type;
-  final int size;
-
-  const Attachment({
-    required this.name,
-    required this.path,
-    required this.type,
-    required this.size,
-  });
-
-  factory Attachment.fromJson(Map<String, dynamic> j) => Attachment(
-        name: j['name']?.toString() ?? '',
-        path: j['path']?.toString() ?? '',
-        type: j['type']?.toString() ?? '',
-        size: (j['size'] as num?)?.toInt() ?? 0,
-      );
-}
-
-// ══════════════════════════════════════════════════════════════
-// DEAL MODEL
-// ══════════════════════════════════════════════════════════════
-class Deal {
-  final String id;
-  final String name;
-  final String companyName;
-  final String phone;
-  final String email;
-  final String stage;
-  final String industry;
-  final String source;
-  final String clientType;
-  final String country;
-  final String address;
-  final String assignTo;
-  final String notes;
-  final String currency;
-  final String countryCode;
-  final double value;
-  final DateTime createdAt;
-  final DateTime? updatedAt;
-  final DateTime? lastReminderAt;
-  final String? followUpDate;
-  final String? followUpComment;
-  final List<FollowUpHistoryItem> followUpHistory;
-  final List<Attachment> attachments;
-
-  const Deal({
-    required this.id,
-    required this.name,
-    required this.companyName,
-    required this.phone,
-    required this.email,
-    required this.stage,
-    required this.industry,
-    required this.source,
-    required this.clientType,
-    required this.country,
-    required this.address,
-    required this.assignTo,
-    required this.notes,
-    required this.currency,
-    required this.countryCode,
-    required this.value,
-    required this.createdAt,
-    this.updatedAt,
-    this.lastReminderAt,
-    this.followUpDate,
-    this.followUpComment,
-    this.followUpHistory = const [],
-    this.attachments = const [],
-  });
-
-  static String _s(dynamic v, [String fb = '']) =>
-      v == null ? fb : v.toString();
-
-  static String _normalizeClientType(dynamic v) {
-    final raw = _s(v).trim().toUpperCase();
-    if (raw == 'B2B' || raw == 'B2C') return raw;
-    return '';
-  }
-
-  factory Deal.fromJson(Map<String, dynamic> j) {
-    // assignTo
-    String assignTo = '';
-    final raw = j['assignTo'] ?? j['assignedTo'];
-    if (raw is Map) {
-      assignTo = '${_s(raw['firstName'])} ${_s(raw['lastName'])}';
-    } else if (raw != null) {
-      assignTo = _s(raw);
-    }
-    assignTo = assignTo.trim();
-
-    // value — strip non-numeric chars before parsing
-    double val = 0;
-    final rv = j['value'] ?? j['dealValue'] ?? j['amount'];
-    if (rv != null) {
-      val = double.tryParse(
-              rv.toString().replaceAll(RegExp(r'[^\d.\-]'), '')) ??
-          0;
-    }
-
-    // currency — API sends bare "INR"; map to display string "₹ INR"
-    final rawCur = _s(j['currency'], 'INR')
-        .replaceAll(RegExp(r'[₹$€£¥\s]'), '')
-        .toUpperCase();
-    final currency = DealConstants.currencies.firstWhere(
-      (c) => c.toUpperCase().contains(rawCur),
-      orElse: () => '₹ INR',
-    );
-
-    // attachments
-    final List<Attachment> attachments = [];
-    final rawAttach = j['attachments'];
-    if (rawAttach is List) {
-      for (final a in rawAttach) {
-        if (a is Map) {
-          try {
-            attachments
-                .add(Attachment.fromJson(Map<String, dynamic>.from(a)));
-          } catch (_) {}
-        }
-      }
-    }
-
-    // followUpHistory — used by Deal details "Follow-up history" tab.
-    final List<FollowUpHistoryItem> followUpHistory = [];
-    final rawHistory =
-        j['followUpHistory'] ?? j['follow_up_history'] ?? j['followupHistory'];
-    if (rawHistory is List) {
-      for (final h in rawHistory) {
-        if (h is! Map) continue;
-        final m = Map<String, dynamic>.from(h);
-        followUpHistory.add(FollowUpHistoryItem(
-          date: DateTime.tryParse(m['date']?.toString() ?? ''),
-          followUpDate:
-              DateTime.tryParse(m['followUpDate']?.toString() ?? ''),
-          action: (m['action'] ?? m['status'] ?? '').toString(),
-          comment: (m['followUpComment'] ?? m['comment'] ?? '').toString(),
-        ));
-      }
-    }
-
-    return Deal(
-      id:              _s(j['_id'] ?? j['id']),
-      name:            _s(j['dealName'] ?? j['name']),
-      companyName:     _s(j['companyName'] ?? j['company']),
-      phone:           _s(j['phone'] ?? j['phoneNumber']),
-      email:           _s(j['email']),
-      stage:           _s(j['stage'], 'Qualification'),
-      industry:        _s(j['industry']),
-      source:          _s(j['source']),
-      clientType:      _normalizeClientType(j['clientType']),
-      country:         _s(j['country']),
-      address:         _s(j['address']),
-      assignTo:        assignTo,
-      notes:           _s(j['notes']),
-      currency:        currency,
-      countryCode:     _s(j['countryCode'], '+91 IN'),
-      value:           val,
-      createdAt:       j['createdAt'] != null
-          ? DateTime.tryParse(j['createdAt'].toString()) ?? DateTime.now()
-          : DateTime.now(),
-      updatedAt:       j['updatedAt'] != null
-          ? DateTime.tryParse(j['updatedAt'].toString())
-          : null,
-      lastReminderAt:  j['lastReminderAt'] != null
-          ? DateTime.tryParse(j['lastReminderAt'].toString())
-          : null,
-      followUpDate:    j['followUpDate']?.toString(),
-      followUpComment: j['followUpComment']?.toString(),
-      followUpHistory: followUpHistory,
-      attachments:     attachments,
-    );
-  }
-
-  Deal copyWith({
-    String? stage,
-    List<Attachment>? attachments,
-    List<FollowUpHistoryItem>? followUpHistory,
-  }) =>
-      Deal(
-        id:              id,
-        name:            name,
-        companyName:     companyName,
-        phone:           phone,
-        email:           email,
-        stage:           stage ?? this.stage,
-        industry:        industry,
-        source:          source,
-        clientType:      clientType,
-        country:         country,
-        address:         address,
-        assignTo:        assignTo,
-        notes:           notes,
-        currency:        currency,
-        countryCode:     countryCode,
-        value:           value,
-        createdAt:       createdAt,
-        updatedAt:       updatedAt,
-        lastReminderAt:  lastReminderAt,
-        followUpDate:    followUpDate,
-        followUpComment: followUpComment,
-        followUpHistory: followUpHistory ?? this.followUpHistory,
-        attachments:     attachments ?? this.attachments,
-      );
-
-  Map<String, dynamic> toPayload() => {
-        'dealName':    name,
-        'companyName': companyName,
-        'phoneNumber': phone,
-        'email':       email,
-        'stage':       stage,
-        'industry':    industry,
-        'source':      source,
-        'clientType':  clientType,
-        'country':     country,
-        'address':     address,
-        'notes':       notes,
-        'currency':    currency,
-        'countryCode': countryCode,
-        'value':       value,
-      };
-}
-
-class FollowUpHistoryItem {
-  final DateTime? date; // when the action happened
-  final DateTime? followUpDate; // scheduled datetime
-  final String action; // e.g. "Scheduled", "Completed"
-  final String comment;
-
-  const FollowUpHistoryItem({
-    this.date,
-    this.followUpDate,
-    required this.action,
-    required this.comment,
-  });
-}
-
-// ══════════════════════════════════════════════════════════════
-// CONSTANTS
-// ══════════════════════════════════════════════════════════════
-class DealConstants {
-  static const stages = [
-    'Qualification',
-    'Proposal Sent-Negotiation',
-    'Invoice Sent',
-    'Closed Won',
-    'Closed Lost',
-  ];
-
-  /// Maps legacy/API stages to a column in [stages].
-  static String canonicalStage(String raw) {
-    final t = raw.trim();
-    if (t.isEmpty) return stages.first;
-    final k = t.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '');
-
-    // Keep real "Invoice Sent" stages separate.
-    if (k.contains('invoice') && k.contains('sent')) {
-      return 'Invoice Sent';
-    }
-
-    // Show any proposal/negotiation-related stage under one bucket.
-    // This also fixes the "Invoice Sent shows extra data" issue.
-    if (k.contains('proposal') || k.contains('negotiation')) {
-      return 'Proposal Sent-Negotiation';
-    }
-
-    return t;
-  }
-  static const currencies = [
-    '₹ INR', '\$ USD', '€ EUR', '£ GBP', '¥ JPY', '¥ CNY',
-  ];
-  static const countryCodes = [
-    '+91 IN', '+1 US', '+44 UK', '+61 AU', '+971 UAE',
-    '+65 SG', '+81 JP', '+86 CN', '+49 DE', '+33 FR',
-  ];
-  static const industries = [
-    'IT', 'Finance', 'Healthcare', 'Education',
-    'Manufacturing', 'Retail', 'Others',
-  ];
-
-  static String currencySymbol(String s) => s.split(' ').first;
-}
+import 'package:crm_app/database/local_db.dart';
 
 // ══════════════════════════════════════════════════════════════
 // STATE
 // ══════════════════════════════════════════════════════════════
 abstract class DealsState extends Equatable {
   const DealsState();
-  @override List<Object?> get props => [];
+  @override
+  List<Object?> get props => [];
 }
 
-class DealsInitial       extends DealsState {}
-class DealsLoading       extends DealsState {}
+class DealsInitial extends DealsState {}
+
+class DealsLoading extends DealsState {}
 
 class DealsActionSuccess extends DealsState {
   final String message;
   const DealsActionSuccess(this.message);
-  @override List<Object?> get props => [message];
+  @override
+  List<Object?> get props => [message];
 }
 
 class DealsError extends DealsState {
   final String message;
   const DealsError(this.message);
-  @override List<Object?> get props => [message];
+  @override
+  List<Object?> get props => [message];
 }
 
 class DealsLoaded extends DealsState {
-  final List<Deal>   allDeals;
-  final List<Deal>   pendingDeals;
-  final List<Deal>   lostDeals;
+  final List<Deal> allDeals;
+  final List<Deal> pendingDeals;
+  final List<Deal> lostDeals;
   final List<String> salesUsers;
 
   const DealsLoaded({
@@ -346,12 +63,13 @@ class DealsLoaded extends DealsState {
   });
 
   DealsLoaded copyWithDeals(List<Deal> d) => DealsLoaded(
-        allDeals: d, pendingDeals: pendingDeals,
-        lostDeals: lostDeals, salesUsers: salesUsers);
+      allDeals: d,
+      pendingDeals: pendingDeals,
+      lostDeals: lostDeals,
+      salesUsers: salesUsers);
 
   @override
-  List<Object?> get props =>
-      [allDeals, pendingDeals, lostDeals, salesUsers];
+  List<Object?> get props => [allDeals, pendingDeals, lostDeals, salesUsers];
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -369,7 +87,7 @@ class DealsCubit extends Cubit<DealsState> {
     // requests get the correct boundary in their Content-Type header.
     // Setting 'application/json' globally breaks FormData uploads.
     _dio = Dio(BaseOptions(
-      baseUrl:        _base,
+      baseUrl: _base,
       connectTimeout: const Duration(seconds: 20),
       receiveTimeout: const Duration(seconds: 30),
     ));
@@ -399,7 +117,7 @@ class DealsCubit extends Cubit<DealsState> {
 
   Future<void> _initToken() async {
     try {
-      final prefs  = await SharedPreferences.getInstance();
+      final prefs = await SharedPreferences.getInstance();
       _cachedToken = prefs.getString('token');
     } catch (_) {}
   }
@@ -415,12 +133,12 @@ class DealsCubit extends Cubit<DealsState> {
     final userName = prefs.getString('user_name') ?? '';
     final roleName = prefs.getString('role') ?? '';
     final canViewAll =
-        PermissionHelper.can('admin_access') && !_isSalesRole(roleName);
+        PermissionHelper.can('users_roles') && !_isSalesRole(roleName);
 
-    final allDeals     = await _safeGet('/deals/getAll');
+    final allDeals = await _safeGet('/deals/getAll');
     final pendingDeals = await _safeGet('/deals/pending');
-    final lostDeals    = await _safeGet('/lost-deals');
-    final userMaps     = await _safeGet('/users/sales');
+    final lostDeals = await _safeGet('/lost-deals');
+    final userMaps = await _safeGet('/users/sales');
 
     final scopedAllRows = _scopeDealsForUser(
       allDeals,
@@ -441,27 +159,73 @@ class DealsCubit extends Cubit<DealsState> {
       userName: userName,
     );
 
-    final deals   = _parseDeals(scopedAllRows);
+    final deals = _parseDeals(scopedAllRows);
     final pending = _parseDeals(scopedPendingRows);
-    final lost    = _parseDeals(scopedLostRows);
+    final lost = _parseDeals(scopedLostRows);
 
-    List<String> users = userMaps.map((e) {
-      final fn   = e['firstName']?.toString().trim() ?? '';
-      final ln   = e['lastName']?.toString().trim()  ?? '';
-      final id   = e['_id']?.toString()              ?? '';
-      final name = [fn, ln].where((s) => s.isNotEmpty).join(' ');
-      return name.isNotEmpty && id.isNotEmpty ? '$name||$id' : '';
-    }).where((s) => s.isNotEmpty).toList();
+    if (deals.isNotEmpty) {
+      try {
+        await LocalDb.instance.replaceDealsFromApi(scopedAllRows);
+      } catch (e) {
+        debugPrint('[DealsCubit] local cache write failed: $e');
+      }
+    }
+
+    if (deals.isEmpty) {
+      try {
+        final cachedRows = await LocalDb.instance.getLocalDealMaps();
+        final cachedDeals = _parseDeals(cachedRows);
+        if (cachedDeals.isNotEmpty) {
+          final cachedLost = cachedDeals
+              .where(
+                  (d) => DealConstants.canonicalStage(d.stage) == 'Closed Lost')
+              .toList();
+          final cachedPending = cachedDeals
+              .where((d) =>
+                  DealConstants.canonicalStage(d.stage) != 'Closed Won' &&
+                  DealConstants.canonicalStage(d.stage) != 'Closed Lost')
+              .toList();
+          if (!isClosed) {
+            emit(DealsLoaded(
+              allDeals: cachedDeals,
+              pendingDeals: cachedPending,
+              lostDeals: cachedLost,
+              salesUsers: const [],
+            ));
+          }
+          return;
+        }
+      } catch (e) {
+        debugPrint('[DealsCubit] local cache read failed: $e');
+      }
+    }
+
+    List<String> users = userMaps
+        .map((e) {
+          final fn = e['firstName']?.toString().trim() ?? '';
+          final ln = e['lastName']?.toString().trim() ?? '';
+          final id = e['_id']?.toString() ?? '';
+          final name = [fn, ln].where((s) => s.isNotEmpty).join(' ');
+          return name.isNotEmpty && id.isNotEmpty ? '$name||$id' : '';
+        })
+        .where((s) => s.isNotEmpty)
+        .toList();
 
     if (users.isEmpty) {
-      users = deals.map((d) => d.assignTo).where((s) => s.isNotEmpty)
-          .toSet().toList()..sort();
+      users = deals
+          .map((d) => d.assignTo)
+          .where((s) => s.isNotEmpty)
+          .toSet()
+          .toList()
+        ..sort();
     }
 
     if (isClosed) return;
     emit(DealsLoaded(
-      allDeals: deals, pendingDeals: pending,
-      lostDeals: lost, salesUsers: users,
+      allDeals: deals,
+      pendingDeals: pending,
+      lostDeals: lost,
+      salesUsers: users,
     ));
   }
 
@@ -471,7 +235,7 @@ class DealsCubit extends Cubit<DealsState> {
 
   Future<Deal?> getDealById(String id) async {
     try {
-      final res  = await _dio.get('/deals/getAll/$id');
+      final res = await _dio.get('/deals/getAll/$id');
       final data = res.data;
       Map<String, dynamic>? map;
       if (data is Map) map = Map<String, dynamic>.from(data);
@@ -479,7 +243,9 @@ class DealsCubit extends Cubit<DealsState> {
         map = Map<String, dynamic>.from(data.first as Map);
       }
       return map != null ? Deal.fromJson(map) : null;
-    } catch (_) { return null; }
+    } catch (_) {
+      return null;
+    }
   }
 
   // ── CREATE ────────────────────────────────────────────────────
@@ -511,27 +277,28 @@ class DealsCubit extends Cubit<DealsState> {
 
       // Add attachment files
       for (final f in files) {
-  try {
-    MultipartFile mf;
+        try {
+          MultipartFile mf;
 
-    if (f.bytes != null) {
-      mf = MultipartFile.fromBytes(f.bytes!, filename: f.name);
-    } else if (f.path != null && f.path!.isNotEmpty) {
-      mf = await MultipartFile.fromFile(f.path!, filename: f.name);
-    } else {
-      debugPrint("❌ Skipped file: ${f.name} (no bytes & no path)");
-      continue;
-    }
+          if (f.bytes != null) {
+            mf = MultipartFile.fromBytes(f.bytes!, filename: f.name);
+          } else if (f.path != null && f.path!.isNotEmpty) {
+            mf = await MultipartFile.fromFile(f.path!, filename: f.name);
+          } else {
+            debugPrint("❌ Skipped file: ${f.name} (no bytes & no path)");
+            continue;
+          }
 
-    formData.files.add(MapEntry('attachments', mf));
-    debugPrint("✅ Added file: ${f.name}");
-  } catch (e) {
-    debugPrint("❌ Error adding file: ${f.name} → $e");
-  }
-}
-      debugPrint('[DealsCubit] createDeal → fields=${formData.fields.length} files=${formData.files.length}');
+          formData.files.add(MapEntry('attachments', mf));
+          debugPrint("✅ Added file: ${f.name}");
+        } catch (e) {
+          debugPrint("❌ Error adding file: ${f.name} → $e");
+        }
+      }
+      debugPrint(
+          '[DealsCubit] createDeal → fields=${formData.fields.length} files=${formData.files.length}');
 
-      final res  = await _dio.post('/deals/createManual', data: formData);
+      final res = await _dio.post('/deals/createManual', data: formData);
       final body = res.data;
 
       // ── FIX: Extract ID from confirmed API shape ────────────
@@ -543,17 +310,17 @@ class DealsCubit extends Cubit<DealsState> {
         // Primary path: body['deal'] is the deal object
         if (body['deal'] is Map) {
           dealMap = Map<String, dynamic>.from(body['deal'] as Map);
-          newId   = dealMap['_id']?.toString();
+          newId = dealMap['_id']?.toString();
         }
         // Fallback: body itself is the deal
         if (newId == null && body['_id'] != null) {
           dealMap = Map<String, dynamic>.from(body);
-          newId   = dealMap['_id']?.toString();
+          newId = dealMap['_id']?.toString();
         }
         // Fallback: body['data'] wraps the deal
         if (newId == null && body['data'] is Map) {
           dealMap = Map<String, dynamic>.from(body['data'] as Map);
-          newId   = dealMap['_id']?.toString();
+          newId = dealMap['_id']?.toString();
         }
       }
 
@@ -565,15 +332,47 @@ class DealsCubit extends Cubit<DealsState> {
           final newDeal = Deal.fromJson(dealMap);
           emit(prev.copyWithDeals([newDeal, ...prev.allDeals]));
         } catch (_) {}
+        try {
+          await LocalDb.instance.upsertDealFromApi(dealMap);
+        } catch (e) {
+          debugPrint('[DealsCubit] create local cache write failed: $e');
+        }
       }
 
       // Always reload to get consistent server state
       await loadDeals();
-      if (!isClosed) emit(const DealsActionSuccess('Deal created successfully'));
+      if (!isClosed)
+        emit(const DealsActionSuccess('Deal created successfully'));
 
       return newId;
     } on DioException catch (e) {
-      debugPrint('[DealsCubit] createDeal DioException: ${e.response?.statusCode} ${e.response?.data}');
+      debugPrint(
+          '[DealsCubit] createDeal DioException: ${e.response?.statusCode} ${e.response?.data}');
+      if (_isOfflineDio(e)) {
+        final localId = 'local_deal_${DateTime.now().millisecondsSinceEpoch}';
+        final offlinePayload = <String, dynamic>{
+          ...payload,
+          '_id': localId,
+          'attachments': files
+              .map((f) => {
+                    'name': f.name,
+                    'path': f.path ?? '',
+                    'type': f.extension ?? '',
+                    'size': f.size,
+                  })
+              .toList(),
+        };
+        try {
+          await LocalDb.instance.insertDeal(offlinePayload);
+          await loadDeals();
+          if (!isClosed) {
+            emit(const DealsActionSuccess('Deal saved offline'));
+          }
+          return localId;
+        } catch (dbErr) {
+          debugPrint('[DealsCubit] createDeal offline save error: $dbErr');
+        }
+      }
       if (!isClosed) {
         if (prev is DealsLoaded) emit(prev);
         emit(DealsError(_dioMsg(e, 'Failed to create deal')));
@@ -593,7 +392,7 @@ class DealsCubit extends Cubit<DealsState> {
   Future<void> createDealFromLead(String leadId) async {
     if (isClosed) return;
     try {
-      await _dio.post('/deals/fromLead/$leadId');
+      await _dio.post('/leads/$leadId/convert');
       await loadDeals();
       if (!isClosed) emit(const DealsActionSuccess('Deal created from lead'));
     } on DioException catch (e) {
@@ -612,14 +411,18 @@ class DealsCubit extends Cubit<DealsState> {
     if (isClosed) return;
     final prev = state;
     try {
-      final res  = await _dio.patch('/deals/update-deal/$id', data: payload);
+      final res = await _dio.patch('/deals/update-deal/$id', data: payload);
+      await LocalDb.instance.updateLocalDeal(id, payload);
       final body = res.data;
 
       Map<String, dynamic>? dealMap;
       if (body is Map) {
         final m = Map<String, dynamic>.from(body);
         for (final k in ['deal', 'data', 'result']) {
-          if (m[k] is Map) { dealMap = Map<String, dynamic>.from(m[k] as Map); break; }
+          if (m[k] is Map) {
+            dealMap = Map<String, dynamic>.from(m[k] as Map);
+            break;
+          }
         }
         dealMap ??= (m.containsKey('_id') ? m : null);
       }
@@ -628,11 +431,28 @@ class DealsCubit extends Cubit<DealsState> {
         final updated = Deal.fromJson(dealMap);
         emit(prev.copyWithDeals(
             prev.allDeals.map((d) => d.id == id ? updated : d).toList()));
+        try {
+          await LocalDb.instance.upsertDealFromApi(dealMap);
+        } catch (e) {
+          debugPrint('[DealsCubit] update local cache write failed: $e');
+        }
       } else {
         await loadDeals();
       }
       // Intentionally no DealsActionSuccess — caller owns modal close.
     } on DioException catch (e) {
+      if (_isOfflineDio(e)) {
+        try {
+          await LocalDb.instance.updateLocalDeal(id, payload);
+          await loadDeals();
+          if (!isClosed) {
+            emit(const DealsActionSuccess('Deal updated offline'));
+          }
+          return;
+        } catch (dbErr) {
+          debugPrint('[DealsCubit] updateDeal offline save error: $dbErr');
+        }
+      }
       if (!isClosed) {
         if (prev is DealsLoaded) emit(prev);
         emit(DealsError(_dioMsg(e, 'Failed to update deal')));
@@ -651,7 +471,20 @@ class DealsCubit extends Cubit<DealsState> {
       await _dio.patch('/deals/$id/stage', data: {'stage': newStage});
       if (!isClosed) emit(const DealsActionSuccess('Stage updated'));
     } on DioException catch (e) {
-      if (!isClosed) { emit(prev); emit(DealsError(_dioMsg(e, 'Failed to update stage'))); }
+      if (_isOfflineDio(e)) {
+        try {
+          await LocalDb.instance.updateLocalDeal(id, {'stage': newStage});
+          if (!isClosed)
+            emit(const DealsActionSuccess('Stage updated offline'));
+          return;
+        } catch (dbErr) {
+          debugPrint('[DealsCubit] updateDealStage offline save error: $dbErr');
+        }
+      }
+      if (!isClosed) {
+        emit(prev);
+        emit(DealsError(_dioMsg(e, 'Failed to update stage')));
+      }
     }
   }
 
@@ -667,7 +500,7 @@ class DealsCubit extends Cubit<DealsState> {
       await _dio.post(
         '/deals/schedule-followup/$dealId',
         data: {
-          'followUpDate':    followUpDate.toUtc().toIso8601String(),
+          'followUpDate': followUpDate.toUtc().toIso8601String(),
           'followUpComment': comment.trim(),
         },
       );
@@ -687,7 +520,8 @@ class DealsCubit extends Cubit<DealsState> {
       await loadDeals();
       if (!isClosed) emit(const DealsActionSuccess('Follow-up completed'));
     } on DioException catch (e) {
-      if (!isClosed) emit(DealsError(_dioMsg(e, 'Failed to complete follow-up')));
+      if (!isClosed)
+        emit(DealsError(_dioMsg(e, 'Failed to complete follow-up')));
     }
   }
 
@@ -697,7 +531,8 @@ class DealsCubit extends Cubit<DealsState> {
   /// Used ONLY for edit flow — create flow sends files in createDeal().
   ///
   /// FIX: Content-Type NOT pre-set; interceptor skips it for FormData.
-  Future<bool> uploadAttachments(String dealId, List<PlatformFile> files) async {
+  Future<bool> uploadAttachments(
+      String dealId, List<PlatformFile> files) async {
     if (files.isEmpty) return true;
 
     try {
@@ -718,13 +553,15 @@ class DealsCubit extends Cubit<DealsState> {
         return false;
       }
 
-      debugPrint('[DealsCubit] uploadAttachments → dealId=$dealId files=${formData.files.length}');
+      debugPrint(
+          '[DealsCubit] uploadAttachments → dealId=$dealId files=${formData.files.length}');
 
       final res = await _dio.post('/deals/$dealId/attachments', data: formData);
       debugPrint('[DealsCubit] uploadAttachments response: ${res.statusCode}');
       return true;
     } on DioException catch (e) {
-      debugPrint('[DealsCubit] uploadAttachments error: ${e.response?.statusCode} ${e.response?.data}');
+      debugPrint(
+          '[DealsCubit] uploadAttachments error: ${e.response?.statusCode} ${e.response?.data}');
       return false;
     } catch (e) {
       debugPrint('[DealsCubit] uploadAttachments error: $e');
@@ -740,9 +577,26 @@ class DealsCubit extends Cubit<DealsState> {
     emit(prev.copyWithDeals(prev.allDeals.where((d) => d.id != id).toList()));
     try {
       await _dio.delete('/deals/delete-deal/$id');
+      try {
+        await LocalDb.instance.deleteDealHard(id);
+      } catch (e) {
+        debugPrint('[DealsCubit] delete local cache failed: $e');
+      }
       if (!isClosed) emit(const DealsActionSuccess('Deal deleted'));
     } on DioException catch (e) {
-      if (!isClosed) { emit(prev); emit(DealsError(_dioMsg(e, 'Failed to delete deal'))); }
+      if (_isOfflineDio(e)) {
+        try {
+          await LocalDb.instance.deleteDealHard(id);
+          if (!isClosed) emit(const DealsActionSuccess('Deal deleted offline'));
+          return;
+        } catch (dbErr) {
+          debugPrint('[DealsCubit] deleteDeal offline delete failed: $dbErr');
+        }
+      }
+      if (!isClosed) {
+        emit(prev);
+        emit(DealsError(_dioMsg(e, 'Failed to delete deal')));
+      }
     }
   }
 
@@ -750,12 +604,16 @@ class DealsCubit extends Cubit<DealsState> {
     if (isClosed || state is! DealsLoaded) return;
     final prev = state as DealsLoaded;
     final idSet = ids.toSet();
-    emit(prev.copyWithDeals(prev.allDeals.where((d) => !idSet.contains(d.id)).toList()));
+    emit(prev.copyWithDeals(
+        prev.allDeals.where((d) => !idSet.contains(d.id)).toList()));
     try {
       await _dio.delete('/deals/bulk-delete', data: {'ids': ids});
       if (!isClosed) emit(DealsActionSuccess('${ids.length} deals deleted'));
     } on DioException catch (e) {
-      if (!isClosed) { emit(prev); emit(DealsError(_dioMsg(e, 'Failed to bulk delete deals'))); }
+      if (!isClosed) {
+        emit(prev);
+        emit(DealsError(_dioMsg(e, 'Failed to bulk delete deals')));
+      }
     }
   }
 
@@ -774,8 +632,11 @@ class DealsCubit extends Cubit<DealsState> {
   List<Deal> _parseDeals(List<Map<String, dynamic>> items) {
     final out = <Deal>[];
     for (final item in items) {
-      try { out.add(Deal.fromJson(item)); }
-      catch (e) { debugPrint('[DealsCubit] skipping bad deal: $e'); }
+      try {
+        out.add(Deal.fromJson(item));
+      } catch (e) {
+        debugPrint('[DealsCubit] skipping bad deal: $e');
+      }
     }
     return out;
   }
@@ -786,14 +647,29 @@ class DealsCubit extends Cubit<DealsState> {
       if (d is List) {
         raw = d;
       } else if (d is Map) {
-        for (final k in ['data', 'deals', 'result', 'results',
-                          'items', 'users', 'lostDeals', 'pendingDeals']) {
-          if (d[k] is List) { raw = d[k] as List; break; }
+        for (final k in [
+          'data',
+          'deals',
+          'result',
+          'results',
+          'items',
+          'users',
+          'lostDeals',
+          'pendingDeals'
+        ]) {
+          if (d[k] is List) {
+            raw = d[k] as List;
+            break;
+          }
         }
       }
-      return raw.whereType<Map>()
-          .map((e) => Map<String, dynamic>.from(e)).toList();
-    } catch (_) { return []; }
+      return raw
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    } catch (_) {
+      return [];
+    }
   }
 
   String _dioMsg(DioException e, String fallback) {
@@ -801,10 +677,29 @@ class DealsCubit extends Cubit<DealsState> {
       final data = e.response?.data;
       if (data is Map) {
         return data['message']?.toString() ??
-               data['error']?.toString()   ?? fallback;
+            data['error']?.toString() ??
+            fallback;
       }
     } catch (_) {}
     return e.message?.isNotEmpty == true ? e.message! : fallback;
+  }
+
+  bool _isOfflineDio(DioException e) {
+    switch (e.type) {
+      case DioExceptionType.connectionError:
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.receiveTimeout:
+      case DioExceptionType.sendTimeout:
+        return true;
+      case DioExceptionType.unknown:
+        final msg = e.message?.toLowerCase() ?? '';
+        return msg.contains('socket') ||
+            msg.contains('network') ||
+            msg.contains('timed out') ||
+            msg.contains('connection');
+      default:
+        return false;
+    }
   }
 
   List<Map<String, dynamic>> _scopeDealsForUser(
@@ -814,9 +709,7 @@ class DealsCubit extends Cubit<DealsState> {
     required String userName,
   }) {
     if (canViewAll) return List<Map<String, dynamic>>.from(rows);
-    return rows
-        .where((m) => _dealAssignedToUser(m, userId, userName))
-        .toList();
+    return rows.where((m) => _dealAssignedToUser(m, userId, userName)).toList();
   }
 
   bool _dealAssignedToUser(
@@ -829,9 +722,8 @@ class DealsCubit extends Cubit<DealsState> {
 
     final assignRaw = m['assignTo'] ?? m['assignedTo'];
     if (assignRaw is Map) {
-      final id = assignRaw['_id']?.toString() ??
-          assignRaw['id']?.toString() ??
-          '';
+      final id =
+          assignRaw['_id']?.toString() ?? assignRaw['id']?.toString() ?? '';
       if (id.isNotEmpty && uid.isNotEmpty && id == uid) return true;
       final fn = assignRaw['firstName']?.toString().trim() ?? '';
       final ln = assignRaw['lastName']?.toString().trim() ?? '';
@@ -843,9 +735,8 @@ class DealsCubit extends Cubit<DealsState> {
       if (assignRaw.toString().trim().toLowerCase() == uname) return true;
     }
 
-    final topId = m['assignToId']?.toString() ??
-        m['assignedToId']?.toString() ??
-        '';
+    final topId =
+        m['assignToId']?.toString() ?? m['assignedToId']?.toString() ?? '';
     if (topId.isNotEmpty && uid.isNotEmpty && topId == uid) return true;
 
     return false;

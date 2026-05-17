@@ -8,12 +8,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_bloc: ^8.1.4        # Cubit / BLoC
-  dio: ^5.4.0                 # HTTP client
-  shared_preferences: ^2.2.2  # Token storage
-  intl: ^0.18.1               # Date formatting
-  image_picker: ^1.0.4        # Avatar upload
-  equatable: ^2.0.5           # Value equality for states
+  flutter_bloc: ^8.1.4
+  dio: ^5.4.0
+  shared_preferences: ^2.2.2
+  intl: ^0.18.1
+  image_picker: ^1.0.4
+  equatable: ^2.0.5
   cupertino_icons: ^1.0.6
   sqflite: ^2.4.2
   file_picker: ^8.0.0
@@ -24,10 +24,20 @@ dependencies:
   file_saver: ^0.2.8
   device_info_plus: ^10.1.0
   permission_handler: ^12.0.1
+  connectivity_plus: ^5.0.2
+  intl_phone_field: ^3.2.0
+  phone_numbers_parser: ^9.0.22
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/app_icon.png"
 
 flutter:
   uses-material-design: true

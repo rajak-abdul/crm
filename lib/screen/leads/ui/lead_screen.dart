@@ -12,6 +12,7 @@ import 'dart:io';
 
 import 'package:crm_app/modals/modals.dart'
     show AppConstants, Lead, AppUser, Attachment;
+import 'package:crm_app/screen/deals/modal/deal_modal.dart' show DealConstants;
 import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
 import 'package:crm_app/shareWidgets/share_widgets.dart'
     show
@@ -32,8 +33,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
+import 'package:intl_phone_field/intl_phone_field.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:phone_numbers_parser/phone_numbers_parser.dart';
 
 // ── Pagination constant ───────────────────────────────────────
 const int _kPageSize = 10;
@@ -41,10 +44,16 @@ const MethodChannel _downloadsChannel = MethodChannel('crm/downloads');
 
 bool _isSessionExpiredMessage(String msg) {
   final m = msg.toLowerCase();
+
   return m.contains('session expired') ||
       m.contains('unauthorized') ||
       m.contains('401') ||
-      m.contains('login again');
+      m.contains('login again') ||
+      m.contains('token failed') ||
+      m.contains('invalid token') ||
+      m.contains('jwt expired') ||
+      m.contains('token expired') ||
+      m.contains('authentication failed');
 }
 
 DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
@@ -150,6 +159,7 @@ class _LeadsView extends StatefulWidget {
 }
 
 class _LeadsViewState extends State<_LeadsView> {
+  final TextEditingController _searchController = TextEditingController();
   String _search = '',
       _statusFilter = 'All Status',
       _sourceFilter = 'All Sources',
@@ -165,6 +175,12 @@ class _LeadsViewState extends State<_LeadsView> {
   void initState() {
     super.initState();
     _loadAssignees();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadAssignees() async {
@@ -186,7 +202,14 @@ class _LeadsViewState extends State<_LeadsView> {
       if (body is List) {
         raw = body;
       } else if (body is Map) {
-        for (final k in ['data', 'users', 'staff', 'employees', 'result', 'records']) {
+        for (final k in [
+          'data',
+          'users',
+          'staff',
+          'employees',
+          'result',
+          'records'
+        ]) {
           if (body[k] is List) {
             raw = body[k] as List;
             break;
@@ -199,10 +222,13 @@ class _LeadsViewState extends State<_LeadsView> {
         if (item is! Map) continue;
         final id = (item['_id'] ?? item['id'] ?? '').toString().trim();
         if (id.isEmpty) continue;
-        final first = (item['firstName'] ?? item['first_name'] ?? '').toString().trim();
-        final last = (item['lastName'] ?? item['last_name'] ?? '').toString().trim();
+        final first =
+            (item['firstName'] ?? item['first_name'] ?? '').toString().trim();
+        final last =
+            (item['lastName'] ?? item['last_name'] ?? '').toString().trim();
         final full = '$first $last'.trim();
-        idToName[id] = full.isNotEmpty ? full : (item['name']?.toString().trim() ?? '');
+        idToName[id] =
+            full.isNotEmpty ? full : (item['name']?.toString().trim() ?? '');
       }
 
       if (!mounted) return;
@@ -224,10 +250,9 @@ class _LeadsViewState extends State<_LeadsView> {
     if (all.isEmpty) return all;
     final q = _search.toLowerCase();
     return all.where((l) {
-      final matchesSearch = _search.isEmpty ||
-          l.name.toLowerCase().contains(q) ||
-          l.companyName.toLowerCase().contains(q) ||
-          l.email.toLowerCase().contains(q);
+      final matchesSearch =
+          _search.isEmpty || l.name.toLowerCase().startsWith(q);
+
       final matchesStatus =
           _statusFilter == 'All Status' || l.status == _statusFilter;
       final matchesSource =
@@ -235,7 +260,8 @@ class _LeadsViewState extends State<_LeadsView> {
       final matchesClientType = _clientTypeFilter == 'All Client Types' ||
           (l.clientType.isNotEmpty && l.clientType == _clientTypeFilter);
       final matchesAssignee = _assigneeFilter == 'All Assignees' ||
-          (l.assignedToId != null && l.assignedToId == _assigneeFilter);
+          (l.assignedToId != null && l.assignedToId == _assigneeFilter) ||
+          l.assignTo.trim() == _assigneeFilter;
       return matchesSearch &&
           matchesStatus &&
           matchesSource &&
@@ -306,9 +332,10 @@ class _LeadsViewState extends State<_LeadsView> {
                 Row(children: [
                   Expanded(
                     child: TextField(
+                      controller: _searchController,
                       onChanged: (v) {
                         setState(() {
-                          _search = v;
+                          _search = _searchController.text;
                           _resetPage();
                         });
                       },
@@ -320,6 +347,7 @@ class _LeadsViewState extends State<_LeadsView> {
                             ? IconButton(
                                 icon: const Icon(Icons.clear, size: 18),
                                 onPressed: () => setState(() {
+                                      _searchController.clear();
                                       _search = '';
                                       _resetPage();
                                     }))
@@ -344,31 +372,30 @@ class _LeadsViewState extends State<_LeadsView> {
                     ),
                   ),
                   const SizedBox(width: 10),
-
-                  if (PermissionHelper.can('admin_access'))
-
-                  ElevatedButton.icon(
-                    onPressed: () => _openCreate(context),
-                    icon: const Icon(Icons.add, size: 16, color: Colors.white),
-                    label: const Text(
-                      'Create Lead',
-                      style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white),
+                  if (PermissionHelper.can('users_roles'))
+                    ElevatedButton.icon(
+                      onPressed: () => _openCreate(context),
+                      icon:
+                          const Icon(Icons.add, size: 16, color: Colors.white),
+                      label: const Text(
+                        'Create Lead',
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 14),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
                     ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 14),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                  ),
                 ]),
                 const SizedBox(height: 10),
                 Row(children: [
@@ -419,10 +446,9 @@ class _LeadsViewState extends State<_LeadsView> {
                           value: _assigneeFilter,
                           items: _assigneeDropdownItems,
                           icon: Icons.person_outline,
-                          labelBuilder: (id) =>
-                              id == 'All Assignees'
-                                  ? 'All Assignees'
-                                  : (_assigneeIdToName[id] ?? id),
+                          labelBuilder: (id) => id == 'All Assignees'
+                              ? 'All Assignees'
+                              : (_assigneeIdToName[id] ?? id),
                           onChanged: (v) => setState(() {
                                 _assigneeFilter = v ?? 'All Assignees';
                                 _resetPage();
@@ -431,8 +457,7 @@ class _LeadsViewState extends State<_LeadsView> {
               ]),
             ),
             Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               child: Row(children: [
                 Text(
                     '${allFiltered.length} lead${allFiltered.length != 1 ? 's' : ''}',
@@ -604,8 +629,7 @@ class _LeadsViewState extends State<_LeadsView> {
       context: ctx,
       builder: (_) => AlertDialog(
         title: const Text('Delete Lead'),
-        content: const Text(
-            'This will permanently delete the lead. Continue?'),
+        content: const Text('This will permanently delete the lead. Continue?'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
@@ -657,7 +681,8 @@ class _PaginationBar extends StatelessWidget {
         children: [
           Text(
             '$start-$end of $totalItems',
-            style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            style:
+                const TextStyle(fontSize: 12, color: AppColors.textSecondary),
           ),
           const Spacer(),
           IconButton(
@@ -704,8 +729,8 @@ class _FilterDrop extends StatelessWidget {
         decoration: BoxDecoration(
           color: active ? AppColors.primaryLight : AppColors.background,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-              color: active ? AppColors.primary : AppColors.border),
+          border:
+              Border.all(color: active ? AppColors.primary : AppColors.border),
         ),
         child: DropdownButtonHideUnderline(
             child: DropdownButton<String>(
@@ -713,13 +738,11 @@ class _FilterDrop extends StatelessWidget {
           isExpanded: true,
           icon: Icon(Icons.keyboard_arrow_down_rounded,
               size: 18,
-              color:
-                  active ? AppColors.primary : AppColors.textSecondary),
+              color: active ? AppColors.primary : AppColors.textSecondary),
           style: TextStyle(
               fontSize: 13,
               fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-              color:
-                  active ? AppColors.primary : AppColors.textSecondary),
+              color: active ? AppColors.primary : AppColors.textSecondary),
           items: items
               .toSet()
               .toList()
@@ -757,113 +780,105 @@ class _LeadCard extends StatelessWidget {
   Widget build(BuildContext ctx) {
     final isConverted = lead.status.trim().toLowerCase() == 'converted';
     return GestureDetector(
-        onTap: onTap,
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: [
-                BoxShadow(
-                    color: Colors.black.withOpacity(0.04),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2))
-              ]),
-          child: Column(children: [
-            Padding(
-              padding: const EdgeInsets.all(14),
-              child: Row(children: [
-                Container(
-                    width: 46,
-                    height: 46,
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                          colors: [AppColors.primary, AppColors.accent]),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Center(
-                        child: Text(
-                      lead.name.isNotEmpty
-                          ? lead.name[0].toUpperCase()
-                          : '?',
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 18),
-                    ))),
-                const SizedBox(width: 12),
-                Expanded(
-                    child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                      Text(lead.name,
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2))
+            ]),
+        child: Column(children: [
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(children: [
+              Container(
+                  width: 46,
+                  height: 46,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                        colors: [AppColors.primary, AppColors.accent]),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Center(
+                      child: Text(
+                    lead.name.isNotEmpty ? lead.name[0].toUpperCase() : '?',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 18),
+                  ))),
+              const SizedBox(width: 12),
+              Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    Text(lead.name,
+                        style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textPrimary)),
+                    if (lead.companyName.isNotEmpty)
+                      Text(lead.companyName,
                           style: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.textPrimary)),
-                      if (lead.companyName.isNotEmpty)
-                        Text(lead.companyName,
-                            style: const TextStyle(
-                                fontSize: 12,
-                                color: AppColors.textSecondary)),
-                    ])),
-                Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      GestureDetector(
-                        onTap: () => _showStatusMenu(ctx),
-                        child: StatusBadge(status: lead.status),
-                      ),
-                      const SizedBox(height: 6),
-                      Row(children: [
-                        if (!isConverted)
-                          GestureDetector(
-                              onTap: onConvert,
-                              child: const Icon(Icons.swap_horiz_outlined,
-                                  size: 18, color: AppColors.textHint)),
-                        if (!isConverted)
-                          const SizedBox(width: 8),
-                        GestureDetector(
-                            onTap: onEdit,
-                            child: const Icon(Icons.edit_outlined,
-                                size: 18, color: AppColors.textHint)),
-                        const SizedBox(width: 10),
-                        GestureDetector(
-                            onTap: onDelete,
-                            child: const Icon(Icons.delete_outline,
-                                size: 18, color: AppColors.textHint)),
-                      ]),
-                    ]),
-              ]),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 14, vertical: 10),
-              decoration: const BoxDecoration(
-                  color: AppColors.background,
-                  borderRadius: BorderRadius.vertical(
-                      bottom: Radius.circular(16))),
-              child: Row(children: [
-                if (lead.country.isNotEmpty)
-                  _chip(Icons.public_outlined, lead.country),
-                const SizedBox(width: 10),
-                _chip(Icons.radar_outlined,
-                    lead.source.isEmpty ? 'N/A' : lead.source),
-                if (lead.clientType.isNotEmpty) ...[
+                              fontSize: 12, color: AppColors.textSecondary)),
+                  ])),
+              Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                GestureDetector(
+                  onTap: () => _showStatusMenu(ctx),
+                  child: StatusBadge(status: lead.status),
+                ),
+                const SizedBox(height: 6),
+                Row(children: [
+                  if (!isConverted)
+                    GestureDetector(
+                        onTap: onConvert,
+                        child: const Icon(Icons.swap_horiz_outlined,
+                            size: 18, color: AppColors.textHint)),
+                  if (!isConverted) const SizedBox(width: 8),
+                  GestureDetector(
+                      onTap: onEdit,
+                      child: const Icon(Icons.edit_outlined,
+                          size: 18, color: AppColors.textHint)),
                   const SizedBox(width: 10),
-                  _chip(Icons.corporate_fare_outlined, lead.clientType),
-                ],
-                const Spacer(),
-                if (lead.followUpDate != null)
-                  _chip(
-                      Icons.event_outlined,
-                      DateFormat('dd MMM').format(lead.followUpDate!),
-                      c: AppColors.primary),
+                  GestureDetector(
+                      onTap: onDelete,
+                      child: const Icon(Icons.delete_outline,
+                          size: 18, color: AppColors.textHint)),
+                ]),
               ]),
-            ),
-          ]),
-        ),
-      );
+            ]),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: const BoxDecoration(
+                color: AppColors.background,
+                borderRadius:
+                    BorderRadius.vertical(bottom: Radius.circular(16))),
+            child: Row(children: [
+              if (lead.country.isNotEmpty)
+                _chip(Icons.public_outlined, lead.country),
+              const SizedBox(width: 5),
+              _chip(Icons.radar_outlined,
+                  lead.source.isEmpty ? 'N/A' : lead.source),
+              if (lead.clientType.isNotEmpty) ...[
+                const SizedBox(width: 5),
+                _chip(Icons.corporate_fare_outlined, lead.clientType),
+              ],
+              const Spacer(),
+              if (lead.followUpDate != null)
+                _chip(Icons.event_outlined,
+                    DateFormat('dd MMM').format(lead.followUpDate!),
+                    c: AppColors.primary),
+            ]),
+          ),
+        ]),
+      ),
+    );
   }
 
   void _showStatusMenu(BuildContext ctx) {
@@ -871,8 +886,7 @@ class _LeadCard extends StatelessWidget {
       context: ctx,
       backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
-          borderRadius:
-              BorderRadius.vertical(top: Radius.circular(20))),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => ScaffoldMessenger(
         child: Scaffold(
           backgroundColor: Colors.transparent,
@@ -894,14 +908,13 @@ class _LeadCard extends StatelessWidget {
     );
   }
 
-  Widget _chip(IconData i, String t,
-          {Color c = AppColors.textSecondary}) =>
+  Widget _chip(IconData i, String t, {Color c = AppColors.textSecondary}) =>
       Row(mainAxisSize: MainAxisSize.min, children: [
         Icon(i, size: 13, color: c),
         const SizedBox(width: 4),
         Text(t,
-            style: TextStyle(
-                fontSize: 12, color: c, fontWeight: FontWeight.w500)),
+            style:
+                TextStyle(fontSize: 12, color: c, fontWeight: FontWeight.w500)),
       ]);
 }
 
@@ -914,8 +927,7 @@ class _StatusPickerSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext ctx) => Padding(
-        padding:
-            const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(
               width: 40,
@@ -1005,17 +1017,21 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
       final launched =
           await launchUrl(uri, mode: LaunchMode.externalApplication);
       if (!launched && context.mounted) {
-        _showSnack(context, const SnackBar(
-          content: Text('No app found to open this file'),
-          backgroundColor: Colors.red,
-        ));
+        _showSnack(
+            context,
+            const SnackBar(
+              content: Text('No app found to open this file'),
+              backgroundColor: Colors.red,
+            ));
       }
     } catch (e) {
       if (context.mounted) {
-        _showSnack(context, SnackBar(
-          content: Text('Could not open file: $e'),
-          backgroundColor: Colors.red,
-        ));
+        _showSnack(
+            context,
+            SnackBar(
+              content: Text('Could not open file: $e'),
+              backgroundColor: Colors.red,
+            ));
       }
     }
   }
@@ -1041,8 +1057,7 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
       return;
     }
 
-    final cleanPath =
-        rawPath.startsWith('/') ? rawPath.substring(1) : rawPath;
+    final cleanPath = rawPath.startsWith('/') ? rawPath.substring(1) : rawPath;
     final url = Uri.https(
       'sales.stagingzar.com',
       '/api/files/download',
@@ -1051,10 +1066,8 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
     debugPrint('=== DOWNLOAD URL === $url');
 
     final lastDot = fileName.lastIndexOf('.');
-    final baseName =
-        lastDot > 0 ? fileName.substring(0, lastDot) : fileName;
-    final extOnly =
-        lastDot > 0 ? fileName.substring(lastDot + 1) : '';
+    final baseName = lastDot > 0 ? fileName.substring(0, lastDot) : fileName;
+    final extOnly = lastDot > 0 ? fileName.substring(lastDot + 1) : '';
     final mime = _mimeTypeForAttachmentExt(extOnly);
 
     if (!context.mounted) return;
@@ -1065,8 +1078,8 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
           SizedBox(
             width: 16,
             height: 16,
-            child: CircularProgressIndicator(
-                strokeWidth: 2, color: Colors.white),
+            child:
+                CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
           ),
           SizedBox(width: 12),
           Text('Downloading…'),
@@ -1139,26 +1152,32 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
       final msg = (e.response?.data is Map)
           ? (e.response!.data['message'] ?? e.message)
           : e.message;
-      _showSnack(context, SnackBar(
-        content: Text('Download failed: $msg'),
-        backgroundColor: Colors.red,
-      ));
+      _showSnack(
+          context,
+          SnackBar(
+            content: Text('Download failed: $msg'),
+            backgroundColor: Colors.red,
+          ));
     } on PlatformException catch (e) {
       debugPrint('=== DOWNLOAD PLATFORM ERROR === ${e.code} ${e.message}');
       if (!context.mounted) return;
       _hideSnack(context);
-      _showSnack(context, SnackBar(
-        content: Text('Download failed: ${e.message ?? e.code}'),
-        backgroundColor: Colors.red,
-      ));
+      _showSnack(
+          context,
+          SnackBar(
+            content: Text('Download failed: ${e.message ?? e.code}'),
+            backgroundColor: Colors.red,
+          ));
     } catch (e) {
       debugPrint('=== DOWNLOAD ERROR === $e');
       if (!context.mounted) return;
       _hideSnack(context);
-      _showSnack(context, SnackBar(
-        content: Text('Download error: $e'),
-        backgroundColor: Colors.red,
-      ));
+      _showSnack(
+          context,
+          SnackBar(
+            content: Text('Download error: $e'),
+            backgroundColor: Colors.red,
+          ));
     }
   }
 
@@ -1168,7 +1187,6 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
         child: DraggableScrollableSheet(
           initialChildSize: 0.75,
           maxChildSize: 0.95,
-
           minChildSize: 0.4,
           builder: (_, ctrl) => Container(
             decoration: const BoxDecoration(
@@ -1245,19 +1263,23 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
           controller: ctrl,
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
           children: [
-            _row(Icons.phone_outlined, 'Phone', lead.phone),
+            _row(
+              Icons.phone_outlined,
+              'Phone',
+              lead.phone.trim().isEmpty ? '-' : _formatPhone(lead.phone),
+            ),
             _row(Icons.email_outlined, 'Email', lead.email),
             if (lead.address.isNotEmpty)
               _row(Icons.location_on_outlined, 'Address', lead.address),
             _row(Icons.public_outlined, 'Country', lead.country),
             if (lead.industry.isNotEmpty)
               _row(Icons.business_outlined, 'Industry', lead.industry),
-            _row(Icons.radar_outlined, 'Source', lead.source.isEmpty ? '-' : lead.source),
+            _row(Icons.radar_outlined, 'Source',
+                lead.source.isEmpty ? '-' : lead.source),
             if (lead.clientType.isNotEmpty)
-              _row(Icons.corporate_fare_outlined, 'Client Type', lead.clientType),
-            _row(
-                Icons.person_outline,
-                'Assigned To',
+              _row(Icons.corporate_fare_outlined, 'Client Type',
+                  lead.clientType),
+            _row(Icons.person_outline, 'Assigned To',
                 lead.assignTo.trim().isEmpty ? '-' : lead.assignTo.trim()),
             if (lead.followUpDate != null)
               _row(Icons.event_outlined, 'Follow-up',
@@ -1277,7 +1299,8 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
               ...lead.attachments.map((a) => Builder(
                     builder: (tileCtx) => Container(
                       margin: const EdgeInsets.only(bottom: 10),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
                       decoration: BoxDecoration(
                         color: AppColors.background,
                         borderRadius: BorderRadius.circular(10),
@@ -1299,7 +1322,8 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
                                         fontWeight: FontWeight.w500)),
                                 Text('${(a.size / 1024).toStringAsFixed(1)} KB',
                                     style: const TextStyle(
-                                        fontSize: 11, color: AppColors.textHint)),
+                                        fontSize: 11,
+                                        color: AppColors.textHint)),
                               ]),
                         ),
                         IconButton(
@@ -1312,13 +1336,30 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
                           icon: const Icon(Icons.download,
                               size: 18, color: AppColors.primary),
                           tooltip: 'Download',
-                          onPressed: () => _downloadFile(tileCtx, a.path, a.name),
+                          onPressed: () =>
+                              _downloadFile(tileCtx, a.path, a.name),
                         ),
                       ]),
                     ),
                   )),
             ],
           ]);
+  String _formatPhone(String phone) {
+    if (phone.trim().isEmpty) return '-';
+
+    try {
+      final cleaned = phone.replaceAll(RegExp(r'[^0-9]'), '');
+
+      final parsedPhone = PhoneNumber.parse('+$cleaned');
+
+      final countryCode = parsedPhone.countryCode;
+      final nationalNumber = parsedPhone.nsn;
+
+      return '+$countryCode $nationalNumber';
+    } catch (e) {
+      return phone;
+    }
+  }
 
   Widget _buildActivityTab(ScrollController ctrl) {
     final activities = <Map<String, dynamic>>[
@@ -1390,7 +1431,8 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
                           fontWeight: FontWeight.w600,
                           color: AppColors.textPrimary)),
                   const SizedBox(height: 3),
-                  Text(DateFormat('dd MMM yyyy, hh:mm a').format(date.toLocal()),
+                  Text(
+                      DateFormat('dd MMM yyyy, hh:mm a').format(date.toLocal()),
                       style: const TextStyle(
                           fontSize: 12,
                           color: AppColors.textSecondary,
@@ -1408,8 +1450,7 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
 
   Widget _row(IconData icon, String lbl, String val) => Padding(
         padding: const EdgeInsets.only(bottom: 14),
-        child:
-            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
@@ -1437,6 +1478,52 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
       );
 }
 
+/// Narrow currency dropdown aligned with deal create/edit forms.
+class _ConvertSheetCompactDrop extends StatelessWidget {
+  final String value;
+  final List<String> items;
+  final double width;
+  final void Function(String) onChanged;
+
+  const _ConvertSheetCompactDrop({
+    required this.value,
+    required this.items,
+    required this.width,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: width,
+        height: 48,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.border)),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<String>(
+            value: items.contains(value) ? value : items.first,
+            isDense: true,
+            isExpanded: true,
+            icon: const Icon(Icons.keyboard_arrow_down_rounded,
+                size: 16, color: AppColors.textSecondary),
+            style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary),
+            items: items
+                .map((e) => DropdownMenuItem(
+                    value: e, child: Text(e, overflow: TextOverflow.ellipsis)))
+                .toList(),
+            onChanged: (v) {
+              if (v != null) onChanged(v);
+            },
+          ),
+        ),
+      );
+}
+
 // ─── Convert Lead Sheet ───────────────────────────────────────
 class _ConvertLeadSheet extends StatefulWidget {
   final Lead lead;
@@ -1448,6 +1535,7 @@ class _ConvertLeadSheet extends StatefulWidget {
 class _ConvertLeadSheetState extends State<_ConvertLeadSheet> {
   final _dealValue = TextEditingController();
   DateTime? _closeDate;
+  String _currency = '₹ INR';
   bool _loading = false;
 
   @override
@@ -1467,9 +1555,10 @@ class _ConvertLeadSheetState extends State<_ConvertLeadSheet> {
       return;
     }
     setState(() => _loading = true);
+    final currencyCode = _currency.split(' ').last;
     final err = await context
         .read<LeadCubit>()
-        .convertToDeal(widget.lead.id, value, _closeDate!);
+        .convertToDeal(widget.lead.id, value, _closeDate!, currencyCode);
     if (!mounted) return;
     setState(() => _loading = false);
     if (err == null) {
@@ -1483,8 +1572,7 @@ class _ConvertLeadSheetState extends State<_ConvertLeadSheet> {
   Widget build(BuildContext ctx) => Container(
         decoration: const BoxDecoration(
             color: AppColors.surface,
-            borderRadius:
-                BorderRadius.vertical(top: Radius.circular(24))),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
         padding: EdgeInsets.only(
             left: 20,
             right: 20,
@@ -1519,16 +1607,55 @@ class _ConvertLeadSheetState extends State<_ConvertLeadSheet> {
                           color: AppColors.textPrimary)),
                   Text(widget.lead.name,
                       style: const TextStyle(
-                          fontSize: 13,
-                          color: AppColors.textSecondary)),
+                          fontSize: 13, color: AppColors.textSecondary)),
                 ])),
           ]),
           const SizedBox(height: 20),
-          CrmTextField(
-            label: 'Deal Value',
-            hint: '0.00',
-            controller: _dealValue,
-            keyboardType: TextInputType.number,
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Text('Deal Value',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textSecondary)),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _ConvertSheetCompactDrop(
+                value: _currency,
+                items: DealConstants.currencies,
+                width: 110,
+                onChanged: (v) => setState(() => _currency = v),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextField(
+                  controller: _dealValue,
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(
+                      fontSize: 14, color: AppColors.textPrimary),
+                  decoration: InputDecoration(
+                    hintText: '0.00',
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 13),
+                    filled: true,
+                    fillColor: AppColors.surface,
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.border)),
+                    enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.border)),
+                    focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(
+                            color: AppColors.primary, width: 1.5)),
+                  ),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 16),
           const Align(
@@ -1545,7 +1672,7 @@ class _ConvertLeadSheetState extends State<_ConvertLeadSheet> {
               final firstDate = _dateOnly(DateTime.now());
               final lastDate = firstDate.add(const Duration(days: 730));
               final initialDate = _clampPickerDate(
-                firstDate.add(const Duration(days: 30)),
+                firstDate,
                 firstDate: firstDate,
                 lastDate: lastDate,
               );
@@ -1557,16 +1684,15 @@ class _ConvertLeadSheetState extends State<_ConvertLeadSheet> {
                 lastDate: lastDate,
                 builder: (c, child) => Theme(
                   data: Theme.of(c).copyWith(
-                      colorScheme: const ColorScheme.light(
-                          primary: AppColors.primary)),
+                      colorScheme:
+                          const ColorScheme.light(primary: AppColors.primary)),
                   child: child!,
                 ),
               );
               if (p != null) setState(() => _closeDate = p);
             },
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 14, vertical: 14),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
               decoration: BoxDecoration(
                   color: AppColors.background,
                   borderRadius: BorderRadius.circular(12),
@@ -1602,8 +1728,7 @@ class _ConvertLeadSheetState extends State<_ConvertLeadSheet> {
                       child: CircularProgressIndicator(
                           strokeWidth: 2, color: Colors.white))
                   : const Icon(Icons.swap_horiz_outlined, size: 16),
-              label:
-                  Text(_loading ? 'Converting...' : 'Convert to Deal'),
+              label: Text(_loading ? 'Converting...' : 'Convert to Deal'),
               style: ElevatedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 13)),
             ),
@@ -1618,13 +1743,19 @@ class _ConvertLeadSheetState extends State<_ConvertLeadSheet> {
 class _PhoneInputFormatter extends TextInputFormatter {
   @override
   TextEditingValue formatEditUpdate(
-      TextEditingValue oldValue, TextEditingValue newValue) {
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
     final digitsOnly = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
+
     final capped =
-        digitsOnly.length > 10 ? digitsOnly.substring(0, 10) : digitsOnly;
+        digitsOnly.length > 12 ? digitsOnly.substring(0, 12) : digitsOnly;
+
     return newValue.copyWith(
       text: capped,
-      selection: TextSelection.collapsed(offset: capped.length),
+      selection: TextSelection.collapsed(
+        offset: capped.length,
+      ),
     );
   }
 }
@@ -1641,9 +1772,16 @@ String? _validateEmail(String value) {
 }
 
 String? _validatePhone(String value) {
-  final v = value.trim();
-  if (v.isEmpty) return 'Phone required';
-  if (!RegExp(r'^\d{10}$').hasMatch(v)) return 'Phone must be exactly 10 digits';
+  final v = value.trim().replaceAll(RegExp(r'[^0-9]'), '');
+
+  if (v.isEmpty) {
+    return 'Phone required';
+  }
+
+  if (v.length > 12) {
+    return 'Phone number must not exceed 12 digits';
+  }
+
   return null;
 }
 
@@ -1659,6 +1797,7 @@ class _LeadFormModal extends StatefulWidget {
 }
 
 class _LeadFormModalState extends State<_LeadFormModal> {
+  String _phoneCountryCode = '+91';
   late final TextEditingController _name,
       _company,
       _phone,
@@ -1673,6 +1812,7 @@ class _LeadFormModalState extends State<_LeadFormModal> {
   final List<PlatformFile> _attachments = [];
   final List<Attachment> _existingAttachments = [];
   String? _country, _industry, _source;
+
   /// `B2B` | `B2C` | null = not chosen yet.
   String? _clientType;
   String _status = 'Hot';
@@ -1704,7 +1844,9 @@ class _LeadFormModalState extends State<_LeadFormModal> {
     final l = widget.existingLead;
     _name = TextEditingController(text: l?.name);
     _company = TextEditingController(text: l?.companyName);
-    _phone = TextEditingController(text: l?.phone);
+    _phone = TextEditingController(
+      text: _extractLocalNumber(l?.phone ?? ''),
+    );
     _email = TextEditingController(text: l?.email);
     _addr = TextEditingController(text: l?.address);
     _req = TextEditingController(text: l?.requirement);
@@ -1728,11 +1870,10 @@ class _LeadFormModalState extends State<_LeadFormModal> {
 
       if (l.assignTo.isNotEmpty) {
         final existing = l.assignTo.trim();
-        final match =
-            _salesUsers.where((u) => u.id == existing).firstOrNull ??
+        final match = _salesUsers.where((u) => u.id == existing).firstOrNull ??
             _salesUsers
-                .where((u) =>
-                    u.fullName.toLowerCase() == existing.toLowerCase())
+                .where(
+                    (u) => u.fullName.toLowerCase() == existing.toLowerCase())
                 .firstOrNull;
         _selectedAssignUserId = match?.id;
       }
@@ -1745,6 +1886,37 @@ class _LeadFormModalState extends State<_LeadFormModal> {
       c.dispose();
     }
     super.dispose();
+  }
+
+  String _extractLocalNumber(String rawPhone) {
+    try {
+      final cleaned = rawPhone.replaceAll(RegExp(r'[^0-9]'), '');
+
+      final parsed = PhoneNumber.parse('+$cleaned');
+
+      return parsed.nsn;
+    } catch (e) {
+      return rawPhone;
+    }
+  }
+
+  String _getInitialCountryCode(String rawPhone) {
+    try {
+      final cleaned = rawPhone.replaceAll(RegExp(r'[^0-9]'), '');
+
+      final parsed = PhoneNumber.parse('+$cleaned');
+
+      return parsed.isoCode.name;
+    } catch (e) {
+      return 'IN'; // safe fallback only
+    }
+  }
+
+  String _fullPhoneNumber() {
+    final countryCode = _phoneCountryCode.replaceAll('+', '');
+    final localNumber = _phone.text.trim();
+
+    return '$countryCode$localNumber';
   }
 
   Future<List<MultipartFile>> _buildMultipartFiles() async {
@@ -1763,8 +1935,10 @@ class _LeadFormModalState extends State<_LeadFormModal> {
     return files;
   }
 
-  List<String> get _retainedAttachmentPaths =>
-      _existingAttachments.map((a) => a.path).where((p) => p.isNotEmpty).toList();
+  List<String> get _retainedAttachmentPaths => _existingAttachments
+      .map((a) => a.path)
+      .where((p) => p.isNotEmpty)
+      .toList();
 
   void _removeExistingAttachment(Attachment file) {
     setState(() => _existingAttachments.remove(file));
@@ -1819,7 +1993,7 @@ class _LeadFormModalState extends State<_LeadFormModal> {
       id: '',
       name: _name.text.trim(),
       companyName: _company.text.trim(),
-      phone: _phone.text.trim(),
+      phone: _fullPhoneNumber(),
       email: _email.text.trim(),
       address: _addr.text.trim(),
       country: _country ?? '',
@@ -1865,8 +2039,7 @@ class _LeadFormModalState extends State<_LeadFormModal> {
         builder: (_, ctrl) => Container(
           decoration: const BoxDecoration(
               color: AppColors.background,
-              borderRadius:
-                  BorderRadius.vertical(top: Radius.circular(24))),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
           child: Column(children: [
             Container(
                 margin: const EdgeInsets.only(top: 12),
@@ -1877,8 +2050,7 @@ class _LeadFormModalState extends State<_LeadFormModal> {
                     borderRadius: BorderRadius.circular(2))),
             Container(
               color: AppColors.surface,
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 20, vertical: 14),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
               child: Row(children: [
                 Text(_isEdit ? 'Edit Lead' : 'Create Lead',
                     style: const TextStyle(
@@ -1887,12 +2059,11 @@ class _LeadFormModalState extends State<_LeadFormModal> {
                         color: AppColors.textPrimary)),
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 3),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
                       color: AppColors.primaryLight,
                       borderRadius: BorderRadius.circular(6)),
-                 
                 ),
                 const Spacer(),
                 IconButton(
@@ -1906,8 +2077,7 @@ class _LeadFormModalState extends State<_LeadFormModal> {
             ),
             Container(
               color: AppColors.surface,
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 16, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               child: Row(
                   children: ['Basic', 'Business', 'Manage', 'Notes']
                       .asMap()
@@ -1951,9 +2121,8 @@ class _LeadFormModalState extends State<_LeadFormModal> {
                               color: active
                                   ? AppColors.primary
                                   : AppColors.textHint,
-                              fontWeight: active
-                                  ? FontWeight.w600
-                                  : FontWeight.w400)),
+                              fontWeight:
+                                  active ? FontWeight.w600 : FontWeight.w400)),
                     ]),
                   )),
                   if (i < 3)
@@ -1984,8 +2153,7 @@ class _LeadFormModalState extends State<_LeadFormModal> {
                         icon: const Icon(Icons.arrow_back, size: 16),
                         label: const Text('Back'),
                         style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
-                                vertical: 13)),
+                            padding: const EdgeInsets.symmetric(vertical: 13)),
                       )),
                       const SizedBox(width: 12),
                     ],
@@ -2035,9 +2203,8 @@ class _LeadFormModalState extends State<_LeadFormModal> {
         ),
       );
 
-  Widget _basicStep() => Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+  Widget _basicStep() =>
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const SectionHeader(
             title: 'Basic Information', icon: Icons.person_outline),
         CrmTextField(
@@ -2052,60 +2219,93 @@ class _LeadFormModalState extends State<_LeadFormModal> {
             hint: 'Organisation',
             controller: _company),
         const SizedBox(height: 14),
-        Row(children: [
-          Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            RichText(
+              text: const TextSpan(
                 children: [
-                  CrmTextField(
-                      label: 'Phone Number',
-                      required: true,
-                      hint: '10-digit number',
-                      controller: _phone,
-                      keyboardType: TextInputType.phone,
-                      inputFormatters: [_PhoneInputFormatter()],
-                      onChanged: (v) {
-                        final err = _validatePhone(v);
-                        if (_phoneError != err) {
-                          setState(() => _phoneError = err);
-                        }
-                      }),
-                  if (_phoneError != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4, left: 2),
-                      child: Text(_phoneError!,
-                          style: const TextStyle(
-                              fontSize: 11, color: AppColors.danger)),
+                  TextSpan(
+                    text: 'Phone Number ',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textSecondary,
                     ),
-                ],
-              )),
-          const SizedBox(width: 12),
-          Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  CrmTextField(
-                      label: 'Email',
-                      required: true,
-                      hint: 'name@gmail.com',
-                      controller: _email,
-                      keyboardType: TextInputType.emailAddress,
-                      onChanged: (v) {
-                        final err = _validateEmail(v);
-                        if (_emailError != err) {
-                          setState(() => _emailError = err);
-                        }
-                      }),
-                  if (_emailError != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4, left: 2),
-                      child: Text(_emailError!,
-                          style: const TextStyle(
-                              fontSize: 11, color: AppColors.danger)),
+                  ),
+                  TextSpan(
+                    text: '*',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.danger,
                     ),
+                  ),
                 ],
-              )),
-        ]),
+              ),
+            ),
+            const SizedBox(height: 6),
+            IntlPhoneField(
+              controller: _phone,
+              initialCountryCode: _getInitialCountryCode(
+                widget.existingLead?.phone ?? '',
+              ),
+              showCountryFlag: true,
+              disableLengthCheck: true,
+              decoration: const InputDecoration(
+                hintText: '9876543210',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (phone) {
+                _phoneCountryCode = phone.countryCode;
+
+                final err = _validatePhone(phone.number);
+
+                if (_phoneError != err) {
+                  setState(() {
+                    _phoneError = err;
+                  });
+                }
+              },
+            ),
+            if (_phoneError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, left: 2),
+                child: Text(
+                  _phoneError!,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.danger,
+                  ),
+                ),
+              ),
+            const SizedBox(height: 6),
+            CrmTextField(
+              label: 'Email',
+              required: true,
+              hint: 'name@gmail.com',
+              controller: _email,
+              keyboardType: TextInputType.emailAddress,
+              onChanged: (v) {
+                final err = _validateEmail(v);
+                if (_emailError != err) {
+                  setState(() => _emailError = err);
+                }
+              },
+            ),
+            if (_emailError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, left: 2),
+                child: Text(
+                  _emailError!,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.danger,
+                  ),
+                ),
+              ),
+          ],
+        ),
         const SizedBox(height: 14),
         CrmTextField(
             label: 'Address',
@@ -2121,9 +2321,8 @@ class _LeadFormModalState extends State<_LeadFormModal> {
             onChanged: (v) => setState(() => _country = v)),
       ]);
 
-  Widget _businessStep() => Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+  Widget _businessStep() =>
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const SectionHeader(
             title: 'Business Details', icon: Icons.business_outlined),
         CrmDropdown(
@@ -2154,9 +2353,8 @@ class _LeadFormModalState extends State<_LeadFormModal> {
             maxLines: 4),
       ]);
 
-  Widget _manageStep() => Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+  Widget _manageStep() =>
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const SectionHeader(
             title: 'Lead Management', icon: Icons.tune_outlined),
         const Text('Status',
@@ -2173,8 +2371,8 @@ class _LeadFormModalState extends State<_LeadFormModal> {
               return GestureDetector(
                 onTap: () => setState(() => _status = s),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                   decoration: BoxDecoration(
                     color: sel ? AppColors.primary : AppColors.surface,
                     borderRadius: BorderRadius.circular(20),
@@ -2231,12 +2429,13 @@ class _LeadFormModalState extends State<_LeadFormModal> {
                       size: 16, color: AppColors.textHint),
                   SizedBox(width: 8),
                   Text('Select Sales Rep',
-                      style: TextStyle(fontSize: 14, color: AppColors.textHint)),
+                      style:
+                          TextStyle(fontSize: 14, color: AppColors.textHint)),
                 ]),
                 icon: const Icon(Icons.keyboard_arrow_down_rounded,
                     color: AppColors.textSecondary),
-                style: const TextStyle(
-                    fontSize: 14, color: AppColors.textPrimary),
+                style:
+                    const TextStyle(fontSize: 14, color: AppColors.textPrimary),
                 items: _salesUsers
                     .map((u) => DropdownMenuItem<String>(
                           value: u.id,
@@ -2293,8 +2492,8 @@ class _LeadFormModalState extends State<_LeadFormModal> {
               lastDate: lastDate,
               builder: (ctx, child) => Theme(
                   data: Theme.of(ctx).copyWith(
-                      colorScheme: const ColorScheme.light(
-                          primary: AppColors.primary)),
+                      colorScheme:
+                          const ColorScheme.light(primary: AppColors.primary)),
                   child: child!),
             );
             if (p != null) setState(() => _followUp = p);
@@ -2326,9 +2525,8 @@ class _LeadFormModalState extends State<_LeadFormModal> {
         ),
       ]);
 
-  Widget _notesStep() => Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+  Widget _notesStep() =>
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const SectionHeader(
             title: 'Additional Notes', icon: Icons.notes_outlined),
         CrmTextField(
@@ -2337,221 +2535,210 @@ class _LeadFormModalState extends State<_LeadFormModal> {
             controller: _notes,
             maxLines: 6),
         const SizedBox(height: 20),
-
-        Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-                color: AppColors.primaryLight,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                    color: AppColors.primary.withOpacity(0.2))),
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Row(children: [
-                    Icon(Icons.attach_file, size: 16, color: AppColors.primary),
-                    SizedBox(width: 6),
-                    Text('Attachments',
-                        style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.primary)),
-                    SizedBox(width: 6),
-                    Text('(max 5 MB each)',
-                        style: TextStyle(
-                            fontSize: 11, color: AppColors.textSecondary)),
-                  ]),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: _pickFiles,
-                      icon: const Icon(Icons.add, size: 16),
-                      label: const Text('Add Files'),
-                      style: OutlinedButton.styleFrom(
-                          foregroundColor: AppColors.primary,
-                          side: const BorderSide(color: AppColors.primary),
-                          padding: const EdgeInsets.symmetric(vertical: 12)),
-                    ),
-                  ),
-                  if (_isEdit && _existingAttachments.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    const Text('Current attachments',
-                        style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textSecondary)),
-                    const SizedBox(height: 8),
-                    ..._existingAttachments.map((file) {
-                      final sizeKB = (file.size / 1024).toStringAsFixed(1);
-                      final ext = file.name.contains('.')
-                          ? file.name.split('.').last.toLowerCase()
-                          : '';
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: AppColors.surface,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: AppColors.border),
-                        ),
-                        child: Row(children: [
-                          Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: BoxDecoration(
-                                color: AppColors.primaryLight,
-                                borderRadius: BorderRadius.circular(6)),
-                            child: Icon(_fileIcon(ext),
-                                size: 16, color: AppColors.primary),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(file.name,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w500,
-                                          color: AppColors.textPrimary)),
-                                  Text('$sizeKB KB',
-                                      style: const TextStyle(
-                                          fontSize: 11,
-                                          color: AppColors.textHint)),
-                                ]),
-                          ),
-                          GestureDetector(
-                            onTap: () => _removeExistingAttachment(file),
-                            child: const Icon(Icons.close,
-                                size: 18, color: AppColors.danger),
-                          ),
-                        ]),
-                      );
-                    }),
-                  ],
-                  if (_attachments.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    if (_isEdit)
-                      const Padding(
-                        padding: EdgeInsets.only(bottom: 8),
-                        child: Text('New attachments',
-                            style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.textSecondary)),
-                      ),
-                    ..._attachments.map((file) {
-                      final sizeKB = (file.size / 1024).toStringAsFixed(1);
-                      final ext = file.name.split('.').last.toLowerCase();
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: AppColors.surface,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: AppColors.border),
-                        ),
-                        child: Row(children: [
-                          Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: BoxDecoration(
-                                color: AppColors.primaryLight,
-                                borderRadius: BorderRadius.circular(6)),
-                            child: Icon(_fileIcon(ext),
-                                size: 16, color: AppColors.primary),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(file.name,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w500,
-                                          color: AppColors.textPrimary)),
-                                  Text('$sizeKB KB',
-                                      style: const TextStyle(
-                                          fontSize: 11,
-                                          color: AppColors.textHint)),
-                                ]),
-                          ),
-                          GestureDetector(
-                            onTap: () =>
-                                setState(() => _attachments.remove(file)),
-                            child: const Icon(Icons.close,
-                                size: 18, color: AppColors.danger),
-                          ),
-                        ]),
-                      );
-                    }),
-                  ],
-                ]),
-          ),
-          const SizedBox(height: 20),
-        
-
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
               color: AppColors.primaryLight,
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                  color: AppColors.primary.withOpacity(0.2))),
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(children: [
-                  Icon(Icons.summarize_outlined,
-                      size: 16, color: AppColors.primary),
-                  SizedBox(width: 6),
-                  Text('Summary',
+              border: Border.all(color: AppColors.primary.withOpacity(0.2))),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Row(children: [
+              Icon(Icons.attach_file, size: 16, color: AppColors.primary),
+              SizedBox(width: 6),
+              Text('Attachments',
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.primary)),
+              SizedBox(width: 6),
+              Text('(max 5 MB each)',
+                  style:
+                      TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+            ]),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _pickFiles,
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Add Files'),
+                style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.primary,
+                    side: const BorderSide(color: AppColors.primary),
+                    padding: const EdgeInsets.symmetric(vertical: 12)),
+              ),
+            ),
+            if (_isEdit && _existingAttachments.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              const Text('Current attachments',
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textSecondary)),
+              const SizedBox(height: 8),
+              ..._existingAttachments.map((file) {
+                final sizeKB = (file.size / 1024).toStringAsFixed(1);
+                final ext = file.name.contains('.')
+                    ? file.name.split('.').last.toLowerCase()
+                    : '';
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: Row(children: [
+                    Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                          color: AppColors.primaryLight,
+                          borderRadius: BorderRadius.circular(6)),
+                      child: Icon(_fileIcon(ext),
+                          size: 16, color: AppColors.primary),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(file.name,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                    color: AppColors.textPrimary)),
+                            Text('$sizeKB KB',
+                                style: const TextStyle(
+                                    fontSize: 11, color: AppColors.textHint)),
+                          ]),
+                    ),
+                    GestureDetector(
+                      onTap: () => _removeExistingAttachment(file),
+                      child: const Icon(Icons.close,
+                          size: 18, color: AppColors.danger),
+                    ),
+                  ]),
+                );
+              }),
+            ],
+            if (_attachments.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              if (_isEdit)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 8),
+                  child: Text('New attachments',
                       style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.primary)),
-                ]),
-                const SizedBox(height: 10),
-                ...[
-                  ['Name', _name.text.isEmpty ? '-' : _name.text],
-                  ['Company', _company.text.isEmpty ? '-' : _company.text],
-                  ['Phone', _phone.text.isEmpty ? '-' : _phone.text],
-                  ['Country', _country ?? '-'],
-                  ['Source', _source ?? '-'],
-                  ['Client Type', _clientType ?? '-'],
-                  ['Status', _status],
-                  if (_isEdit)
-                    [
-                      'Files',
-                      '${_existingAttachments.length} existing, ${_attachments.length} new'
-                    ],
-                  if (!_isEdit && _attachments.isNotEmpty)
-                    ['Files', '${_attachments.length} attached'],
-                ].map((r) => Padding(
-                      padding: const EdgeInsets.only(bottom: 5),
-                      child: Row(children: [
-                        SizedBox(
-                            width: 70,
-                            child: Text(r[0],
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textSecondary)),
+                ),
+              ..._attachments.map((file) {
+                final sizeKB = (file.size / 1024).toStringAsFixed(1);
+                final ext = file.name.split('.').last.toLowerCase();
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: Row(children: [
+                    Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                          color: AppColors.primaryLight,
+                          borderRadius: BorderRadius.circular(6)),
+                      child: Icon(_fileIcon(ext),
+                          size: 16, color: AppColors.primary),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(file.name,
+                                overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                    fontSize: 12,
-                                    color: AppColors.textSecondary))),
-                        const Text(': ',
-                            style: TextStyle(
-                                fontSize: 12, color: AppColors.textHint)),
-                        Expanded(
-                            child: Text(r[1],
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                    color: AppColors.textPrimary)),
+                            Text('$sizeKB KB',
                                 style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color: AppColors.textPrimary))),
-                      ]),
-                    )),
-              ]),
+                                    fontSize: 11, color: AppColors.textHint)),
+                          ]),
+                    ),
+                    GestureDetector(
+                      onTap: () => setState(() => _attachments.remove(file)),
+                      child: const Icon(Icons.close,
+                          size: 18, color: AppColors.danger),
+                    ),
+                  ]),
+                );
+              }),
+            ],
+          ]),
+        ),
+        const SizedBox(height: 20),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+              color: AppColors.primaryLight,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: AppColors.primary.withOpacity(0.2))),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Row(children: [
+              Icon(Icons.summarize_outlined,
+                  size: 16, color: AppColors.primary),
+              SizedBox(width: 6),
+              Text('Summary',
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.primary)),
+            ]),
+            const SizedBox(height: 10),
+            ...[
+              ['Name', _name.text.isEmpty ? '-' : _name.text],
+              ['Company', _company.text.isEmpty ? '-' : _company.text],
+              ['Phone', _phone.text.isEmpty ? '-' : _phone.text],
+              ['Country', _country ?? '-'],
+              ['Source', _source ?? '-'],
+              ['Client Type', _clientType ?? '-'],
+              ['Status', _status],
+              if (_isEdit)
+                [
+                  'Files',
+                  '${_existingAttachments.length} existing, ${_attachments.length} new'
+                ],
+              if (!_isEdit && _attachments.isNotEmpty)
+                ['Files', '${_attachments.length} attached'],
+            ].map((r) => Padding(
+                  padding: const EdgeInsets.only(bottom: 5),
+                  child: Row(children: [
+                    SizedBox(
+                        width: 70,
+                        child: Text(r[0],
+                            style: const TextStyle(
+                                fontSize: 12, color: AppColors.textSecondary))),
+                    const Text(': ',
+                        style:
+                            TextStyle(fontSize: 12, color: AppColors.textHint)),
+                    Expanded(
+                        child: Text(r[1],
+                            style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.textPrimary))),
+                  ]),
+                )),
+          ]),
         ),
       ]);
 
