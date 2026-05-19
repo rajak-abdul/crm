@@ -250,8 +250,7 @@ class _LeadsViewState extends State<_LeadsView> {
     if (all.isEmpty) return all;
     final q = _search.toLowerCase();
     return all.where((l) {
-      final matchesSearch =
-          _search.isEmpty || l.name.toLowerCase().startsWith(q);
+      final matchesSearch = _search.isEmpty || l.name.toLowerCase().contains(q);
 
       final matchesStatus =
           _statusFilter == 'All Status' || l.status == _statusFilter;
@@ -2252,6 +2251,10 @@ class _LeadFormModalState extends State<_LeadFormModal> {
               ),
               showCountryFlag: true,
               disableLengthCheck: true,
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(12), // change to 10 if needed
+              ],
               decoration: const InputDecoration(
                 hintText: '9876543210',
                 border: OutlineInputBorder(),

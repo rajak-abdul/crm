@@ -736,9 +736,7 @@ class _AllDealsViewState extends State<_AllDealsView> {
         : 'All Client Types';
     final today = _dateOnly(DateTime.now());
     return widget.deals.where((d) {
-      final matchQ = _q.isEmpty ||
-          d.name.toLowerCase().contains(_q) ||
-          d.companyName.toLowerCase().contains(_q);
+      final matchQ = _q.isEmpty || d.name.toLowerCase().contains(_q);
       final matchStage = safeStage == 'All Stages' ||
           DealConstants.canonicalStage(d.stage).trim().toLowerCase() ==
               safeStage.trim().toLowerCase();

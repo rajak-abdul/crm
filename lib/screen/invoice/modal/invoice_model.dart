@@ -16,6 +16,7 @@ class Invoice {
   final double price, taxValue, discountValue;
   final double? inrAmount, exchangeRate;
   final DateTime createdAt;
+  final DateTime updatedAt;
   final bool isLocal;
 
   const Invoice({
@@ -37,6 +38,7 @@ class Invoice {
     this.inrAmount,
     this.exchangeRate,
     required this.createdAt,
+    required this.updatedAt,
     this.isLocal = false,
   });
 
@@ -167,6 +169,9 @@ class Invoice {
         exchangeRate: _d(m['exchangeRate']),
         createdAt: m['createdAt'] != null
             ? DateTime.tryParse(m['createdAt'].toString()) ?? DateTime.now()
+            : DateTime.now(),
+        updatedAt: m['updatedAt'] != null
+            ? DateTime.tryParse(m['updatedAt'].toString()) ?? DateTime.now()
             : DateTime.now(),
         isLocal: (m['isLocal'] as int? ?? 0) == 1,
       );
@@ -310,6 +315,9 @@ class Invoice {
       createdAt: j['createdAt'] != null
           ? DateTime.tryParse(j['createdAt'].toString()) ?? DateTime.now()
           : DateTime.now(),
+      updatedAt: j['updatedAt'] != null
+          ? DateTime.tryParse(j['updatedAt'].toString()) ?? DateTime.now()
+          : DateTime.now(),
       isLocal: false,
     );
   }
@@ -352,6 +360,7 @@ class Invoice {
         id: id,
         invoiceNo: invoiceNo,
         createdAt: createdAt,
+        updatedAt: updatedAt,
         isLocal: isLocal ?? this.isLocal,
         assignTo: assignTo ?? this.assignTo,
         issueDate: issueDate ?? this.issueDate,
