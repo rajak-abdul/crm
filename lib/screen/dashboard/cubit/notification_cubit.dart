@@ -69,47 +69,47 @@ class AppNotification extends Equatable {
         : <String, dynamic>{};
 
     return AppNotification(
-      id:            _s(j['_id'] ?? j['id']),
-      userId:        _s(j['userId']),
-      type:          _s(j['type'], 'general'),
-      text:          _s(j['text'] ?? j['message'] ?? j['title']),
-      read:          j['read'] == true || j['isRead'] == true,
+      id: _s(j['_id'] ?? j['id']),
+      userId: _s(j['userId']),
+      type: _s(j['type'], 'general'),
+      text: _s(j['text'] ?? j['message'] ?? j['title']),
+      read: j['read'] == true || j['isRead'] == true,
       // removed buildProfileImageUrl — store raw filename only
-      profileImage:  _nullableStr(j['profileImage'] ?? meta['profileImage']),
-      userName:      _nullableStr(j['userName'] ?? meta['salesmanName']),
-      dealId:        _nullableStr(meta['dealId']),
-      dealName:      _nullableStr(meta['dealName']),
-      leadId:        _nullableStr(meta['leadId']),
-      proposalId:    _nullableStr(meta['proposalId']),
+      profileImage: _nullableStr(j['profileImage'] ?? meta['profileImage']),
+      userName: _nullableStr(j['userName'] ?? meta['salesmanName']),
+      dealId: _nullableStr(meta['dealId']),
+      dealName: _nullableStr(meta['dealName']),
+      leadId: _nullableStr(meta['leadId']),
+      proposalId: _nullableStr(meta['proposalId']),
       proposalTitle: _nullableStr(meta['proposalTitle']),
-      salesmanName:  _nullableStr(meta['salesmanName']),
-      salesmanId:    _nullableStr(meta['salesmanId']),
-      createdAt:     j['createdAt'] != null
+      salesmanName: _nullableStr(meta['salesmanName']),
+      salesmanId: _nullableStr(meta['salesmanId']),
+      createdAt: j['createdAt'] != null
           ? DateTime.tryParse(j['createdAt'].toString())
           : null,
-      expiresAt:     j['expiresAt'] != null
+      expiresAt: j['expiresAt'] != null
           ? DateTime.tryParse(j['expiresAt'].toString())
           : null,
     );
   }
 
   AppNotification copyWith({bool? read}) => AppNotification(
-        id:            id,
-        userId:        userId,
-        type:          type,
-        text:          text,
-        read:          read ?? this.read,
-        profileImage:  profileImage,
-        userName:      userName,
-        dealId:        dealId,
-        dealName:      dealName,
-        leadId:        leadId,
-        proposalId:    proposalId,
+        id: id,
+        userId: userId,
+        type: type,
+        text: text,
+        read: read ?? this.read,
+        profileImage: profileImage,
+        userName: userName,
+        dealId: dealId,
+        dealName: dealName,
+        leadId: leadId,
+        proposalId: proposalId,
         proposalTitle: proposalTitle,
-        salesmanName:  salesmanName,
-        salesmanId:    salesmanId,
-        createdAt:     createdAt,
-        expiresAt:     expiresAt,
+        salesmanName: salesmanName,
+        salesmanId: salesmanId,
+        createdAt: createdAt,
+        expiresAt: expiresAt,
       );
 
   String get subtitle {
@@ -137,6 +137,7 @@ abstract class NotificationState extends Equatable {
 }
 
 class NotificationInitial extends NotificationState {}
+
 class NotificationLoading extends NotificationState {}
 
 class NotificationLoaded extends NotificationState {
@@ -167,15 +168,15 @@ class NotificationError extends NotificationState {
 // CUBIT
 // ══════════════════════════════════════════════════════════════
 class NotificationCubit extends Cubit<NotificationState> {
-  static const _base = 'https://sales.stagingzar.com/api';
+  static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
 
   Dio? _dio;
   String? _cachedToken;
   String? _currentUserId;
 
-  int  _currentPage    = 1;
-  bool _hasMore        = true;
-  bool _isLoadingMore  = false;
+  int _currentPage = 1;
+  bool _hasMore = true;
+  bool _isLoadingMore = false;
 
   DateTime? _lastLoadTime;
   static const _minLoadInterval = Duration(seconds: 2);
@@ -185,72 +186,75 @@ class NotificationCubit extends Cubit<NotificationState> {
   }
 
   Future<void> _initDio() async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    _cachedToken   = prefs.getString('token');
-    _currentUserId = prefs.getString('user_id');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _cachedToken = prefs.getString('token');
+      _currentUserId = prefs.getString('user_id');
 
-    debugPrint('[NotifCubit] token=${_cachedToken != null ? "found" : "NULL"}');
-    debugPrint('[NotifCubit] user_id=$_currentUserId');
+      debugPrint(
+          '[NotifCubit] token=${_cachedToken != null ? "found" : "NULL"}');
+      debugPrint('[NotifCubit] user_id=$_currentUserId');
 
-    final dio = Dio(BaseOptions(
-      baseUrl:        _base,
-      connectTimeout: const Duration(seconds: 20),
-      receiveTimeout: const Duration(seconds: 20),
-    ));
+      final dio = Dio(BaseOptions(
+        baseUrl: _base,
+        connectTimeout: const Duration(seconds: 20),
+        receiveTimeout: const Duration(seconds: 20),
+      ));
 
-    dio.interceptors.add(InterceptorsWrapper(
-      onRequest: (opt, handler) {
-        if (_cachedToken != null) {
-          opt.headers['Authorization'] = 'Bearer $_cachedToken';
+      dio.interceptors.add(InterceptorsWrapper(
+        onRequest: (opt, handler) {
+          if (_cachedToken != null) {
+            opt.headers['Authorization'] = 'Bearer $_cachedToken';
+          }
+          handler.next(opt);
+        },
+        onError: (error, handler) {
+          if (error.response?.statusCode == 401) {
+            emit(const NotificationError(
+                'Session expired. Please login again.'));
+          }
+          handler.next(error);
+        },
+      ));
+
+      _dio = dio;
+
+      // ✅ If user_id missing but token exists, fetch profile to get userId
+      if ((_currentUserId == null || _currentUserId!.isEmpty) &&
+          _cachedToken != null) {
+        try {
+          final res = await dio.get('/users/profile');
+          debugPrint('[NotifCubit] profile response: ${res.data}');
+          final body = res.data;
+          String? fetchedId;
+          if (body is Map) {
+            fetchedId = body['_id'] as String? ??
+                body['id'] as String? ??
+                body['userId'] as String? ??
+                (body['data'] is Map
+                    ? (body['data']['_id'] as String? ??
+                        body['data']['id'] as String?)
+                    : null);
+          }
+          if (fetchedId != null && fetchedId.isNotEmpty) {
+            _currentUserId = fetchedId;
+            await prefs.setString('user_id', fetchedId); // save for next time
+            debugPrint('[NotifCubit] fetched user_id: $_currentUserId');
+          }
+        } catch (e) {
+          debugPrint('[NotifCubit] failed to fetch profile: $e');
         }
-        handler.next(opt);
-      },
-      onError: (error, handler) {
-        if (error.response?.statusCode == 401) {
-          emit(const NotificationError('Session expired. Please login again.'));
-        }
-        handler.next(error);
-      },
-    ));
-
-    _dio = dio;
-
-    // ✅ If user_id missing but token exists, fetch profile to get userId
-    if ((_currentUserId == null || _currentUserId!.isEmpty) 
-        && _cachedToken != null) {
-      try {
-        final res = await dio.get('/users/profile');
-        debugPrint('[NotifCubit] profile response: ${res.data}');
-        final body = res.data;
-        String? fetchedId;
-        if (body is Map) {
-          fetchedId = body['_id']    as String?
-                   ?? body['id']     as String?
-                   ?? body['userId'] as String?
-                   ?? (body['data'] is Map ? (
-                          body['data']['_id'] as String?
-                       ?? body['data']['id']  as String?
-                      ) : null);
-        }
-        if (fetchedId != null && fetchedId.isNotEmpty) {
-          _currentUserId = fetchedId;
-          await prefs.setString('user_id', fetchedId); // save for next time
-          debugPrint('[NotifCubit] fetched user_id: $_currentUserId');
-        }
-      } catch (e) {
-        debugPrint('[NotifCubit] failed to fetch profile: $e');
       }
-    }
 
-    if (_currentUserId != null && _currentUserId!.isNotEmpty) {
-      await load(_currentUserId!, refresh: true);
+      if (_currentUserId != null && _currentUserId!.isNotEmpty) {
+        await load(_currentUserId!, refresh: true);
+      }
+    } catch (e) {
+      debugPrint('[NotifCubit] _initDio error: $e');
+      emit(NotificationError('Failed to initialize: $e'));
     }
-  } catch (e) {
-    debugPrint('[NotifCubit] _initDio error: $e');
-    emit(NotificationError('Failed to initialize: $e'));
   }
-}
+
   NotificationLoaded? get _loaded =>
       state is NotificationLoaded ? state as NotificationLoaded : null;
 
@@ -285,7 +289,7 @@ class NotificationCubit extends Cubit<NotificationState> {
 
     if (refresh) {
       _currentPage = 1;
-      _hasMore     = true;
+      _hasMore = true;
       emit(NotificationLoading());
     } else if (state is NotificationInitial) {
       emit(NotificationLoading());
@@ -304,7 +308,8 @@ class NotificationCubit extends Cubit<NotificationState> {
       debugPrint('[NotifCubit] response type: ${res.data.runtimeType}');
 
       final newNotifications = _parse(res.data);
-      debugPrint('[NotifCubit] parsed ${newNotifications.length} notifications');
+      debugPrint(
+          '[NotifCubit] parsed ${newNotifications.length} notifications');
 
       _hasMore = newNotifications.length == 20;
 
@@ -326,12 +331,13 @@ class NotificationCubit extends Cubit<NotificationState> {
 
       emit(NotificationLoaded(
         notifications: allNotifications,
-        unreadCount:   unread,
-        hasMore:       _hasMore,
-        currentPage:   _currentPage,
+        unreadCount: unread,
+        hasMore: _hasMore,
+        currentPage: _currentPage,
       ));
     } on DioException catch (e) {
-      debugPrint('[NotifCubit] DioException: ${e.type} ${e.response?.statusCode}');
+      debugPrint(
+          '[NotifCubit] DioException: ${e.type} ${e.response?.statusCode}');
       if (!refresh && _currentPage > 1) {
         // Pagination failure — keep existing list silently
       } else {
@@ -353,15 +359,15 @@ class NotificationCubit extends Cubit<NotificationState> {
   }
 
   // ✅ Safer refresh()
-Future<void> refresh({String? userId}) async {
-  final id = userId ?? _currentUserId;
-  if (id == null || id.isEmpty) {
-    debugPrint('[NotifCubit] refresh() called but no userId available');
-    return;
+  Future<void> refresh({String? userId}) async {
+    final id = userId ?? _currentUserId;
+    if (id == null || id.isEmpty) {
+      debugPrint('[NotifCubit] refresh() called but no userId available');
+      return;
+    }
+    _currentUserId = id;
+    await load(id, refresh: true);
   }
-  _currentUserId = id;
-  await load(id, refresh: true);
-}
 
   Future<void> markAsRead(String notifId) async {
     if (_dio == null) return;
@@ -380,9 +386,9 @@ Future<void> refresh({String? userId}) async {
         .toList();
     emit(NotificationLoaded(
       notifications: updated,
-      unreadCount:   updated.where((n) => !n.read).length,
-      hasMore:       cur.hasMore,
-      currentPage:   cur.currentPage,
+      unreadCount: updated.where((n) => !n.read).length,
+      hasMore: cur.hasMore,
+      currentPage: cur.currentPage,
     ));
 
     try {
@@ -397,20 +403,19 @@ Future<void> refresh({String? userId}) async {
     final cur = _loaded;
     if (cur == null) return;
 
-    final unreadIds = cur.notifications
-        .where((n) => !n.read)
-        .map((n) => n.id)
-        .toList();
+    final unreadIds =
+        cur.notifications.where((n) => !n.read).map((n) => n.id).toList();
     if (unreadIds.isEmpty) return;
 
     final originalState = cur;
 
-    final updated = cur.notifications.map((n) => n.copyWith(read: true)).toList();
+    final updated =
+        cur.notifications.map((n) => n.copyWith(read: true)).toList();
     emit(NotificationLoaded(
       notifications: updated,
-      unreadCount:   0,
-      hasMore:       cur.hasMore,
-      currentPage:   cur.currentPage,
+      unreadCount: 0,
+      hasMore: cur.hasMore,
+      currentPage: cur.currentPage,
     ));
 
     try {
@@ -435,9 +440,9 @@ Future<void> refresh({String? userId}) async {
     final updated = cur.notifications.where((n) => n.id != notifId).toList();
     emit(NotificationLoaded(
       notifications: updated,
-      unreadCount:   updated.where((n) => !n.read).length,
-      hasMore:       cur.hasMore,
-      currentPage:   cur.currentPage,
+      unreadCount: updated.where((n) => !n.read).length,
+      hasMore: cur.hasMore,
+      currentPage: cur.currentPage,
     ));
 
     try {
@@ -453,12 +458,13 @@ Future<void> refresh({String? userId}) async {
     if (cur == null || ids.isEmpty) return false;
 
     final originalState = cur;
-    final updated = cur.notifications.where((n) => !ids.contains(n.id)).toList();
+    final updated =
+        cur.notifications.where((n) => !ids.contains(n.id)).toList();
     emit(NotificationLoaded(
       notifications: updated,
-      unreadCount:   updated.where((n) => !n.read).length,
-      hasMore:       cur.hasMore,
-      currentPage:   cur.currentPage,
+      unreadCount: updated.where((n) => !n.read).length,
+      hasMore: cur.hasMore,
+      currentPage: cur.currentPage,
     ));
 
     try {
@@ -482,7 +488,10 @@ Future<void> refresh({String? userId}) async {
       raw = data;
     } else if (data is Map) {
       for (final k in ['data', 'notifications', 'result', 'records']) {
-        if (data[k] is List) { raw = data[k] as List; break; }
+        if (data[k] is List) {
+          raw = data[k] as List;
+          break;
+        }
       }
     }
     final out = <AppNotification>[];
@@ -500,10 +509,11 @@ Future<void> refresh({String? userId}) async {
 
   String _dioMsg(DioException e) => switch (e.type) {
         DioExceptionType.connectionTimeout ||
-        DioExceptionType.receiveTimeout   => 'Connection timed out.',
-        DioExceptionType.connectionError  => 'No internet connection.',
-        DioExceptionType.badResponse      =>
-            'Server error (${e.response?.statusCode}).',
+        DioExceptionType.receiveTimeout =>
+          'Connection timed out.',
+        DioExceptionType.connectionError => 'No internet connection.',
+        DioExceptionType.badResponse =>
+          'Server error (${e.response?.statusCode}).',
         _ => 'Something went wrong. Please try again.',
       };
 
@@ -519,47 +529,47 @@ Future<void> refresh({String? userId}) async {
 // ══════════════════════════════════════════════════════════════
 IconData notifIcon(String type) => switch (type.toLowerCase()) {
       'followup' || 'follow_up' => Icons.access_time_rounded,
-      'deal'                    => Icons.handshake_outlined,
-      'lead'                    => Icons.people_outline,
-      'invoice'                 => Icons.receipt_long_outlined,
-      'payment'                 => Icons.account_balance_wallet_outlined,
-      'reminder'                => Icons.alarm_rounded,
-      'admin'                   => Icons.admin_panel_settings_outlined,
-      _                         => Icons.notifications_outlined,
+      'deal' => Icons.handshake_outlined,
+      'lead' => Icons.people_outline,
+      'invoice' => Icons.receipt_long_outlined,
+      'payment' => Icons.account_balance_wallet_outlined,
+      'reminder' => Icons.alarm_rounded,
+      'admin' => Icons.admin_panel_settings_outlined,
+      _ => Icons.notifications_outlined,
     };
 
 Color notifColor(String type) => switch (type.toLowerCase()) {
       'followup' || 'follow_up' => AppColors.warning,
-      'deal'                    => AppColors.purple,
-      'lead'                    => AppColors.success,
-      'invoice'                 => AppColors.primary,
-      'payment'                 => const Color(0xFF10B981),
-      'reminder'                => AppColors.danger,
-      'admin'                   => const Color(0xFF6366F1),
-      _                         => AppColors.primary,
+      'deal' => AppColors.purple,
+      'lead' => AppColors.success,
+      'invoice' => AppColors.primary,
+      'payment' => const Color(0xFF10B981),
+      'reminder' => AppColors.danger,
+      'admin' => const Color(0xFF6366F1),
+      _ => AppColors.primary,
     };
 
 String timeAgo(DateTime? dt) {
   if (dt == null) return '';
   final diff = DateTime.now().difference(dt);
-  if (diff.inSeconds < 60)  return 'Just now';
-  if (diff.inMinutes < 60)  return '${diff.inMinutes}m ago';
-  if (diff.inHours   < 24)  return '${diff.inHours}h ago';
-  if (diff.inDays    < 7)   return '${diff.inDays}d ago';
-  if (diff.inDays    < 30)  return '${(diff.inDays / 7).floor()}w ago';
-  if (diff.inDays    < 365) return '${(diff.inDays / 30).floor()}mo ago';
+  if (diff.inSeconds < 60) return 'Just now';
+  if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+  if (diff.inHours < 24) return '${diff.inHours}h ago';
+  if (diff.inDays < 7) return '${diff.inDays}d ago';
+  if (diff.inDays < 30) return '${(diff.inDays / 7).floor()}w ago';
+  if (diff.inDays < 365) return '${(diff.inDays / 30).floor()}mo ago';
   return '${(diff.inDays / 365).floor()}y ago';
 }
 
 String typeLabel(String type) => switch (type.toLowerCase()) {
       'followup' || 'follow_up' => 'Follow-up',
-      'deal'                    => 'Deal Update',
-      'lead'                    => 'Lead',
-      'invoice'                 => 'Invoice',
-      'payment'                 => 'Payment',
-      'reminder'                => 'Reminder',
-      'admin'                   => 'Admin',
-      _                         => 'Notification',
+      'deal' => 'Deal Update',
+      'lead' => 'Lead',
+      'invoice' => 'Invoice',
+      'payment' => 'Payment',
+      'reminder' => 'Reminder',
+      'admin' => 'Admin',
+      _ => 'Notification',
     };
 
 // ══════════════════════════════════════════════════════════════
@@ -600,7 +610,7 @@ class NotificationPanel extends StatelessWidget {
                   onPressed: () async {
                     // ── FIX: read 'user_id' (not 'auth_token') ──
                     final prefs = await SharedPreferences.getInstance();
-                    final uid   = prefs.getString('user_id') ?? '';
+                    final uid = prefs.getString('user_id') ?? '';
                     cubit.load(uid, refresh: true);
                   },
                   child: const Text('Retry'),
@@ -626,7 +636,7 @@ class NotificationPanel extends StatelessWidget {
           );
         }
 
-        final all    = state.notifications;
+        final all = state.notifications;
         final first5 = all.take(5).toList();
 
         return Column(
@@ -646,10 +656,9 @@ class NotificationPanel extends StatelessWidget {
               ]),
             ),
             ...first5.asMap().entries.map((e) => _NotifTile(
-                  notif:       e.value,
-                  onRead:      () => cubit.markAsRead(e.value.id),
-                  onDelete:    () =>
-                      _showDeleteDialog(context, cubit, e.value.id),
+                  notif: e.value,
+                  onRead: () => cubit.markAsRead(e.value.id),
+                  onDelete: () => _showDeleteDialog(context, cubit, e.value.id),
                   showDivider: e.key != first5.length - 1 || all.length > 5,
                 )),
             if (all.length > 5)
@@ -704,10 +713,12 @@ class NotificationPanel extends StatelessWidget {
             const Text('Are you sure you want to delete this notification?'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           TextButton(
-            onPressed: () { Navigator.pop(ctx); cubit.delete(id); },
+            onPressed: () {
+              Navigator.pop(ctx);
+              cubit.delete(id);
+            },
             style: TextButton.styleFrom(foregroundColor: AppColors.danger),
             child: const Text('Delete'),
           ),
@@ -727,8 +738,8 @@ class _MarkAllReadButton extends StatelessWidget {
     return GestureDetector(
       onTap: () async {
         // ── FIX: read 'user_id' ──
-        final prefs   = await SharedPreferences.getInstance();
-        final uid     = prefs.getString('user_id') ?? '';
+        final prefs = await SharedPreferences.getInstance();
+        final uid = prefs.getString('user_id') ?? '';
         final confirm = await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
@@ -765,9 +776,9 @@ class _MarkAllReadButton extends StatelessWidget {
 // ── Single notification tile ──────────────────────────────────
 class _NotifTile extends StatelessWidget {
   final AppNotification notif;
-  final VoidCallback    onRead;
-  final VoidCallback    onDelete;
-  final bool            showDivider;
+  final VoidCallback onRead;
+  final VoidCallback onDelete;
+  final bool showDivider;
 
   const _NotifTile({
     required this.notif,
@@ -779,7 +790,7 @@ class _NotifTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = notifColor(notif.type);
-    final icon  = notifIcon(notif.type);
+    final icon = notifIcon(notif.type);
 
     return Column(children: [
       GestureDetector(
@@ -787,73 +798,69 @@ class _NotifTile extends StatelessWidget {
         behavior: HitTestBehavior.opaque,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          padding:
-              const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
           decoration: BoxDecoration(
-            color: notif.read
-                ? Colors.transparent
-                : color.withOpacity(0.04),
+            color: notif.read ? Colors.transparent : color.withOpacity(0.04),
             borderRadius: BorderRadius.circular(10),
           ),
-          child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             _NotifAvatar(notif: notif, color: color, icon: icon),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                Row(children: [
-                  if (!notif.read)
-                    Container(
-                      width: 7, height: 7,
-                      margin: const EdgeInsets.only(right: 6, top: 1),
-                      decoration: BoxDecoration(
-                          color: color, shape: BoxShape.circle),
-                    ),
-                  Expanded(
-                    child: Text(typeLabel(notif.type),
-                        style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            color: color)),
-                  ),
-                  Text(timeAgo(notif.createdAt),
-                      style: const TextStyle(
-                          fontSize: 10, color: AppColors.textHint)),
-                ]),
-                const SizedBox(height: 3),
-                Text(notif.text,
-                    style: TextStyle(
-                        fontSize: 13,
-                        color: notif.read
-                            ? AppColors.textSecondary
-                            : AppColors.textPrimary,
-                        fontWeight: notif.read
-                            ? FontWeight.w400
-                            : FontWeight.w500)),
-                if (notif.userName != null) ...[
-                  const SizedBox(height: 3),
-                  Text(notif.userName!,
-                      style: const TextStyle(
-                          fontSize: 11, color: AppColors.textHint)),
-                ],
-                if (notif.subtitle.isNotEmpty) ...[
-                  const SizedBox(height: 2),
-                  Row(children: [
-                    const Icon(Icons.folder_outlined,
-                        size: 11, color: AppColors.textHint),
-                    const SizedBox(width: 3),
-                    Flexible(
-                      child: Text(notif.subtitle,
+                    Row(children: [
+                      if (!notif.read)
+                        Container(
+                          width: 7,
+                          height: 7,
+                          margin: const EdgeInsets.only(right: 6, top: 1),
+                          decoration: BoxDecoration(
+                              color: color, shape: BoxShape.circle),
+                        ),
+                      Expanded(
+                        child: Text(typeLabel(notif.type),
+                            style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: color)),
+                      ),
+                      Text(timeAgo(notif.createdAt),
                           style: const TextStyle(
-                              fontSize: 11, color: AppColors.textHint),
-                          overflow: TextOverflow.ellipsis),
-                    ),
+                              fontSize: 10, color: AppColors.textHint)),
+                    ]),
+                    const SizedBox(height: 3),
+                    Text(notif.text,
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: notif.read
+                                ? AppColors.textSecondary
+                                : AppColors.textPrimary,
+                            fontWeight: notif.read
+                                ? FontWeight.w400
+                                : FontWeight.w500)),
+                    if (notif.userName != null) ...[
+                      const SizedBox(height: 3),
+                      Text(notif.userName!,
+                          style: const TextStyle(
+                              fontSize: 11, color: AppColors.textHint)),
+                    ],
+                    if (notif.subtitle.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Row(children: [
+                        const Icon(Icons.folder_outlined,
+                            size: 11, color: AppColors.textHint),
+                        const SizedBox(width: 3),
+                        Flexible(
+                          child: Text(notif.subtitle,
+                              style: const TextStyle(
+                                  fontSize: 11, color: AppColors.textHint),
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                      ]),
+                    ],
                   ]),
-                ],
-              ]),
             ),
             GestureDetector(
               onTap: onDelete,
@@ -866,8 +873,7 @@ class _NotifTile extends StatelessWidget {
           ]),
         ),
       ),
-      if (showDivider)
-        const Divider(height: 1, color: AppColors.divider),
+      if (showDivider) const Divider(height: 1, color: AppColors.divider),
     ]);
   }
 }
@@ -875,7 +881,7 @@ class _NotifTile extends StatelessWidget {
 // ── Avatar (no buildProfileImageUrl — just icon fallback) ────
 class _NotifAvatar extends StatelessWidget {
   final AppNotification notif;
-  final Color    color;
+  final Color color;
   final IconData icon;
 
   const _NotifAvatar(
@@ -907,15 +913,14 @@ class NotificationsScreen extends StatefulWidget {
 class _NotificationsScreenState extends State<NotificationsScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  final Set<String> _selected  = {};
-  bool              _isSelecting = false;
+  final Set<String> _selected = {};
+  bool _isSelecting = false;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
-      _loadOnOpen(); // ← add this
-
+    _loadOnOpen(); // ← add this
   }
 
   @override
@@ -933,17 +938,19 @@ class _NotificationsScreenState extends State<NotificationsScreen>
         _selected.clear();
         _isSelecting = false;
       });
-Future<void> _loadOnOpen() async {
-  final prefs = await SharedPreferences.getInstance();
-  final uid   = prefs.getString('user_id') ?? '';
-  if (uid.isEmpty) return;
-  widget.cubit.load(uid, refresh: true);
-}
-Future<void> _handleRefresh() async {
-  final prefs = await SharedPreferences.getInstance();
-  final uid   = prefs.getString('user_id') ?? '';
-  widget.cubit.refresh(userId: uid);
-}
+  Future<void> _loadOnOpen() async {
+    final prefs = await SharedPreferences.getInstance();
+    final uid = prefs.getString('user_id') ?? '';
+    if (uid.isEmpty) return;
+    widget.cubit.load(uid, refresh: true);
+  }
+
+  Future<void> _handleRefresh() async {
+    final prefs = await SharedPreferences.getInstance();
+    final uid = prefs.getString('user_id') ?? '';
+    widget.cubit.refresh(userId: uid);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -987,8 +994,7 @@ Future<void> _handleRefresh() async {
                   size: 18, color: AppColors.danger),
               label: const Text('Delete',
                   style: TextStyle(
-                      color: AppColors.danger,
-                      fontWeight: FontWeight.w600)),
+                      color: AppColors.danger, fontWeight: FontWeight.w600)),
             ),
             IconButton(
               icon: const Icon(Icons.close),
@@ -1026,12 +1032,12 @@ Future<void> _handleRefresh() async {
         ],
         bottom: TabBar(
           controller: _tabController,
-          labelColor:            AppColors.primary,
-          unselectedLabelColor:  AppColors.textSecondary,
-          indicatorColor:        AppColors.primary,
-          indicatorWeight:       2.5,
-          labelStyle: const TextStyle(
-              fontWeight: FontWeight.w600, fontSize: 13),
+          labelColor: AppColors.primary,
+          unselectedLabelColor: AppColors.textSecondary,
+          indicatorColor: AppColors.primary,
+          indicatorWeight: 2.5,
+          labelStyle:
+              const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
           tabs: [
             BlocBuilder<NotificationCubit, NotificationState>(
               bloc: widget.cubit,
@@ -1043,12 +1049,12 @@ Future<void> _handleRefresh() async {
                   child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                    const Text('Unread'),
-                    if (count > 0) ...[
-                      const SizedBox(width: 6),
-                      _Badge('$count', AppColors.primary),
-                    ],
-                  ]),
+                        const Text('Unread'),
+                        if (count > 0) ...[
+                          const SizedBox(width: 6),
+                          _Badge('$count', AppColors.primary),
+                        ],
+                      ]),
                 );
               },
             ),
@@ -1062,10 +1068,10 @@ Future<void> _handleRefresh() async {
                   child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                    const Text('All'),
-                    const SizedBox(width: 6),
-                    _Badge('$count', AppColors.textSecondary),
-                  ]),
+                        const Text('All'),
+                        const SizedBox(width: 6),
+                        _Badge('$count', AppColors.textSecondary),
+                      ]),
                 );
               },
             ),
@@ -1079,30 +1085,24 @@ Future<void> _handleRefresh() async {
           builder: (ctx, state) {
             if (state is NotificationLoading) {
               return const Center(
-                child:
-                    CircularProgressIndicator(color: AppColors.primary),
+                child: CircularProgressIndicator(color: AppColors.primary),
               );
             }
             if (state is NotificationError) {
               return Center(
-                child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
                   const Icon(Icons.error_outline,
                       size: 48, color: AppColors.danger),
                   const SizedBox(height: 12),
                   Text(state.message,
-                      style: const TextStyle(
-                          color: AppColors.textSecondary),
+                      style: const TextStyle(color: AppColors.textSecondary),
                       textAlign: TextAlign.center),
                   const SizedBox(height: 16),
                   ElevatedButton(
                     onPressed: () async {
                       // ── FIX: read 'user_id' ──
-                      final prefs =
-                          await SharedPreferences.getInstance();
-                      final uid =
-                          prefs.getString('user_id') ?? '';
+                      final prefs = await SharedPreferences.getInstance();
+                      final uid = prefs.getString('user_id') ?? '';
                       widget.cubit.load(uid, refresh: true);
                     },
                     child: const Text('Retry'),
@@ -1114,31 +1114,31 @@ Future<void> _handleRefresh() async {
               return const SizedBox.shrink();
             }
 
-            final all    = state.notifications;
+            final all = state.notifications;
             final unread = all.where((n) => !n.read).toList();
 
             return TabBarView(
               controller: _tabController,
               children: [
                 _NotifList(
-                  items:       unread,
-                  emptyText:   'No unread notifications 🎉',
-                  cubit:       widget.cubit,
-                  selected:    _selected,
+                  items: unread,
+                  emptyText: 'No unread notifications 🎉',
+                  cubit: widget.cubit,
+                  selected: _selected,
                   isSelecting: _isSelecting,
-                  onToggle:    _toggleSelection,
-                  onLoadMore:  widget.cubit.loadMore,
-                  hasMore:     state.hasMore,
+                  onToggle: _toggleSelection,
+                  onLoadMore: widget.cubit.loadMore,
+                  hasMore: state.hasMore,
                 ),
                 _NotifList(
-                  items:       all,
-                  emptyText:   'No notifications yet',
-                  cubit:       widget.cubit,
-                  selected:    _selected,
+                  items: all,
+                  emptyText: 'No notifications yet',
+                  cubit: widget.cubit,
+                  selected: _selected,
                   isSelecting: _isSelecting,
-                  onToggle:    _toggleSelection,
-                  onLoadMore:  widget.cubit.loadMore,
-                  hasMore:     state.hasMore,
+                  onToggle: _toggleSelection,
+                  onLoadMore: widget.cubit.loadMore,
+                  hasMore: state.hasMore,
                 ),
               ],
             );
@@ -1153,29 +1153,24 @@ Future<void> _handleRefresh() async {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Notifications'),
-        content: Text(
-            'Delete ${_selected.length} notification(s)?'),
+        content: Text('Delete ${_selected.length} notification(s)?'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           TextButton(
             onPressed: () async {
               Navigator.pop(ctx);
-              final ok =
-                  await widget.cubit.bulkDelete(_selected.toList());
+              final ok = await widget.cubit.bulkDelete(_selected.toList());
               if (!mounted) return;
               _clearSelection();
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                 content: Text(ok
                     ? 'Notifications deleted'
                     : 'Failed to delete notifications'),
-                backgroundColor:
-                    ok ? Colors.green : AppColors.danger,
+                backgroundColor: ok ? Colors.green : AppColors.danger,
               ));
             },
-            style:
-                TextButton.styleFrom(foregroundColor: AppColors.danger),
+            style: TextButton.styleFrom(foregroundColor: AppColors.danger),
             child: const Text('Delete'),
           ),
         ],
@@ -1188,18 +1183,16 @@ Future<void> _handleRefresh() async {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Mark All as Read'),
-        content: const Text(
-            'Mark all notifications as read?'),
+        content: const Text('Mark all notifications as read?'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           TextButton(
             onPressed: () async {
               Navigator.pop(ctx);
               // ── FIX: read 'user_id' ──
               final prefs = await SharedPreferences.getInstance();
-              final uid   = prefs.getString('user_id') ?? '';
+              final uid = prefs.getString('user_id') ?? '';
               widget.cubit.markAllAsRead(uid);
             },
             child: const Text('Mark all read'),
@@ -1213,13 +1206,13 @@ Future<void> _handleRefresh() async {
 // ── List with pagination ──────────────────────────────────────
 class _NotifList extends StatelessWidget {
   final List<AppNotification> items;
-  final String                emptyText;
-  final NotificationCubit     cubit;
-  final Set<String>           selected;
-  final bool                  isSelecting;
+  final String emptyText;
+  final NotificationCubit cubit;
+  final Set<String> selected;
+  final bool isSelecting;
   final void Function(String) onToggle;
-  final VoidCallback          onLoadMore;
-  final bool                  hasMore;
+  final VoidCallback onLoadMore;
+  final bool hasMore;
 
   const _NotifList({
     required this.items,
@@ -1250,8 +1243,7 @@ class _NotifList extends StatelessWidget {
     return NotificationListener<ScrollNotification>(
       onNotification: (info) {
         if (hasMore &&
-            info.metrics.pixels >=
-                info.metrics.maxScrollExtent - 200) {
+            info.metrics.pixels >= info.metrics.maxScrollExtent - 200) {
           onLoadMore();
         }
         return false;
@@ -1268,15 +1260,14 @@ class _NotifList extends StatelessWidget {
                   child: SizedBox(
                       height: 24,
                       width: 24,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2))),
+                      child: CircularProgressIndicator(strokeWidth: 2))),
             );
           }
 
-          final n          = items[i];
+          final n = items[i];
           final isSelected = selected.contains(n.id);
-          final color      = notifColor(n.type);
-          final icon       = notifIcon(n.type);
+          final color = notifColor(n.type);
+          final icon = notifIcon(n.type);
 
           return GestureDetector(
             onLongPress: () => onToggle(n.id),
@@ -1284,14 +1275,10 @@ class _NotifList extends StatelessWidget {
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 180),
               decoration: BoxDecoration(
-                color: isSelected
-                    ? AppColors.primaryLight
-                    : AppColors.surface,
+                color: isSelected ? AppColors.primaryLight : AppColors.surface,
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(
-                  color: isSelected
-                      ? AppColors.primary
-                      : Colors.transparent,
+                  color: isSelected ? AppColors.primary : Colors.transparent,
                   width: 1.5,
                 ),
                 boxShadow: [
@@ -1306,136 +1293,130 @@ class _NotifList extends StatelessWidget {
                 child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                  if (isSelecting)
-                    Padding(
-                      padding:
-                          const EdgeInsets.only(right: 10, top: 2),
-                      child: AnimatedScale(
-                        scale: isSelected ? 1.1 : 1.0,
-                        duration:
-                            const Duration(milliseconds: 150),
-                        child: Icon(
-                          isSelected
-                              ? Icons.check_circle_rounded
-                              : Icons.circle_outlined,
-                          size: 20,
-                          color: isSelected
-                              ? AppColors.primary
-                              : AppColors.textHint,
+                      if (isSelecting)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 10, top: 2),
+                          child: AnimatedScale(
+                            scale: isSelected ? 1.1 : 1.0,
+                            duration: const Duration(milliseconds: 150),
+                            child: Icon(
+                              isSelected
+                                  ? Icons.check_circle_rounded
+                                  : Icons.circle_outlined,
+                              size: 20,
+                              color: isSelected
+                                  ? AppColors.primary
+                                  : AppColors.textHint,
+                            ),
+                          ),
                         ),
+                      _NotifAvatar(notif: n, color: color, icon: icon),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(children: [
+                                if (!n.read)
+                                  Container(
+                                    width: 7,
+                                    height: 7,
+                                    margin:
+                                        const EdgeInsets.only(right: 6, top: 2),
+                                    decoration: BoxDecoration(
+                                        color: color, shape: BoxShape.circle),
+                                  ),
+                                Expanded(
+                                  child: Text(typeLabel(n.type),
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                          color: color)),
+                                ),
+                                Text(timeAgo(n.createdAt),
+                                    style: const TextStyle(
+                                        fontSize: 10,
+                                        color: AppColors.textHint)),
+                              ]),
+                              const SizedBox(height: 4),
+                              Text(n.text,
+                                  style: TextStyle(
+                                      fontSize: 13,
+                                      color: n.read
+                                          ? AppColors.textSecondary
+                                          : AppColors.textPrimary,
+                                      fontWeight: n.read
+                                          ? FontWeight.w400
+                                          : FontWeight.w500)),
+                              if (n.userName != null) ...[
+                                const SizedBox(height: 4),
+                                Row(children: [
+                                  const Icon(Icons.person_outline,
+                                      size: 12, color: AppColors.textHint),
+                                  const SizedBox(width: 4),
+                                  Text(n.userName!,
+                                      style: const TextStyle(
+                                          fontSize: 11,
+                                          color: AppColors.textHint)),
+                                ]),
+                              ],
+                              if (n.dealName != null) ...[
+                                const SizedBox(height: 4),
+                                Row(children: [
+                                  const Icon(Icons.handshake_outlined,
+                                      size: 12, color: AppColors.textHint),
+                                  const SizedBox(width: 4),
+                                  Text(n.dealName!,
+                                      style: const TextStyle(
+                                          fontSize: 11,
+                                          color: AppColors.textHint)),
+                                ]),
+                              ],
+                              if (n.proposalTitle != null) ...[
+                                const SizedBox(height: 4),
+                                Row(children: [
+                                  const Icon(Icons.description_outlined,
+                                      size: 12, color: AppColors.textHint),
+                                  const SizedBox(width: 4),
+                                  Flexible(
+                                    child: Text(n.proposalTitle!,
+                                        style: const TextStyle(
+                                            fontSize: 11,
+                                            color: AppColors.textHint),
+                                        overflow: TextOverflow.ellipsis),
+                                  ),
+                                ]),
+                              ],
+                            ]),
                       ),
-                    ),
-                  _NotifAvatar(notif: n, color: color, icon: icon),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                      Row(children: [
-                        if (!n.read)
-                          Container(
-                            width: 7, height: 7,
-                            margin: const EdgeInsets.only(
-                                right: 6, top: 2),
-                            decoration: BoxDecoration(
-                                color: color,
-                                shape: BoxShape.circle),
-                          ),
-                        Expanded(
-                          child: Text(typeLabel(n.type),
-                              style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                  color: color)),
-                        ),
-                        Text(timeAgo(n.createdAt),
-                            style: const TextStyle(
-                                fontSize: 10,
-                                color: AppColors.textHint)),
-                      ]),
-                      const SizedBox(height: 4),
-                      Text(n.text,
-                          style: TextStyle(
-                              fontSize: 13,
-                              color: n.read
-                                  ? AppColors.textSecondary
-                                  : AppColors.textPrimary,
-                              fontWeight: n.read
-                                  ? FontWeight.w400
-                                  : FontWeight.w500)),
-                      if (n.userName != null) ...[
-                        const SizedBox(height: 4),
-                        Row(children: [
-                          const Icon(Icons.person_outline,
-                              size: 12, color: AppColors.textHint),
-                          const SizedBox(width: 4),
-                          Text(n.userName!,
-                              style: const TextStyle(
-                                  fontSize: 11,
-                                  color: AppColors.textHint)),
-                        ]),
-                      ],
-                      if (n.dealName != null) ...[
-                        const SizedBox(height: 4),
-                        Row(children: [
-                          const Icon(Icons.handshake_outlined,
-                              size: 12, color: AppColors.textHint),
-                          const SizedBox(width: 4),
-                          Text(n.dealName!,
-                              style: const TextStyle(
-                                  fontSize: 11,
-                                  color: AppColors.textHint)),
-                        ]),
-                      ],
-                      if (n.proposalTitle != null) ...[
-                        const SizedBox(height: 4),
-                        Row(children: [
-                          const Icon(Icons.description_outlined,
-                              size: 12, color: AppColors.textHint),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(n.proposalTitle!,
-                                style: const TextStyle(
-                                    fontSize: 11,
-                                    color: AppColors.textHint),
-                                overflow: TextOverflow.ellipsis),
+                      if (!isSelecting)
+                        Column(mainAxisSize: MainAxisSize.min, children: [
+                          if (!n.read)
+                            GestureDetector(
+                              onTap: () => cubit.markAsRead(n.id),
+                              child: Container(
+                                padding: const EdgeInsets.all(6),
+                                decoration: BoxDecoration(
+                                    color: AppColors.primaryLight,
+                                    borderRadius: BorderRadius.circular(8)),
+                                child: const Icon(Icons.done_rounded,
+                                    size: 14, color: AppColors.primary),
+                              ),
+                            ),
+                          const SizedBox(height: 6),
+                          GestureDetector(
+                            onTap: () => _showDeleteDialog(context, n.id),
+                            child: Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                  color: AppColors.dangerLight,
+                                  borderRadius: BorderRadius.circular(8)),
+                              child: const Icon(Icons.delete_outline,
+                                  size: 14, color: AppColors.danger),
+                            ),
                           ),
                         ]),
-                      ],
                     ]),
-                  ),
-                  if (!isSelecting)
-                    Column(mainAxisSize: MainAxisSize.min, children: [
-                      if (!n.read)
-                        GestureDetector(
-                          onTap: () => cubit.markAsRead(n.id),
-                          child: Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: BoxDecoration(
-                                color: AppColors.primaryLight,
-                                borderRadius:
-                                    BorderRadius.circular(8)),
-                            child: const Icon(Icons.done_rounded,
-                                size: 14,
-                                color: AppColors.primary),
-                          ),
-                        ),
-                      const SizedBox(height: 6),
-                      GestureDetector(
-                        onTap: () =>
-                            _showDeleteDialog(context, n.id),
-                        child: Container(
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                              color: AppColors.dangerLight,
-                              borderRadius:
-                                  BorderRadius.circular(8)),
-                          child: const Icon(Icons.delete_outline,
-                              size: 14, color: AppColors.danger),
-                        ),
-                      ),
-                    ]),
-                ]),
               ),
             ),
           );
@@ -1449,16 +1430,16 @@ class _NotifList extends StatelessWidget {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Notification'),
-        content:
-            const Text('Delete this notification?'),
+        content: const Text('Delete this notification?'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           TextButton(
-            onPressed: () { Navigator.pop(ctx); cubit.delete(id); },
-            style:
-                TextButton.styleFrom(foregroundColor: AppColors.danger),
+            onPressed: () {
+              Navigator.pop(ctx);
+              cubit.delete(id);
+            },
+            style: TextButton.styleFrom(foregroundColor: AppColors.danger),
             child: const Text('Delete'),
           ),
         ],
@@ -1470,18 +1451,16 @@ class _NotifList extends StatelessWidget {
 // ── Badge widget ──────────────────────────────────────────────
 class _Badge extends StatelessWidget {
   final String text;
-  final Color  color;
+  final Color color;
   const _Badge(this.text, this.color);
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-        decoration: BoxDecoration(
-            color: color.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(10)),
-        child: Text(text,
-            style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-                color: color)));
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+          color: color.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(10)),
+      child: Text(text,
+          style: TextStyle(
+              fontSize: 10, fontWeight: FontWeight.w700, color: color)));
 }

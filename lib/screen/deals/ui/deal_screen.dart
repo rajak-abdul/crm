@@ -23,7 +23,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
-import 'package:intl_phone_field/phone_number.dart' hide PhoneNumber;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -736,7 +735,22 @@ class _AllDealsViewState extends State<_AllDealsView> {
         : 'All Client Types';
     final today = _dateOnly(DateTime.now());
     return widget.deals.where((d) {
-      final matchQ = _q.isEmpty || d.name.toLowerCase().contains(_q);
+      final phone =
+    d.phone.replaceAll(RegExp(r'[^0-9+]'), '').toLowerCase();
+
+final localPhone =
+    d.phone.replaceAll(RegExp(r'[^0-9]'), '');
+
+final searchQuery =
+    _q.replaceAll(RegExp(r'[^0-9+]'), '');
+
+final matchQ =
+    _q.isEmpty ||
+    d.name.toLowerCase().contains(_q) ||
+    d.companyName.toLowerCase().contains(_q) ||
+    d.email.toLowerCase().contains(_q) ||
+    phone.contains(searchQuery) ||
+    localPhone.contains(searchQuery.replaceAll('+', ''));
       final matchStage = safeStage == 'All Stages' ||
           DealConstants.canonicalStage(d.stage).trim().toLowerCase() ==
               safeStage.trim().toLowerCase();

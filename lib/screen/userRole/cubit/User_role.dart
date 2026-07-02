@@ -16,7 +16,7 @@ import 'package:shared_preferences/shared_preferences.dart'
     show SharedPreferences;
 
 class UserRoleCubit extends Cubit<UserRoleState> {
-  static const _base = 'https://sales.stagingzar.com/api';
+  static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
 
   late final Dio _dio;
   final _db = LocalDb.instance;
@@ -65,18 +65,19 @@ class UserRoleCubit extends Cubit<UserRoleState> {
   // ── 🌐 LOAD ALL ────────────────────────────────────────────
   Future<void> loadAll() async {
     // Step 1: show cached data immediately (never block on network)
-    final cachedUsers = await _db.getAllCachedUsers();
-    final cachedRoles = await _db.getLocalRoles();
+    // final cachedUsers = await _db.getAllCachedUsers();
+    // final cachedRoles = await _db.getLocalRoles();
 
-    if (cachedUsers.isNotEmpty || cachedRoles.isNotEmpty) {
-      emit(UserRoleLoaded(
-        users: cachedUsers,
-        salesUsers: cachedUsers.where((u) => u.role != 'admin').toList(),
-        roles: cachedRoles,
-      ));
-    } else {
-      emit(UserRoleLoading());
-    }
+    // if (cachedUsers.isNotEmpty || cachedRoles.isNotEmpty) {
+    //   emit(UserRoleLoaded(
+    //     users: cachedUsers,
+    //     salesUsers: cachedUsers.where((u) => u.role != 'admin').toList(),
+    //     roles: cachedRoles,
+    //   ));
+    // } else {
+    //   emit(UserRoleLoading());
+    // }
+    emit(UserRoleLoading());
 
     // Step 2: try API in background — silently update if online
     try {
@@ -90,9 +91,12 @@ class UserRoleCubit extends Cubit<UserRoleState> {
       final apiSales = _toList(results[1].data).map(AppUser.fromJson).toList();
       final apiRoles = _toList(results[2].data).map(AppRole.fromJson).toList();
 
+      debugPrint('[UserRoleCubit] raw roles response: ${results[2].data}');
+      debugPrint('[UserRoleCubit] parsed ${apiRoles.length} roles');
+
       // Persist to SQLite so next cold-start has fresh data
-      for (final u in apiUsers) await _db.upsertUserFromApi(u);
-      for (final r in apiRoles) await _db.upsertRoleFromApi(r);
+      // for (final u in apiUsers) await _db.upsertUserFromApi(u);
+      // for (final r in apiRoles) await _db.upsertRoleFromApi(r);
 
       final localUsers = await _db.getAllCachedUsers();
       final localRoles = await _db.getLocalRoles();
@@ -100,15 +104,9 @@ class UserRoleCubit extends Cubit<UserRoleState> {
       final apiRoleIds = apiRoles.map((r) => r.id).toSet();
 
       emit(UserRoleLoaded(
-        users: [
-          ...apiUsers,
-          ...localUsers.where((u) => !apiUserIds.contains(u.id)),
-        ],
+        users: apiUsers,
         salesUsers: apiSales,
-        roles: [
-          ...apiRoles,
-          ...localRoles.where((r) => !apiRoleIds.contains(r.id)),
-        ],
+        roles: apiRoles,
       ));
     } on DioException catch (e) {
       // Network failed — keep showing whatever cache we already emitted
@@ -437,33 +435,29 @@ class UserRoleCubit extends Cubit<UserRoleState> {
   }
 
   Map<String, bool> _buildPermissions(List<String> selected) {
-    String normalize(String s) => s
-        .toLowerCase()
-        .replaceAll('&', '')
-        .replaceAll('  ', ' ')
-        .replaceAll(' ', '_')
-        .replaceAll('__', '_');
+    return {
+      'dashboard': selected.contains('Dashboard'),
 
-    final normalizedSelected = selected.map(normalize).toSet();
+      'leads': selected.contains('Leads'),
 
-    const allPerms = [
-      'dashboard',
-      'leads',
-      'deals_all',
-      'deals_pipeline',
-      'invoices',
-      'proposal',
-      'activities',
-      'activities_calendar',
-      'activities_list',
-      'users_roles',
-      'admin_access',
-      'email_chat',
-      'whatsapp_chat',
-      'reports',
-    ];
+      'deals_all': selected.contains('Deals'),
 
-    return {for (final p in allPerms) p: normalizedSelected.contains(p)};
+      'deals_pipeline': selected.contains('Deals Pipeline'),
+
+      'invoices': selected.contains('Invoices'),
+
+      'users_roles': selected.contains('Users & Roles'),
+
+      // remaining permissions
+      'proposal': false,
+      'activities': false,
+      'activities_calendar': false,
+      'activities_list': false,
+      'admin_access': false,
+      'email_chat': false,
+      'whatsapp_chat': false,
+      'reports': false,
+    };
   }
 
   List<Map<String, dynamic>> _toList(dynamic d) {

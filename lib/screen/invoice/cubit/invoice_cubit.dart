@@ -33,9 +33,8 @@ import 'package:crm_app/utils/permission_helper.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class InvoiceCubit extends Cubit<InvoiceState> {
-  static const _base = 'https://sales.stagingzar.com/api';
+  static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
   static const MethodChannel _downloadsChannel = MethodChannel('crm/downloads');
-  final _db = LocalDb.instance;
   late final Dio _dio;
   final Map<String, double> _rateCache = {};
 
@@ -71,8 +70,6 @@ class InvoiceCubit extends Cubit<InvoiceState> {
 
     // ✅ FIX 1: Always read the local SQLite cache first so the UI is
     // never blank while the network call is in flight (or offline).
-    final localRows = await _db.getInvoices();
-    final localInvs = localRows.map(Invoice.fromMap).toList();
 
     try {
       final apiInvoices = await _fetchInvoices('/Invoices/getInvoice');
@@ -81,22 +78,9 @@ class InvoiceCubit extends Cubit<InvoiceState> {
 
       // ✅ FIX 2: Persist every API invoice to SQLite so future offline
       // sessions see the full dataset, not just locally-created records.
-      for (final inv in apiInvoices) {
-        await _db.upsertInvoiceFromApi(inv.toSaveMap()
-          ..['_id'] = inv.id
-          ..['invoiceNo'] = inv.invoiceNo
-          ..['createdAt'] = inv.createdAt.toIso8601String()
-          ..['status'] = inv.status
-          ..['currency'] = inv.currency
-          ..['inrAmount'] = inv.inrAmount
-          ..['exchangeRate'] = inv.exchangeRate
-          ..['isLocal'] = 0);
-      }
 
       // Merge: local-only records first, then API records (dedup by id)
-      final apiIds = apiInvoices.map((i) => i.id).toSet();
-      final localOnly = localInvs.where((i) => !apiIds.contains(i.id)).toList();
-      final merged = [...localOnly, ...apiInvoices];
+      final merged = apiInvoices;
 
       final users = await _fetchUsers();
       final deals = await _fetchDeals();
@@ -142,28 +126,8 @@ class InvoiceCubit extends Cubit<InvoiceState> {
     } on DioException catch (e) {
       // ✅ FIX 3: On any network failure emit the SQLite cache so the app
       // remains fully usable offline — not just an empty list.
-      if (_isOfflineError(e)) {
-        final localOnlyAll =
-            localInvs.map((i) => _normalizeInvoiceForUi(i)).toList();
-        final localOnly = canViewAll
-            ? localOnlyAll
-            : localOnlyAll.where((i) {
-                final a = i.assignTo.trim();
-                if (a.isEmpty) return false;
-                if (userId.isNotEmpty && a == userId) return true;
-                if (userName.isEmpty) return false;
-                String norm(String s) =>
-                    s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
-                return norm(a) == norm(userName);
-              }).toList();
-        emit(InvoiceLoaded(
-          invoices: localOnly,
-          recentInvoices: const [],
-          pendingInvoices: const [],
-          salesUsers: const [],
-          deals: const [],
-        ));
-      } else {
+
+      {
         emit(InvoiceError(e.response?.statusCode == 404
             ? 'Invoice endpoint not found (404).'
             : _dioMsg(e)));
@@ -278,14 +242,8 @@ class InvoiceCubit extends Cubit<InvoiceState> {
     print("CURRENCY BEFORE API => ${data['currency']}");
     // ✅ FIX 4: Optimistic local insert — the record is visible instantly
     // and survives an app restart even if the server call never completes.
-    final row = await _db.insertInvoice(normalizedData);
-    final localInv = Invoice.fromMap(row);
-    final prevState = state;
 
-    if (state is InvoiceLoaded) {
-      final s = state as InvoiceLoaded;
-      emit(s.copyWithInvoices([localInv, ...s.invoices]));
-    }
+    final prevState = state;
 
     try {
       final res = await _dio.post(
@@ -293,21 +251,17 @@ class InvoiceCubit extends Cubit<InvoiceState> {
         data: _toApiBody(normalizedData),
       );
 
-      final parsed = _normalizeInvoiceForUi(_parseOne(res.data) ?? localInv);
+      final parsed = _normalizeInvoiceForUi(_parseOne(res.data)!);
       final serverInv = (await _applyApiRates([parsed])).first;
 
       // ✅ FIX 5: Persist the server-returned invoice (with its real _id)
       // and delete the optimistic local record so there's no duplicate.
-      await _db.upsertInvoiceFromApi(_invoiceToUpsertMap(serverInv));
-      if (serverInv.id != localInv.id) {
-        await _db.deleteInvoice(localInv.id);
-      }
 
       if (state is InvoiceLoaded) {
         final s = state as InvoiceLoaded;
         final updated = [
           serverInv,
-          ...s.invoices.where((i) => i.id != localInv.id),
+          ...s.invoices,
         ];
 
         emit(s.copyWithInvoices(updated));
@@ -317,11 +271,9 @@ class InvoiceCubit extends Cubit<InvoiceState> {
       // ✅ FIX 6: Offline → keep the local record (isLocal=true) and
       // return success so the user knows it will sync later.
       if (_isOfflineError(e)) return null;
-      await _db.deleteInvoice(localInv.id);
       emit(prevState);
       return _dioMsg(e);
     } catch (e) {
-      await _db.deleteInvoice(localInv.id);
       emit(prevState);
       return e.toString();
     }
@@ -368,7 +320,6 @@ class InvoiceCubit extends Cubit<InvoiceState> {
     }
 
     // ✅ FIX 7: Always write to SQLite first (optimistic) — works online AND offline.
-    await _db.updateInvoice(id, data);
 
     try {
       await _dio.put('/Invoices/updateInvoice/$id', data: _toApiBody(data));
@@ -391,7 +342,6 @@ class InvoiceCubit extends Cubit<InvoiceState> {
     final prevState = state;
 
     // ✅ FIX 9: Remove from SQLite immediately (optimistic) before the API call.
-    await _db.deleteInvoice(id);
 
     if (state is InvoiceLoaded) {
       final s = state as InvoiceLoaded;
@@ -421,9 +371,6 @@ class InvoiceCubit extends Cubit<InvoiceState> {
     final idSet = ids.toSet();
 
     // ✅ FIX 11: Delete from SQLite first so offline bulk-delete works.
-    for (final id in ids) {
-      await _db.deleteInvoice(id);
-    }
 
     if (state is InvoiceLoaded) {
       final s = state as InvoiceLoaded;
@@ -470,28 +417,6 @@ class InvoiceCubit extends Cubit<InvoiceState> {
   // ═══════════════════════════════════════════════════════════════
 
   /// Converts an [Invoice] object into the flat map shape expected by
-  /// [LocalDb.upsertInvoiceFromApi]. Keeps all nullable fields explicit.
-  Map<String, dynamic> _invoiceToUpsertMap(Invoice inv) => {
-        '_id': inv.id,
-        'invoiceNo': inv.invoiceNo,
-        'assignTo': inv.assignTo,
-        'issueDate': inv.issueDate,
-        'dueDate': inv.dueDate,
-        'status': inv.status,
-        'taxType': inv.taxType,
-        'taxValue': inv.taxValue,
-        'discountType': inv.discountType,
-        'discountValue': inv.discountValue,
-        'dealId': inv.dealId,
-        'dealName': inv.dealName,
-        'notes': inv.notes,
-        'currency': inv.currency,
-        'price': inv.price,
-        'inrAmount': inv.inrAmount,
-        'exchangeRate': inv.exchangeRate,
-        'createdAt': inv.createdAt.toIso8601String(),
-        'isLocal': inv.isLocal ? 1 : 0,
-      };
 
   Map<String, dynamic> _toApiBody(Map<String, dynamic> data) {
     final price = _num(data['price']);
@@ -503,12 +428,9 @@ class InvoiceCubit extends Cubit<InvoiceState> {
     return {
       'assignTo': data['assignToId'] ?? data['assignTo'],
       'deal': dealId,
-
       'issueDate': _toApiDate(data['issueDate']?.toString() ?? ''),
       'dueDate': _toApiDate(data['dueDate']?.toString() ?? ''),
-
       'status': (data['status']?.toString() ?? 'unpaid').toLowerCase(),
-
       'subtotal': price,
       'discountType': amounts.discountTypeApi,
       'discountValue': amounts.discountValueApi,
@@ -517,10 +439,8 @@ class InvoiceCubit extends Cubit<InvoiceState> {
       'taxValue': amounts.taxValueApi,
       'tax': amounts.taxAmount,
       'total': amounts.total,
-
       'notes': data['notes']?.toString() ?? '',
       'currency': data['currency'] ?? 'INR',
-
       'items': [
         {
           'name': dealName.isNotEmpty ? dealName : 'Invoice Item',

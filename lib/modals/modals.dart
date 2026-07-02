@@ -456,21 +456,13 @@ class AppRole {
   });
 
   static const _apiKeyToDisplay = <String, String>{
-    'dashboard': 'Dashboard',
-    'leads': 'Leads',
-    'deals_all': 'Deals',
-    'deals_pipeline': 'Deals',
-    'invoices': 'Invoices',
-    'proposal': 'Invoices',
-    'activities': 'Deals',
-    'activities_calendar': 'Deals',
-    'activities_list': 'Deals',
-    'users_roles': 'Users & Roles',
-    'admin_access': 'Users & Roles',
-    'email_chat': 'Leads',
-    'whatsapp_chat': 'Leads',
-    'reports': 'Dashboard',
-  };
+  'dashboard': 'Dashboard',
+  'leads': 'Leads',
+  'deals_all': 'Deals',
+  'deals_pipeline': 'Deals Pipeline',
+  'invoices': 'Invoices',
+  'users_roles': 'Users & Roles',
+};
 
   factory AppRole.fromJson(Map<String, dynamic> json) {
     List<String> perms = [];
@@ -513,7 +505,27 @@ class AppRole {
         'isLocal': isLocal ? 1 : 0,
       };
 
-  Map<String, dynamic> toJson() => {'name': name, 'permissions': permissions};
+  Map<String, dynamic> toJson() {
+  final permissionMap = <String, bool>{
+    'dashboard': permissions.contains('Dashboard'),
+    'leads': permissions.contains('Leads'),
+
+    'deals_all': permissions.contains('Deals'),
+    'deals_pipeline': permissions.contains('Deals Pipeline'),
+
+    'invoices': permissions.contains('Invoices'),
+
+    'users_roles':
+        permissions.contains('Users & Roles'),
+
+    
+  };
+
+  return {
+    'name': name,
+    'permissions': permissionMap,
+  };
+}
 
   AppRole copyWith({
     String? id,
@@ -552,12 +564,13 @@ class AppConstants {
     'Other',
   ];
   static const permissions = [
-    'Dashboard',
-    'Leads',
-    'Deals',
-    'Invoices',
-    'Users & Roles',
-  ];
+  'Dashboard',
+  'Leads',
+  'Deals',
+  'Deals Pipeline',
+  'Invoices',
+  'Users & Roles',
+];
   static const genders = ['Male', 'Female', 'Other', 'Prefer not to say'];
   static const userStatuses = ['Active', 'Inactive'];
   static const countries = [

@@ -11,6 +11,28 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+abstract class CallState extends Equatable {
+  const CallState();
+
+  @override
+  List<Object?> get props => [];
+}
+
+class CallInitial extends CallState {}
+
+class CallLoading extends CallState {}
+
+class CallSuccess extends CallState {}
+
+class CallError extends CallState {
+  final String message;
+
+  const CallError(this.message);
+
+  @override
+  List<Object?> get props => [message];
+}
+
 abstract class LeadState extends Equatable {
   const LeadState();
   @override
@@ -115,7 +137,7 @@ List<Map<String, dynamic>> _parseListIsolate(dynamic d) {
 // 2️⃣  CUBIT
 // ══════════════════════════════════════════════════════════════
 class LeadCubit extends Cubit<LeadState> {
-  static const _base = 'https://sales.stagingzar.com/api';
+  static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
 
   late final Dio _dio;
   // ignore: unused_field

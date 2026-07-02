@@ -76,7 +76,7 @@ class DealsLoaded extends DealsState {
 // CUBIT
 // ══════════════════════════════════════════════════════════════
 class DealsCubit extends Cubit<DealsState> {
-  static const _base = 'https://sales.stagingzar.com/api';
+  static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
 
   late final Dio _dio;
   String? _cachedToken;

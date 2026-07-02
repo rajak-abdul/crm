@@ -51,7 +51,8 @@ class ProfileUser extends Equatable {
     if (firstName.isEmpty && lastName.isEmpty) {
       final full = _s(map['name'] ?? map['fullName']);
       if (full.isNotEmpty) {
-        final parts = full.split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
+        final parts =
+            full.split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
         if (parts.isNotEmpty) firstName = parts.first;
         if (parts.length > 1) lastName = parts.sublist(1).join(' ');
       }
@@ -75,7 +76,8 @@ class ProfileUser extends Equatable {
   static String _extractImagePath(Map<String, dynamic> map) {
     final raw = map['profileImage'] ?? map['avatarUrl'] ?? map['avatar'];
     if (raw is Map) {
-      return _s(raw['url'] ?? raw['path'] ?? raw['location'] ??  raw['secure_url']);
+      return _s(
+          raw['url'] ?? raw['path'] ?? raw['location'] ?? raw['secure_url']);
     }
     return _s(raw);
   }
@@ -83,30 +85,33 @@ class ProfileUser extends Equatable {
   static String? _resolveImageUrl(String? rawInput) {
     final raw = rawInput?.trim() ?? '';
     if (raw.isEmpty) return null;
- 
+
     var path = raw.replaceAll('\\', '/');
- 
+
     if (path.startsWith('http://') || path.startsWith('https://')) {
       return path;
     }
- 
+
     if (!path.contains('/')) {
       path = '/uploads/users/$path';
     }
- 
+
     if (!path.startsWith('/')) {
       path = '/$path';
     }
- 
-    return 'https://sales.stagingzar.com$path';
+
+    return 'https://crm-backend-api.techzarinfo.cloud$path';
   }
 
   static Map<String, dynamic> _extractUserMap(dynamic body) {
     if (body is! Map) return <String, dynamic>{};
     final root = Map<String, dynamic>.from(body);
-    if (root['data'] is Map) return Map<String, dynamic>.from(root['data'] as Map);
-    if (root['user'] is Map) return Map<String, dynamic>.from(root['user'] as Map);
-    if (root['result'] is Map) return Map<String, dynamic>.from(root['result'] as Map);
+    if (root['data'] is Map)
+      return Map<String, dynamic>.from(root['data'] as Map);
+    if (root['user'] is Map)
+      return Map<String, dynamic>.from(root['user'] as Map);
+    if (root['result'] is Map)
+      return Map<String, dynamic>.from(root['result'] as Map);
     return root;
   }
 
@@ -129,7 +134,8 @@ class ProfileUser extends Equatable {
   }
 
   @override
-  List<Object?> get props => [id, firstName, lastName, email, role, profileImage];
+  List<Object?> get props =>
+      [id, firstName, lastName, email, role, profileImage];
 }
 
 abstract class ProfileState extends Equatable {
@@ -173,7 +179,7 @@ class ProfileError extends ProfileState {
 }
 
 class ProfileCubit extends Cubit<ProfileState> {
-  static const _base = 'https://sales.stagingzar.com/api';
+  static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
   late final Dio _dio;
   String? _token;
 
@@ -209,14 +215,15 @@ class ProfileCubit extends Cubit<ProfileState> {
       var user = ProfileUser.fromApiBody(res.data);
       final prefs = await SharedPreferences.getInstance();
       final savedName = prefs.getString('user_name')?.trim() ?? '';
-      if (user.firstName.isEmpty && user.lastName.isEmpty && savedName.isNotEmpty) {
-        final parts = savedName
-            .split(RegExp(r'\s+'))
-            .where((e) => e.isNotEmpty)
-            .toList();
+      if (user.firstName.isEmpty &&
+          user.lastName.isEmpty &&
+          savedName.isNotEmpty) {
+        final parts =
+            savedName.split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
         user = user.copyWith(
           firstName: parts.isNotEmpty ? parts.first : user.firstName,
-          lastName: parts.length > 1 ? parts.sublist(1).join(' ') : user.lastName,
+          lastName:
+              parts.length > 1 ? parts.sublist(1).join(' ') : user.lastName,
         );
       }
       final savedImage = prefs.getString('profile_image')?.trim() ?? '';

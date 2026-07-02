@@ -1188,6 +1188,25 @@ class LocalDb {
     });
   }
 
+// ══════════════════════════════════════════════════════════════
+// CLEAR ALL — wipe every table (call on login / tenant switch)
+// ══════════════════════════════════════════════════════════════
+  Future<void> clearAll() async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete('leads');
+      await txn.delete('users');
+      await txn.delete('roles');
+      await txn.delete('invoices');
+      await txn.delete('deals');
+      await txn.delete('leaderboard_entries');
+      await txn.delete('leaderboard_meta');
+      await txn.delete('dashboard_pipeline');
+      await txn.delete('dashboard_cache');
+    });
+    debugPrint('[LocalDb] clearAll() — all tables wiped');
+  }
+
   /// Load the last-saved dashboard for [userId].
   /// Returns null only when no cache exists at all.
   /// No time expiry — always returns whatever was last saved online.

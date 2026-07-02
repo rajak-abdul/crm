@@ -226,6 +226,14 @@ class _UsersTab extends StatefulWidget {
 class _UsersTabState extends State<_UsersTab> {
   int _page = 1;
   static const int _pageSize = 10;
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _search = '';
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   void didUpdateWidget(covariant _UsersTab oldWidget) {
@@ -253,13 +261,21 @@ class _UsersTabState extends State<_UsersTab> {
       return const EmptyState(message: 'No users', icon: Icons.group_outlined);
     }
 
-    final users = state.users;
-    if (users.isEmpty) {
+    final users = state.users.where((u) {
+      final q = _search.toLowerCase();
+
+      return u.fullName.toLowerCase().contains(q) ||
+          u.email.toLowerCase().contains(q) ||
+          u.phone.toLowerCase().contains(q);
+    }).toList();
+    if (state.users.isEmpty) {
       return const EmptyState(
-          message: 'No users yet. Add one!', icon: Icons.group_outlined);
+        message: 'No users yet. Add one!',
+        icon: Icons.group_outlined,
+      );
     }
 
-    final totalPages = (users.length / _pageSize).ceil();
+    final totalPages = users.isEmpty ? 1 : (users.length / _pageSize).ceil();
     final safePage = _page.clamp(1, totalPages);
     final start = (safePage - 1) * _pageSize;
     final end = (start + _pageSize).clamp(0, users.length);
@@ -273,20 +289,62 @@ class _UsersTabState extends State<_UsersTab> {
             onRefresh: () => ctx.read<UserRoleCubit>().loadAll(),
             child: ListView.builder(
               padding: const EdgeInsets.all(16),
-              itemCount: visibleUsers.length,
-              itemBuilder: (listCtx, i) => _UserCard(
-                user: visibleUsers[i],
-                roles: state.roles,
-                onEdit: () => widget.onEditUser(listCtx, visibleUsers[i]),
-                onDelete: () async {
-                  final err = await ctx
-                      .read<UserRoleCubit>()
-                      .deleteUser(visibleUsers[i].id);
-                  if (err != null && ctx.mounted) {
-                    showApiSnack(ctx, err, isError: true);
-                  }
-                },
-              ),
+              itemCount: visibleUsers.length + 1,
+              itemBuilder: (listCtx, i) {
+                // SEARCH BOX
+                if (i == 0) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: TextField(
+                      controller: _searchCtrl,
+                      onChanged: (v) {
+                        setState(() => _search = v);
+                      },
+                      decoration: InputDecoration(
+                        hintText: 'Search users...',
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: _search.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.close),
+                                onPressed: () {
+                                  _searchCtrl.clear();
+
+                                  setState(() {
+                                    _search = '';
+                                  });
+                                },
+                              )
+                            : null,
+                        filled: true,
+                        fillColor: AppColors.surface,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  );
+                }
+
+                final user = visibleUsers[i - 1];
+
+                return _UserCard(
+                  user: user,
+                  roles: state.roles,
+                  onEdit: () => widget.onEditUser(listCtx, user),
+                  onDelete: () async {
+                    final err =
+                        await ctx.read<UserRoleCubit>().deleteUser(user.id);
+
+                    if (err != null && ctx.mounted) {
+                      showApiSnack(
+                        ctx,
+                        err,
+                        isError: true,
+                      );
+                    }
+                  },
+                );
+              },
             ),
           ),
         ),
@@ -412,6 +470,14 @@ class _RolesTab extends StatefulWidget {
 class _RolesTabState extends State<_RolesTab> {
   int _page = 1;
   static const int _pageSize = 10;
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _search = '';
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   void didUpdateWidget(covariant _RolesTab oldWidget) {
@@ -430,14 +496,18 @@ class _RolesTabState extends State<_RolesTab> {
     if (state is! UserRoleLoaded) {
       return const EmptyState(message: 'No roles', icon: Icons.shield_outlined);
     }
+    final roles = state.roles.where((r) {
+      return r.name.toLowerCase().contains(
+            _search.toLowerCase(),
+          );
+    }).toList();
 
-    final roles = state.roles;
-    if (roles.isEmpty) {
+    if (state.roles.isEmpty) {
       return const EmptyState(
           message: 'No roles yet. Create one!', icon: Icons.shield_outlined);
     }
 
-    final totalPages = (roles.length / _pageSize).ceil();
+    final totalPages = roles.isEmpty ? 1 : (roles.length / _pageSize).ceil();
     final safePage = _page.clamp(1, totalPages);
     final start = (safePage - 1) * _pageSize;
     final end = (start + _pageSize).clamp(0, roles.length);
@@ -446,20 +516,66 @@ class _RolesTabState extends State<_RolesTab> {
     return Column(
       children: [
         Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: visibleRoles.length,
-            itemBuilder: (listCtx, i) => _RoleCard(
-              role: visibleRoles[i],
-              onDelete: () async {
-                final err = await ctx
-                    .read<UserRoleCubit>()
-                    .deleteRole(visibleRoles[i].id);
-                if (err != null && ctx.mounted) {
-                  showApiSnack(ctx, err, isError: true);
+          child: RefreshIndicator(
+            color: AppColors.primary,
+            onRefresh: () => ctx.read<UserRoleCubit>().loadAll(),
+            child: ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: visibleRoles.length + 1,
+              itemBuilder: (listCtx, i) {
+                // SEARCH BOX
+                if (i == 0) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: TextField(
+                      controller: _searchCtrl,
+                      onChanged: (v) {
+                        setState(() => _search = v);
+                      },
+                      decoration: InputDecoration(
+                        hintText: 'Search roles...',
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: _search.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.close),
+                                onPressed: () {
+                                  _searchCtrl.clear();
+
+                                  setState(() {
+                                    _search = '';
+                                  });
+                                },
+                              )
+                            : null,
+                        filled: true,
+                        fillColor: AppColors.surface,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  );
                 }
+
+                final role = visibleRoles[i - 1];
+
+                return _RoleCard(
+                  role: role,
+                  onDelete: () async {
+                    final err =
+                        await ctx.read<UserRoleCubit>().deleteRole(role.id);
+
+                    if (err != null && ctx.mounted) {
+                      showApiSnack(
+                        ctx,
+                        err,
+                        isError: true,
+                      );
+                    }
+                  },
+                  onEdit: () => widget.onEditRole(listCtx, role),
+                );
               },
-              onEdit: () => widget.onEditRole(listCtx, visibleRoles[i]),
             ),
           ),
         ),
@@ -1261,7 +1377,7 @@ class _EditUserModalState extends State<_EditUserModal> {
       path = '/$path';
     }
 
-    return 'https://sales.stagingzar.com$path';
+    return 'https://crm-backend-api.techzarinfo.cloud$path';
   }
 
   Widget _userImageUploadWidget() {
@@ -1663,14 +1779,18 @@ class _CreateRoleModalState extends State<_CreateRoleModal> {
       'Dashboard' => (Icons.dashboard_outlined, AppColors.primary),
       'Leads' => (Icons.people_outline, AppColors.success),
       'Deals' => (Icons.handshake_outlined, AppColors.purple),
+      'Deals Pipeline' => (Icons.account_tree_outlined, AppColors.primary),
       'Invoices' => (Icons.receipt_outlined, AppColors.warning),
       'Users & Roles' => (Icons.manage_accounts_outlined, AppColors.danger),
       _ => (Icons.circle_outlined, AppColors.textSecondary),
     };
+
     return Container(
       padding: const EdgeInsets.all(7),
       decoration: BoxDecoration(
-          color: d.$2.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
+        color: d.$2.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
       child: Icon(d.$1, size: 16, color: d.$2),
     );
   }

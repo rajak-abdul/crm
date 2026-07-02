@@ -9,10 +9,10 @@
 // ║  CONVERT → 🌐 PATCH /leads/:id/convert                       ║
 // ╚══════════════════════════════════════════════════════════════
 import 'dart:io';
-
 import 'package:crm_app/modals/modals.dart'
     show AppConstants, Lead, AppUser, Attachment;
 import 'package:crm_app/screen/deals/modal/deal_modal.dart' show DealConstants;
+import 'package:crm_app/screen/leads/cubit/call_cubit.dart';
 import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
 import 'package:crm_app/shareWidgets/share_widgets.dart'
     show
@@ -146,8 +146,15 @@ String _mimeStringForAttachmentExt(String ext) {
 class LeadsScreen extends StatelessWidget {
   const LeadsScreen({super.key});
   @override
-  Widget build(BuildContext context) => BlocProvider(
-        create: (_) => LeadCubit()..fetchAllLeads(),
+  Widget build(BuildContext context) => MultiBlocProvider(
+        providers: [
+          BlocProvider(
+            create: (_) => LeadCubit()..fetchAllLeads(),
+          ),
+          BlocProvider(
+            create: (_) => CallCubit(),
+          ),
+        ],
         child: const _LeadsView(),
       );
 }
@@ -250,8 +257,17 @@ class _LeadsViewState extends State<_LeadsView> {
     if (all.isEmpty) return all;
     final q = _search.toLowerCase();
     return all.where((l) {
-      final matchesSearch = _search.isEmpty || l.name.toLowerCase().contains(q);
+      final phone = l.phone.replaceAll(RegExp(r'[^0-9+]'), '').toLowerCase();
 
+      final localPhone = l.phone.replaceAll(RegExp(r'[^0-9]'), '');
+
+      final searchQuery = q.replaceAll(RegExp(r'[^0-9+]'), '');
+
+      final matchesSearch = _search.isEmpty ||
+          l.name.toLowerCase().contains(q) ||
+          l.email.toLowerCase().contains(q) ||
+          phone.contains(searchQuery) ||
+          localPhone.contains(searchQuery.replaceAll('+', ''));
       final matchesStatus =
           _statusFilter == 'All Status' || l.status == _statusFilter;
       final matchesSource =
@@ -833,6 +849,17 @@ class _LeadCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Row(children: [
+                  GestureDetector(
+                    onTap: () {
+                      ctx.read<CallCubit>().makeCall(lead.phone);
+                    },
+                    child: const Icon(
+                      Icons.call_outlined,
+                      size: 18,
+                      color: Colors.green,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
                   if (!isConverted)
                     GestureDetector(
                         onTap: onConvert,

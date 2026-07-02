@@ -26,9 +26,9 @@ import 'package:flutter/material.dart' show debugPrint;
 import 'package:flutter_bloc/flutter_bloc.dart' show Cubit;
 import 'package:shared_preferences/shared_preferences.dart'
     show SharedPreferences;
-    
+
 class DashboardCubit extends Cubit<DashboardState> {
-  static const _base = 'https://sales.stagingzar.com/api';
+  static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
 
   late final Dio _dio;
   String? _cachedToken;
@@ -139,31 +139,50 @@ class DashboardCubit extends Cubit<DashboardState> {
         dealsFetched: allDealRows.isNotEmpty,
       );
 
+//
       Map<String, dynamic>? topPerformer;
 
-try {
-  final leaderboard = await LeaderboardService.fetchLeaderboard(
-    token: _cachedToken ?? '',
-  );
+      try {
+        final now = DateTime.now();
 
-  if (leaderboard.data.isNotEmpty) {
-    leaderboard.data.sort(
-  (a, b) => b.totalLeads.compareTo(a.totalLeads),
-    );
+        final start = DateTime(
+          now.year,
+          now.month,
+          now.day,
+        ).subtract(const Duration(days: 6));
 
-    final top = leaderboard.data.first;
+        final end = DateTime(
+          now.year,
+          now.month,
+          now.day,
+        );
 
-    topPerformer = {
-      "name": top.name,
-      "email": top.email,
-      "conversionRate": top.conversionRate,
-      "convertedLeads": top.convertedLeads,
-      "totalLeads": top.totalLeads,
-      "productiveDays": top.productiveDays,
-    };
-  }
-} catch (_) {}
+        final leaderboard = await LeaderboardService.fetchLeaderboard(
+          token: _cachedToken ?? '',
+          filterType: 'last7',
+          startDate:
+              "${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')}",
+          endDate:
+              "${end.year}-${end.month.toString().padLeft(2, '0')}-${end.day.toString().padLeft(2, '0')}",
+        );
 
+        if (leaderboard.data.isNotEmpty) {
+          leaderboard.data.sort(
+            (a, b) => b.convertedLeads.compareTo(a.convertedLeads),
+          );
+
+          final top = leaderboard.data.first;
+
+          topPerformer = {
+            "name": top.name,
+            "email": top.email,
+            "conversionRate": top.conversionRate,
+            "convertedLeads": top.convertedLeads,
+            "totalLeads": top.totalLeads,
+            "productiveDays": top.productiveDays,
+          };
+        }
+      } catch (_) {}
       final summary = DashboardSummary(
         totalLeads: canViewAll
             ? (base.totalLeads > 0 ? base.totalLeads : allLeads.length)
@@ -238,7 +257,7 @@ try {
       final cached = await LocalDb.instance.loadDashboard(userId: userId);
       if (cached == null || isClosed) return;
       emit(DashboardLoaded(
-          topPerformer: null,
+        topPerformer: null,
         allLeads: cached.recentLeads,
         recentLeads: cached.recentLeads,
         summary: cached.summary,
@@ -273,18 +292,21 @@ try {
   // ════════════════════════════════════════════════════════════
   // PERIOD FILTER
   // ════════════════════════════════════════════════════════════
-
   Future<void> filterByPeriod({
-    String range = 'last7',
+    required String range,
     int? month,
     int? year,
   }) async {
     final cur = state;
+
     if (cur is! DashboardLoaded) return;
 
     final prefs = await SharedPreferences.getInstance();
+
     final userId = prefs.getString('user_id') ?? '';
+
     final userName = prefs.getString('user_name') ?? '';
+
     final canViewAll = PermissionHelper.can('users_roles');
 
     final scopedDeals = _scopeDealsForUser(
@@ -293,6 +315,7 @@ try {
       userId: userId,
       userName: userName,
     );
+
     final dealMetrics = _dealMetricsForPeriod(
       scopedDeals,
       range: range,
@@ -303,99 +326,163 @@ try {
     );
 
     List<InvoiceRecord> filtered = cur.invoices;
-    if (range == 'last7') {
+
+    // TODAY
+    if (range == 'today') {
       final now = DateTime.now();
-      final start = DateTime(now.year, now.month, now.day)
-          .subtract(const Duration(days: 6));
+
+      final today = DateTime(
+        now.year,
+        now.month,
+        now.day,
+      );
+
       filtered = cur.invoices.where((inv) {
         final d = inv.issueDate;
+
         if (d == null) return false;
-        return !DateTime(d.year, d.month, d.day).isBefore(start);
+
+        final invoiceDay = DateTime(
+          d.year,
+          d.month,
+          d.day,
+        );
+
+        return invoiceDay == today;
       }).toList();
-    } else if (month != null || year != null) {
+    }
+
+    // LAST 7 DAYS
+    else if (range == 'last7') {
+      final now = DateTime.now();
+
+      final start = DateTime(
+        now.year,
+        now.month,
+        now.day,
+      ).subtract(const Duration(days: 6));
+
       filtered = cur.invoices.where((inv) {
         final d = inv.issueDate;
+
         if (d == null) return false;
+
+        return !DateTime(
+          d.year,
+          d.month,
+          d.day,
+        ).isBefore(start);
+      }).toList();
+    }
+
+    // MONTH
+    else if (month != null || year != null) {
+      filtered = cur.invoices.where((inv) {
+        final d = inv.issueDate;
+
+        if (d == null) return false;
+
         if (month != null && d.month != month) return false;
+
         if (year != null && d.year != year) return false;
+
         return true;
       }).toList();
     }
 
-    // Use cached rates when offline; fall back gracefully
+    // Revenue
     Map<String, double> rates = {};
+
     try {
       rates = await _fetchRatesForInvoices(filtered);
     } catch (_) {
       rates = Map<String, double>.from(_rateCache);
     }
-    final revenue = _computeRevenue(filtered, rates: rates);
-    Map<String, dynamic>? topPerformer;
 
-try {
-  String? startDate;
-  String? endDate;
-  String filterType = 'last7';
-
-  if (range == 'month' && month != null && year != null) {
-    filterType = 'month';
-
-    startDate =
-        "$year-${month.toString().padLeft(2, '0')}-01";
-
-    final lastDay = DateTime(year, month + 1, 0).day;
-
-    endDate =
-        "$year-${month.toString().padLeft(2, '0')}-$lastDay";
-  }
-
-  final leaderboard = await LeaderboardService.fetchLeaderboard(
-    token: _cachedToken ?? '',
-    filterType: filterType,
-    startDate: startDate,
-    endDate: endDate,
-  );
-
-  if (leaderboard.data.isNotEmpty) {
-    leaderboard.data.sort(
-      (a, b) => b.totalLeads.compareTo(a.totalLeads),
+    final revenue = _computeRevenue(
+      filtered,
+      rates: rates,
     );
 
-    final top = leaderboard.data.first;
+    // Top Performer
+    Map<String, dynamic>? topPerformer;
 
-    topPerformer = {
-      "name": top.name,
-      "email": top.email,
-      "conversionRate": top.conversionRate,
-      "convertedLeads": top.convertedLeads,
-      "totalLeads": top.totalLeads,
-      "productiveDays": top.productiveDays,
-    };
-  }
-} catch (_) {}
+    try {
+      String? startDate;
+      String? endDate;
+
+      String filterType = range;
+
+      // TODAY
+      if (range == 'today') {
+        final now = DateTime.now();
+
+        startDate =
+            "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+
+        endDate = startDate;
+      }
+
+      // MONTH
+      if (range == 'month' && month != null && year != null) {
+        filterType = 'month';
+
+        startDate = "$year-${month.toString().padLeft(2, '0')}-01";
+
+        final lastDay = DateTime(year, month + 1, 0).day;
+
+        endDate = "$year-${month.toString().padLeft(2, '0')}-$lastDay";
+      }
+
+      final leaderboard = await LeaderboardService.fetchLeaderboard(
+        token: _cachedToken ?? '',
+        filterType: filterType,
+        startDate: startDate,
+        endDate: endDate,
+      );
+
+      if (leaderboard.data.isNotEmpty) {
+        leaderboard.data.sort(
+          (a, b) => b.convertedLeads.compareTo(a.convertedLeads),
+        );
+
+        final top = leaderboard.data.first;
+
+        topPerformer = {
+          "name": top.name,
+          "email": top.email,
+          "conversionRate": top.conversionRate,
+          "convertedLeads": top.convertedLeads,
+          "totalLeads": top.totalLeads,
+          "productiveDays": top.productiveDays,
+        };
+      }
+    } catch (_) {}
+
     if (isClosed) return;
 
-    emit(DashboardLoaded(
-      topPerformer: topPerformer ?? cur.topPerformer,
-      allLeads: cur.allLeads,
-      recentLeads: cur.recentLeads,
-      summary: cur.summary.copyWith(
-        paidRevenue: revenue.paid,
-        unpaidRevenue: revenue.unpaid,
-        totalRevenue: revenue.total,
-        totalDeals: dealMetrics.totalDeals,
-        dealsWon: dealMetrics.dealsWon,
-        dealsChange: dealMetrics.dealsChange,
+    emit(
+      DashboardLoaded(
+        topPerformer: topPerformer ?? cur.topPerformer,
+        allLeads: cur.allLeads,
+        recentLeads: cur.recentLeads,
+        summary: cur.summary.copyWith(
+          paidRevenue: revenue.paid,
+          unpaidRevenue: revenue.unpaid,
+          totalRevenue: revenue.total,
+          totalDeals: dealMetrics.totalDeals,
+          dealsWon: dealMetrics.dealsWon,
+          dealsChange: dealMetrics.dealsChange,
+        ),
+        pipeline: cur.pipeline,
+        invoices: cur.invoices,
+        allDealRows: cur.allDealRows,
+        filterRange: range,
+        filterMonth: range == 'month' ? month : null,
+        filterYear: range == 'month' ? year : null,
       ),
-      pipeline: cur.pipeline,
-      invoices: cur.invoices,
-      allDealRows: cur.allDealRows,
-      filterRange: range,
-      filterMonth: range == 'month' ? month : null,
-      filterYear: range == 'month' ? year : null,
-    ));
+    );
   }
-
   // ════════════════════════════════════════════════════════════
   // DEALS
   // ════════════════════════════════════════════════════════════
@@ -436,13 +523,7 @@ try {
   }
 
   DateTime? _dealFilterDate(Map<String, dynamic> m) {
-    for (final k in [
-      'closedAt',
-      'wonAt',
-      'dealClosedAt',
-      'updatedAt',
-      'createdAt'
-    ]) {
+    for (final k in ['createdAt']) {
       final d = DateTime.tryParse((m[k] ?? '').toString());
       if (d != null) return d;
     }
@@ -513,7 +594,27 @@ try {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
 
-    if (range == 'last7') {
+    if (range == 'today') {
+      final cur = _dealCountsInRange(
+        scopedDeals,
+        rangeStartDay: today,
+        rangeEndExclusiveDay: today.add(const Duration(days: 1)),
+      );
+
+      final yesterday = today.subtract(const Duration(days: 1));
+
+      final prev = _dealCountsInRange(
+        scopedDeals,
+        rangeStartDay: yesterday,
+        rangeEndExclusiveDay: today,
+      );
+
+      return (
+        totalDeals: cur.total,
+        dealsWon: cur.won,
+        dealsChange: _percentChangeInt(cur.won, prev.won),
+      );
+    } else if (range == 'last7') {
       final curStart = today.subtract(const Duration(days: 6));
       final cur = _dealCountsInRange(scopedDeals, rangeStartDay: curStart);
       final prevStart = today.subtract(const Duration(days: 13));

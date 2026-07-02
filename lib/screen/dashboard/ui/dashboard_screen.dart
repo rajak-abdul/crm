@@ -27,7 +27,6 @@ import 'package:intl/intl.dart';
 
 bool _isSessionExpiredMessage(String msg) {
   final m = msg.toLowerCase();
-
   return m.contains('session expired') ||
       m.contains('unauthorized') ||
       m.contains('401') ||
@@ -275,7 +274,7 @@ class DashboardLoaded extends DashboardState {
 
   @override
   List<Object?> get props => [
-      topPerformer,
+        topPerformer,
         allLeads,
         recentLeads,
         summary,
@@ -614,7 +613,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
       if (token.isEmpty) return;
 
       final dio = Dio(BaseOptions(
-        baseUrl: 'https://sales.stagingzar.com/api',
+        baseUrl: 'https://crm.techzarinfo.cloud/api',
         connectTimeout: const Duration(seconds: 20),
         receiveTimeout: const Duration(seconds: 20),
       ));
@@ -844,16 +843,16 @@ class _CrmDrawerState extends State<_CrmDrawer> {
                 setState(() => _active = '/invoice');
                 widget.onNavigate('/invoice');
               }),
-            _Item(
-                icon: Icons.leaderboard_outlined,
-                activeIcon: Icons.leaderboard_outlined,
-                label: 'Leaderboard',
-                active: _active == '/LeaderboardPage',
-                activeColor: AppColors.warning,
-                onTap: () {
-                  setState(() => _active = '/LeaderboardPage');
-                  widget.onNavigate('/LeaderboardPage');
-                }),
+          _Item(
+              icon: Icons.leaderboard_outlined,
+              activeIcon: Icons.leaderboard_outlined,
+              label: 'Leaderboard',
+              active: _active == '/LeaderboardPage',
+              activeColor: AppColors.warning,
+              onTap: () {
+                setState(() => _active = '/LeaderboardPage');
+                widget.onNavigate('/LeaderboardPage');
+              }),
           const Spacer(),
           const Divider(
               color: Color(0xFF1E293B), height: 1, indent: 20, endIndent: 20),
@@ -1246,7 +1245,11 @@ class _MainContent extends StatelessWidget {
                           onRetry: () =>
                               context.read<DashboardCubit>().loadDashboard()))
                 else if (state is DashboardLoaded)
-                  SliverToBoxAdapter(child: _DashboardBody(s: state))
+                  SliverToBoxAdapter(
+                      child: _DashboardBody(
+                    s: state,
+                    isOffline: isOffline,
+                  ))
                 else
                   const SliverFillRemaining(
                     child: Center(
@@ -1265,9 +1268,12 @@ class _MainContent extends StatelessWidget {
 // ══════════════════════════════════════════════════════════════
 class _DashboardBody extends StatelessWidget {
   final DashboardLoaded s;
-  
-  const _DashboardBody({required this.s});
+  final bool isOffline;
 
+  const _DashboardBody({
+    required this.s,
+    required this.isOffline,
+  });
 
   // INR formatter
   static String _inr(double v) {
@@ -1315,7 +1321,7 @@ class _DashboardBody extends StatelessWidget {
     final unpaidRev = sm.unpaidRevenue;
     final totalRev = sm.totalRevenue;
 
-    // Pending leads: prefer API value; fallback = count leads that aren't 'Converted'
+    // Pending leads: prefer API value; fallback = count leads that aren'9t 'Converted'
     final pendingInvoiceCount =
         s.invoices.where((inv) => inv.status == 'unpaid').length;
 
@@ -1323,15 +1329,15 @@ class _DashboardBody extends StatelessWidget {
         ? '${(paidRev / totalRev * 100).toStringAsFixed(0)}% of total'
         : '—';
 
-        final topUser = s.topPerformer ??
-{
-  "name": "No Performer",
-  "email": "",
-  "conversionRate": 0,
-  "convertedLeads": 0,
-  "totalLeads": 0,
-  "productiveDays": 0,
-};
+    final topUser = s.topPerformer ??
+        {
+          "name": "No Performer",
+          "email": "",
+          "conversionRate": 0,
+          "convertedLeads": 0,
+          "totalLeads": 0,
+          "productiveDays": 0,
+        };
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -1347,11 +1353,8 @@ class _DashboardBody extends StatelessWidget {
                 .filterByPeriod(range: range, month: month, year: year);
           },
         ),
-        const SizedBox(height: 16),
 
         // ── Section: Overview ─────────────────────────────────
-        const _SectionTitle('Overview'),
-        const SizedBox(height: 12),
         GridView.count(
           crossAxisCount: 2,
           shrinkWrap: true,
@@ -1404,7 +1407,19 @@ class _DashboardBody extends StatelessWidget {
             ),
           ],
         ),
+        // ── Recent Leads ──────────────────────────────────────
+        const _SectionTitle('Recent Leads'),
+        const SizedBox(height: 12),
+        s.recentLeads.isEmpty
+            ? const EmptyState(
+                message: 'No recent leads', icon: Icons.people_outline)
+            : Column(
+                children: s.recentLeads
+                    .take(5)
+                    .map((l) => _MiniLeadCard(lead: l))
+                    .toList()),
 
+        const SizedBox(height: 24),
         // ── Revenue Breakdown bar ─────────────────────────────
         if (totalRev > 0) ...[
           const SizedBox(height: 16),
@@ -1471,24 +1486,16 @@ class _DashboardBody extends StatelessWidget {
 
         const SizedBox(height: 24),
 
-        
-// ── Top Performer ─────────────────────────────────────
-const _SectionTitle('Top Performer'),
-const SizedBox(height: 12),
-_TopPerformerCard(user: topUser),
+        // ── Top Performer ─────────────────────────────────────
+        _SectionTitle('Top Performer'),
 
-const SizedBox(height: 24),
-        // ── Recent Leads ──────────────────────────────────────
-        const _SectionTitle('Recent Leads'),
         const SizedBox(height: 12),
-        s.recentLeads.isEmpty
-            ? const EmptyState(
-                message: 'No recent leads', icon: Icons.people_outline)
-            : Column(
-                children: s.recentLeads
-                    .take(5)
-                    .map((l) => _MiniLeadCard(lead: l))
-                    .toList()),
+
+        _TopPerformerCard(user: topUser),
+
+        const SizedBox(height: 24),
+
+        // ── Recent Leads ──────────────────────────────────────
 
         const SizedBox(height: 32),
       ]),
@@ -1557,20 +1564,32 @@ class _PeriodFilter extends StatelessWidget {
                 color: AppColors.textPrimary),
           ),
         ),
-        if (selectedRange == 'last7')
+        if (selectedRange == 'last7' || selectedRange == 'today')
           _DropBtn<String>(
             value: selectedRange,
             hint: 'Range',
             items: const [
+              DropdownMenuItem(value: 'today', child: Text('Today')),
               DropdownMenuItem(value: 'last7', child: Text('Last 7 days')),
               DropdownMenuItem(value: 'month', child: Text('Month')),
             ],
             onChanged: (v) {
-              final next = v ?? 'last7';
-              if (next == 'month') {
-                onChanged(next, selectedMonth, selectedYear ?? now.year);
+              if (v == 'today') {
+                context.read<DashboardCubit>().filterByPeriod(
+                      range: 'today',
+                    );
+              } else if (v == 'last7') {
+                context.read<DashboardCubit>().filterByPeriod(
+                      range: 'last7',
+                    );
               } else {
-                onChanged(next, null, null);
+                final now = DateTime.now();
+
+                context.read<DashboardCubit>().filterByPeriod(
+                      range: 'month',
+                      month: now.month,
+                      year: now.year,
+                    );
               }
             },
           ),
@@ -1613,12 +1632,18 @@ class _PeriodFilter extends StatelessWidget {
   }
 
   String _label() {
+    if (selectedRange == 'today') return 'Today';
+
     if (selectedRange == 'last7') return 'Last 7 days';
+
     if (selectedMonth != null && selectedYear != null) {
       return '${_months[selectedMonth! - 1]} $selectedYear';
     }
+
     if (selectedMonth != null) return _months[selectedMonth! - 1];
+
     if (selectedYear != null) return '$selectedYear';
+
     return 'All time';
   }
 }
@@ -2111,7 +2136,7 @@ class _MiniLeadCard extends StatelessWidget {
 class _TopPerformerCard extends StatelessWidget {
   final Map<String, dynamic> user;
 
-   _TopPerformerCard({required this.user});
+  _TopPerformerCard({required this.user});
 
   @override
   Widget build(BuildContext context) {
@@ -2122,166 +2147,180 @@ class _TopPerformerCard extends StatelessWidget {
     final total = user['totalLeads'] ?? 0;
     final activeDays = user['productiveDays'] ?? 0;
 
-return Material(
-  color: Colors.transparent,
-  child: InkWell(
-    borderRadius: BorderRadius.circular(18),
-    onTap: () async {
-  final prefs = await SharedPreferences.getInstance();
-  final token = prefs.getString('token') ?? '';
-
-  Navigator.push(
-    context,
-    MaterialPageRoute(
-      builder: (_) => LeaderboardPage(
-        authToken: token,
-      ),
-    ),
-  );
-},
-    child: Container(      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFFFFF7ED), Color(0xFFFFFBF5)],
-        ),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
         borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          )
-        ],
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // ── Header ──
-        Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.orange,
-                borderRadius: BorderRadius.circular(12),
+        onTap: () async {
+          final result = await Connectivity().checkConnectivity();
+
+          if (result == ConnectivityResult.none) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  "You are offline. Leaderboard is not available.",
+                ),
               ),
-              child: const Icon(Icons.emoji_events,
-                  color: Colors.white, size: 18),
-            ),
-            const SizedBox(width: 10),
-            const Text(
-              "Top Performer",
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-            ),
-          ],
-        ),
+            );
 
-        const SizedBox(height: 16),
+            return;
+          }
 
-        // ── User Info ──
-        Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.orange,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Text("#1",
-                  style: TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.bold)),
-            ),
-            const SizedBox(width: 12),
+          final prefs = await SharedPreferences.getInstance();
 
-            Expanded(
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(name,
-                        style: const TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w700)),
-                    Text(email,
-                        style: const TextStyle(
-                            fontSize: 12, color: Colors.grey)),
-                    const SizedBox(height: 4),
-                    Row(children: [
-                      const Icon(Icons.flash_on,
-                          size: 14, color: Colors.orange),
-                      Text(" ${conversion.toStringAsFixed(1)}%",
-                          style: const TextStyle(fontSize: 12)),
-                      const SizedBox(width: 10),
-                      const Icon(Icons.local_fire_department,
-                          size: 14, color: Colors.orange),
-                      Text(" $activeDays d",
-                          style: const TextStyle(fontSize: 12)),
-                    ])
-                  ]),
-            ),
+          final token = prefs.getString('token') ?? '';
 
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.orange.shade200,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.workspace_premium,
-                  size: 18, color: Colors.orange),
-            )
-          ],
-        ),
-
-        const SizedBox(height: 16),
-
-        // ── Stats ──
-        Row(
-          children: [
-            Expanded(
-              child: _tpBox(
-                title: "Conversion",
-                value: "${conversion.toStringAsFixed(1)}%",
-                sub: "$converted/$total",
-                color: Colors.orange,
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => LeaderboardPage(
+                authToken: token,
               ),
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _tpBox(
-                title: "Active Days",
-                value: "$activeDays",
-                sub: "—",
-                color: Colors.blue,
-              ),
+          );
+        },
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFFFFF7ED), Color(0xFFFFFBF5)],
             ),
-          ],
-        ),
-
-        const SizedBox(height: 16),
-
-        // ── Progress ──
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Text("Performance",
-                style: TextStyle(fontSize: 12, color: Colors.grey)),
-            Text("${conversion.toStringAsFixed(1)}%",
-                style: const TextStyle(
-                    fontSize: 12, fontWeight: FontWeight.w600)),
-          ],
-        ),
-        const SizedBox(height: 6),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(10),
-          child: LinearProgressIndicator(
-            value: conversion / 100,
-            minHeight: 6,
-            backgroundColor: Colors.orange.shade100,
-            valueColor:
-                const AlwaysStoppedAnimation<Color>(Colors.orange),
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              )
+            ],
           ),
-        )
-      ]),
-       ),
-    ),
-  );
-}
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            // ── Header ──
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.orange,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.emoji_events,
+                      color: Colors.white, size: 18),
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  "Top Performer",
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 16),
+
+            // ── User Info ──
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.orange,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Text("#1",
+                      style: TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.bold)),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(name,
+                            style: const TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.w700)),
+                        Text(email,
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey)),
+                        const SizedBox(height: 4),
+                        Row(children: [
+                          const Icon(Icons.flash_on,
+                              size: 14, color: Colors.orange),
+                          Text(" ${conversion.toStringAsFixed(1)}%",
+                              style: const TextStyle(fontSize: 12)),
+                          const SizedBox(width: 10),
+                          const Icon(Icons.local_fire_department,
+                              size: 14, color: Colors.orange),
+                          Text(" $activeDays d",
+                              style: const TextStyle(fontSize: 12)),
+                        ])
+                      ]),
+                ),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade200,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.workspace_premium,
+                      size: 18, color: Colors.orange),
+                )
+              ],
+            ),
+
+            const SizedBox(height: 16),
+
+            // ── Stats ──
+            Row(
+              children: [
+                Expanded(
+                  child: _tpBox(
+                    title: "Conversion",
+                    value: "${conversion.toStringAsFixed(1)}%",
+                    sub: "$converted/$total",
+                    color: Colors.orange,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _tpBox(
+                    title: "Active Days",
+                    value: "$activeDays",
+                    sub: "—",
+                    color: Colors.blue,
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 16),
+
+            // ── Progress ──
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text("Performance",
+                    style: TextStyle(fontSize: 12, color: Colors.grey)),
+                Text("${conversion.toStringAsFixed(1)}%",
+                    style: const TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w600)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: LinearProgressIndicator(
+                value: conversion / 100,
+                minHeight: 6,
+                backgroundColor: Colors.orange.shade100,
+                valueColor: const AlwaysStoppedAnimation<Color>(Colors.orange),
+              ),
+            )
+          ]),
+        ),
+      ),
+    );
+  }
 }
 
 class _tpBox extends StatelessWidget {
@@ -2303,14 +2342,12 @@ class _tpBox extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title,
-              style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          Text(title, style: const TextStyle(fontSize: 12, color: Colors.grey)),
           const SizedBox(height: 4),
           Text(value,
               style:
                   const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-          Text(sub,
-              style: const TextStyle(fontSize: 11, color: Colors.grey)),
+          Text(sub, style: const TextStyle(fontSize: 11, color: Colors.grey)),
         ]),
       );
 }

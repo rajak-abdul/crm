@@ -18,17 +18,22 @@ import 'package:equatable/equatable.dart';
 // ══════════════════════════════════════════════════════════════
 abstract class LoginState extends Equatable {
   const LoginState();
-  @override List<Object?> get props => [];
+  @override
+  List<Object?> get props => [];
 }
-class LoginIdle    extends LoginState {}
+
+class LoginIdle extends LoginState {}
+
 class LoginLoading extends LoginState {}
+
 class LoginSuccess extends LoginState {}
+
 class LoginError extends LoginState {
   final String message;
   const LoginError(this.message);
-  @override List<Object?> get props => [message];
+  @override
+  List<Object?> get props => [message];
 }
-
 
 // ══════════════════════════════════════════════════════════════
 // 3️⃣  SCREEN
@@ -38,25 +43,28 @@ class LoginScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => BlocProvider(
-    create: (_) => LoginCubit(),
-    child: const _LoginView(),
-  );
+        create: (_) => LoginCubit(),
+        child: const _LoginView(),
+      );
 }
 
 class _LoginView extends StatefulWidget {
   const _LoginView();
-  @override State<_LoginView> createState() => _LoginViewState();
+  @override
+  State<_LoginView> createState() => _LoginViewState();
 }
 
 class _LoginViewState extends State<_LoginView> {
-  final _emailCtrl    = TextEditingController();
+  final _emailCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
-  bool _showPass      = false;
+  bool _showPass = false;
   final _forgotEmailCtrl = TextEditingController();
+  final _tenantSlugCtrl = TextEditingController();
 
   @override
   void dispose() {
     _emailCtrl.dispose();
+    _tenantSlugCtrl.dispose();
     _passwordCtrl.dispose();
     _forgotEmailCtrl.dispose();
     super.dispose();
@@ -85,29 +93,39 @@ class _LoginViewState extends State<_LoginView> {
                   const SizedBox(height: 60),
 
                   // ── Logo / Brand ──────────────────────────
-                  Center(child: Column(children: [
+                  Center(
+                      child: Column(children: [
                     Container(
-                      width: 72, height: 72,
+                      width: 72,
+                      height: 72,
                       decoration: BoxDecoration(
                         gradient: const LinearGradient(
                           colors: [Color(0xFF1D4ED8), Color(0xFF0EA5E9)],
-                          begin: Alignment.topLeft, end: Alignment.bottomRight,
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
                         ),
                         borderRadius: BorderRadius.circular(20),
-                        boxShadow: [BoxShadow(
-                          color: AppColors.primary.withOpacity(0.35),
-                          blurRadius: 20, offset: const Offset(0, 8),
-                        )],
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.primary.withOpacity(0.35),
+                            blurRadius: 20,
+                            offset: const Offset(0, 8),
+                          )
+                        ],
                       ),
                       child: const Icon(Icons.business_center_rounded,
                           color: Colors.white, size: 36),
                     ),
                     const SizedBox(height: 16),
                     const Text('Welcome Back',
-                        style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: AppColors.textPrimary)),
+                        style: TextStyle(
+                            fontSize: 26,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textPrimary)),
                     const SizedBox(height: 6),
                     const Text('Sign in to your account',
-                        style: TextStyle(fontSize: 14, color: AppColors.textSecondary)),
+                        style: TextStyle(
+                            fontSize: 14, color: AppColors.textSecondary)),
                   ])),
 
                   const SizedBox(height: 48),
@@ -116,17 +134,24 @@ class _LoginViewState extends State<_LoginView> {
                   if (state is LoginError)
                     Container(
                       margin: const EdgeInsets.only(bottom: 20),
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 12),
                       decoration: BoxDecoration(
                         color: AppColors.dangerLight,
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppColors.danger.withOpacity(0.3)),
+                        border: Border.all(
+                            color: AppColors.danger.withOpacity(0.3)),
                       ),
                       child: Row(children: [
-                        const Icon(Icons.error_outline, color: AppColors.danger, size: 18),
+                        const Icon(Icons.error_outline,
+                            color: AppColors.danger, size: 18),
                         const SizedBox(width: 10),
-                        Expanded(child: Text(state.message,
-                            style: const TextStyle(fontSize: 13, color: AppColors.danger, fontWeight: FontWeight.w500))),
+                        Expanded(
+                            child: Text(state.message,
+                                style: const TextStyle(
+                                    fontSize: 13,
+                                    color: AppColors.danger,
+                                    fontWeight: FontWeight.w500))),
                       ]),
                     ),
 
@@ -134,20 +159,71 @@ class _LoginViewState extends State<_LoginView> {
                   const _Label('Email Address'),
                   const SizedBox(height: 8),
                   TextField(
-                    controller:   _emailCtrl,
+                    controller: _emailCtrl,
                     keyboardType: TextInputType.emailAddress,
                     textInputAction: TextInputAction.next,
-                    enabled:      !loading,
-                    style: const TextStyle(fontSize: 15, color: AppColors.textPrimary),
+                    enabled: !loading,
+                    style: const TextStyle(
+                        fontSize: 15, color: AppColors.textPrimary),
                     decoration: InputDecoration(
-                      hintText:    'Enter your email',
-                      prefixIcon:  const Icon(Icons.email_outlined, color: AppColors.textSecondary, size: 20),
-                      filled:      true,
-                      fillColor:   loading ? AppColors.divider : AppColors.surface,
-                      border:        OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: AppColors.border)),
-                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: AppColors.border)),
-                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: AppColors.primary, width: 1.8)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                      hintText: 'Enter your email',
+                      prefixIcon: const Icon(Icons.email_outlined,
+                          color: AppColors.textSecondary, size: 20),
+                      filled: true,
+                      fillColor:
+                          loading ? AppColors.divider : AppColors.surface,
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide:
+                              const BorderSide(color: AppColors.border)),
+                      enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide:
+                              const BorderSide(color: AppColors.border)),
+                      focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(
+                              color: AppColors.primary, width: 1.8)),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 16),
+                    ),
+                  ),
+
+                  const SizedBox(height: 18),
+
+                  // ── Tenant Slug ───────────────────────────────
+                  const _Label('Tenant Slug'),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _tenantSlugCtrl,
+                    keyboardType: TextInputType.text,
+                    textInputAction: TextInputAction.next,
+                    enabled: !loading,
+                    autocorrect: false,
+                    textCapitalization: TextCapitalization.none,
+                    style: const TextStyle(
+                        fontSize: 15, color: AppColors.textPrimary),
+                    decoration: InputDecoration(
+                      hintText: 'e.g. kishore',
+                      prefixIcon: const Icon(Icons.apartment_outlined,
+                          color: AppColors.textSecondary, size: 20),
+                      filled: true,
+                      fillColor:
+                          loading ? AppColors.divider : AppColors.surface,
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide:
+                              const BorderSide(color: AppColors.border)),
+                      enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide:
+                              const BorderSide(color: AppColors.border)),
+                      focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(
+                              color: AppColors.primary, width: 1.8)),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 16),
                     ),
                   ),
 
@@ -157,28 +233,44 @@ class _LoginViewState extends State<_LoginView> {
                   const _Label('Password'),
                   const SizedBox(height: 8),
                   TextField(
-                    controller:      _passwordCtrl,
-                    obscureText:     !_showPass,
+                    controller: _passwordCtrl,
+                    obscureText: !_showPass,
                     textInputAction: TextInputAction.done,
-                    enabled:         !loading,
-                    onSubmitted:     (_) => _submit(context),
-                    style: const TextStyle(fontSize: 15, color: AppColors.textPrimary),
+                    enabled: !loading,
+                    onSubmitted: (_) => _submit(context),
+                    style: const TextStyle(
+                        fontSize: 15, color: AppColors.textPrimary),
                     decoration: InputDecoration(
-                      hintText:   '••••••••',
-                      prefixIcon: const Icon(Icons.lock_outline, color: AppColors.textSecondary, size: 20),
+                      hintText: '••••••••',
+                      prefixIcon: const Icon(Icons.lock_outline,
+                          color: AppColors.textSecondary, size: 20),
                       suffixIcon: IconButton(
                         icon: Icon(
-                          _showPass ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                          color: AppColors.textSecondary, size: 20,
+                          _showPass
+                              ? Icons.visibility_off_outlined
+                              : Icons.visibility_outlined,
+                          color: AppColors.textSecondary,
+                          size: 20,
                         ),
                         onPressed: () => setState(() => _showPass = !_showPass),
                       ),
-                      filled:      true,
-                      fillColor:   loading ? AppColors.divider : AppColors.surface,
-                      border:        OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: AppColors.border)),
-                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: AppColors.border)),
-                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: AppColors.primary, width: 1.8)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                      filled: true,
+                      fillColor:
+                          loading ? AppColors.divider : AppColors.surface,
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide:
+                              const BorderSide(color: AppColors.border)),
+                      enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide:
+                              const BorderSide(color: AppColors.border)),
+                      focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(
+                              color: AppColors.primary, width: 1.8)),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 16),
                     ),
                   ),
 
@@ -186,7 +278,9 @@ class _LoginViewState extends State<_LoginView> {
                   Align(
                     alignment: Alignment.centerRight,
                     child: TextButton(
-                      onPressed: loading ? null : () => _showForgotPasswordDialog(context),
+                      onPressed: loading
+                          ? null
+                          : () => _showForgotPasswordDialog(context),
                       child: const Text(
                         'Forgot your password?',
                         style: TextStyle(
@@ -207,23 +301,33 @@ class _LoginViewState extends State<_LoginView> {
                       onPressed: loading ? null : () => _submit(context),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.primary,
-                        disabledBackgroundColor: AppColors.primary.withOpacity(0.6),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        disabledBackgroundColor:
+                            AppColors.primary.withOpacity(0.6),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
                         elevation: 0,
                       ),
                       child: loading
-                          ? const SizedBox(width: 22, height: 22,
-                              child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2.5, color: Colors.white))
                           : const Text('Sign In',
-                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Colors.white)),
+                              style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white)),
                     ),
                   ),
 
                   const SizedBox(height: 24),
 
                   // ── Footer ────────────────────────────────
-                  const Center(child: Text('© 2025 TZI. All rights reserved.',
-                      style: TextStyle(fontSize: 12, color: AppColors.textHint))),
+                  const Center(
+                      child: Text('© 2025 TZI. All rights reserved.',
+                          style: TextStyle(
+                              fontSize: 12, color: AppColors.textHint))),
 
                   const SizedBox(height: 40),
                 ],
@@ -237,13 +341,16 @@ class _LoginViewState extends State<_LoginView> {
 
   void _submit(BuildContext context) {
     FocusScope.of(context).unfocus();
-    context.read<LoginCubit>().login(_emailCtrl.text, _passwordCtrl.text);
+    final slug = _tenantSlugCtrl.text.trim().toLowerCase();
+
+    context.read<LoginCubit>().login(_emailCtrl.text, _passwordCtrl.text, slug);
   }
 
   bool _isValidForgotEmail(String email) {
     final value = email.trim();
     if (value.isEmpty) return false;
-    final hasBasicEmailShape = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(value);
+    final hasBasicEmailShape =
+        RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(value);
     return hasBasicEmailShape && value.toLowerCase().endsWith('.com');
   }
 
@@ -261,7 +368,8 @@ class _LoginViewState extends State<_LoginView> {
         return StatefulBuilder(
           builder: (context, setState) {
             return AlertDialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
               title: const Text(
                 'Forgot Password',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
@@ -292,7 +400,8 @@ class _LoginViewState extends State<_LoginView> {
               ),
               actions: [
                 TextButton(
-                  onPressed: sending ? null : () => Navigator.of(dialogCtx).pop(),
+                  onPressed:
+                      sending ? null : () => Navigator.of(dialogCtx).pop(),
                   child: const Text('Cancel'),
                 ),
                 ElevatedButton(
@@ -301,7 +410,8 @@ class _LoginViewState extends State<_LoginView> {
                       : () async {
                           final email = _forgotEmailCtrl.text.trim();
                           if (!_isValidForgotEmail(email)) {
-                            setState(() => localError = 'Enter a valid email (must include @ and end with .com)');
+                            setState(() => localError =
+                                'Enter a valid email (must include @ and end with .com)');
                             return;
                           }
 
@@ -310,7 +420,8 @@ class _LoginViewState extends State<_LoginView> {
                             sending = true;
                           });
 
-                          final result = await loginCubit.requestPasswordReset(email);
+                          final result =
+                              await loginCubit.requestPasswordReset(email);
 
                           if (!mounted) return;
                           if (!result.success) {
@@ -332,7 +443,8 @@ class _LoginViewState extends State<_LoginView> {
                       ? const SizedBox(
                           height: 18,
                           width: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
                         )
                       : const Text('Send reset link'),
                 ),
@@ -353,7 +465,8 @@ class _LoginViewState extends State<_LoginView> {
       context: context,
       builder: (dialogCtx) {
         return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           titlePadding: const EdgeInsets.fromLTRB(20, 16, 8, 8),
           contentPadding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
           title: Row(
@@ -382,7 +495,7 @@ class _LoginViewState extends State<_LoginView> {
                 child: Icon(Icons.check, color: Color(0xFF22C55E), size: 28),
               ),
               const SizedBox(height: 16),
-                Text(
+              Text(
                 apiMessage,
                 style: const TextStyle(
                   color: AppColors.textSecondary,
@@ -393,7 +506,8 @@ class _LoginViewState extends State<_LoginView> {
               const SizedBox(height: 8),
               Text(
                 "We've sent a password reset link to\n$email. Please check your inbox and follow the instructions.",
-                style: const TextStyle(color: AppColors.textSecondary, height: 1.5),
+                style: const TextStyle(
+                    color: AppColors.textSecondary, height: 1.5),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 14),
@@ -414,7 +528,6 @@ class _LoginViewState extends State<_LoginView> {
       },
     );
   }
-
 }
 
 // ─── Small label widget ───────────────────────────────────────
@@ -423,5 +536,8 @@ class _Label extends StatelessWidget {
   const _Label(this.text);
   @override
   Widget build(BuildContext context) => Text(text,
-      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.textSecondary));
+      style: const TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          color: AppColors.textSecondary));
 }

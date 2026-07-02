@@ -12,7 +12,7 @@ import 'package:crm_app/database/local_db.dart';
 import 'package:dio/dio.dart';
 import 'package:crm_app/screen/LeaderBoard/modal/leaderBoard_modal.dart';
 
-const String _baseUrl = 'https://sales.stagingzar.com/api';
+const String _baseUrl = 'https://crm-backend-api.techzarinfo.cloud/api';
 const String _leaderboardEndpoint = '/streak/leaderboard';
 
 class LeaderboardService {

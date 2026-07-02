@@ -1,3 +1,4 @@
+import 'package:crm_app/database/local_db.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:dio/dio.dart'
     show DioExceptionType, DioException, Dio, BaseOptions;
@@ -19,7 +20,7 @@ class ForgotPasswordResult {
 }
 
 class LoginCubit extends Cubit<LoginState> {
-  static const _base = 'https://sales.stagingzar.com/api';
+  static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
 
   late final Dio _dio;
 
@@ -63,7 +64,8 @@ class LoginCubit extends Cubit<LoginState> {
   }
 
   // ── POST /api/auth/login ──────────────────────────────────
-  Future<void> login(String email, String password) async {
+  // ── POST /api/auth/login ──────────────────────────────────
+  Future<void> login(String email, String password, String tenantSlug) async {
     if (email.trim().isEmpty) {
       emit(const LoginError('Email is required'));
       return;
@@ -72,35 +74,32 @@ class LoginCubit extends Cubit<LoginState> {
       emit(const LoginError('Password is required'));
       return;
     }
+    if (tenantSlug.trim().isEmpty) {
+      emit(const LoginError('Tenant slug is required'));
+      return;
+    }
 
     emit(LoginLoading());
     try {
       final res = await _dio.post(
         '/users/login',
-        data: {'email': email.trim(), 'password': password},
+        data: {
+          'email': email.trim(),
+          'password': password,
+          'tenantSlug': tenantSlug.trim(),
+        },
       );
 
-      // ── Extract token from response ──────────────────────
-      // Handles common shapes:
-      //   { "token": "..." }
-      //   { "data": { "token": "..." } }
-      //   { "accessToken": "..." }
-      //   { "data": { "accessToken": "..." } }
       debugPrint('[LoginCubit] full body: ${res.data}');
 
       final body = res.data;
-      final userMap = _extractUserMap(body);
-      String? token;
+      final userMap =
+          _extractUserMap(body); // falls back to root map, still works
 
+      // ✅ token is at root now
+      String? token;
       if (body is Map) {
-        token = body['token'] as String? ??
-            body['accessToken'] as String? ??
-            body['access_token'] as String? ??
-            (body['data'] is Map
-                ? (body['data']['token'] as String? ??
-                    body['data']['accessToken'] as String? ??
-                    body['data']['access_token'] as String?)
-                : null);
+        token = body['token'] as String?;
       }
 
       if (token == null || token.isEmpty) {
@@ -108,78 +107,48 @@ class LoginCubit extends Cubit<LoginState> {
         return;
       }
 
-      // Save token for all future API calls
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('token', token);
 
-      // ✅ Extract role + permissions
+      // ✅ NEW: persist tenant slug for building tenant-scoped API calls later
+      await prefs.setString('tenant_slug', tenantSlug.trim());
+
+      // ✅ role + permissions — role is at root now, not nested under data
       Map<String, dynamic>? role;
       Map<String, dynamic>? permissions;
-
       if (body is Map) {
-        role = body['role'] as Map<String, dynamic>? ??
-            (body['data'] is Map
-                ? (body['data']['role'] as Map<String, dynamic>?)
-                : null) ??
-            (userMap['role'] is Map
-                ? Map<String, dynamic>.from(userMap['role'] as Map)
-                : null);
+        role = body['role'] as Map<String, dynamic>?;
         permissions = role?['permissions'] as Map<String, dynamic>?;
       }
 
-// ✅ Save role name
       if (role != null && role['name'] != null) {
         await prefs.setString('role', role['name']);
       }
 
-// ✅ Convert permissions map → list
       if (permissions != null) {
         final allowedPermissions = permissions.entries
             .where((e) => e.value == true)
             .map((e) => e.key)
             .toList();
-
         await prefs.setStringList('permissions', allowedPermissions);
       }
 
-// ✅ ALWAYS LOAD (important)
       await PermissionHelper.load();
 
-// ADD: save user_id from login response
-// ADD: save user_id from login response
+      // ✅ user id — at root now
       String? userId;
       if (body is Map) {
-        userId = userMap['_id']?.toString() // ← check userMap FIRST
-            ??
-            userMap['id']?.toString() ??
-            body['_id']?.toString() ??
-            body['id']?.toString() ??
-            body['userId']?.toString() ??
-            (body['data'] is Map
-                ? (body['data']['_id']?.toString() ??
-                    body['data']['id']?.toString() ??
-                    body['data']['userId']?.toString())
-                : null);
+        userId = body['_id']?.toString() ?? body['id']?.toString();
       }
       if (userId != null && userId.isNotEmpty) {
         await prefs.setString('user_id', userId);
       }
-      String userName = '';
-      String userEmail = '';
-      String profileImage = '';
 
-      final firstName = (userMap['firstName'] ?? userMap['first_name'] ?? '')
-          .toString()
-          .trim();
-      final lastName =
-          (userMap['lastName'] ?? userMap['last_name'] ?? '').toString().trim();
-      final combinedName = '$firstName $lastName'.trim();
-
-      userName = combinedName.isNotEmpty
-          ? combinedName
-          : (userMap['name'] ?? userMap['fullName'] ?? '').toString().trim();
-      userEmail = (userMap['email'] ?? '').toString().trim();
-      profileImage = _extractImagePath(userMap);
+      // ✅ name/email — root has "name" directly, not firstName/lastName
+      String userName =
+          (userMap['name'] ?? userMap['fullName'] ?? '').toString().trim();
+      String userEmail = (userMap['email'] ?? '').toString().trim();
+      String profileImage = _extractImagePath(userMap);
 
       if (userName.isNotEmpty) {
         await prefs.setString('user_name', userName);
@@ -191,15 +160,15 @@ class LoginCubit extends Cubit<LoginState> {
         await prefs.setString('profileImage', profileImage);
         await prefs.setString('profile_image', profileImage);
       }
+      await LocalDb.instance.clearAll();
 
       emit(LoginSuccess());
-      debugPrint('[LoginCubit] full response body: $body');
     } on DioException catch (e) {
       final body = e.response?.data;
       String msg = 'Login failed';
 
       if (e.response?.statusCode == 401 || e.response?.statusCode == 403) {
-        msg = 'Invalid email or password';
+        msg = 'Invalid email, password, or tenant slug';
       } else if (body is Map) {
         msg = body['message'] as String? ?? body['error'] as String? ?? msg;
       } else {
@@ -322,7 +291,9 @@ class LoginCubit extends Cubit<LoginState> {
     await prefs.remove('user_name');
     await prefs.remove('email');
     await prefs.remove('profileImage');
+    await prefs.remove('tenant_slug'); // ✅ NEW — clear tenant slug too
 
+    await LocalDb.instance.clearAll();
     PermissionHelper.clear(); // ✅ ADD// ✅ ADD
 
     emit(LoginIdle());
