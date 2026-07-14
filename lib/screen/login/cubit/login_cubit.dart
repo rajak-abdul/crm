@@ -1,4 +1,7 @@
 import 'package:crm_app/database/local_db.dart';
+import 'package:crm_app/screen/login/cubit/location_api.dart';
+import 'package:crm_app/services/device_service.dart';
+import 'package:crm_app/services/location_service.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:dio/dio.dart'
     show DioExceptionType, DioException, Dio, BaseOptions;
@@ -23,7 +26,7 @@ class LoginCubit extends Cubit<LoginState> {
   static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
 
   late final Dio _dio;
-
+  
   LoginCubit() : super(LoginIdle()) {
     _dio = Dio(BaseOptions(
       baseUrl: _base,
@@ -64,7 +67,6 @@ class LoginCubit extends Cubit<LoginState> {
   }
 
   // ── POST /api/auth/login ──────────────────────────────────
-  // ── POST /api/auth/login ──────────────────────────────────
   Future<void> login(String email, String password, String tenantSlug) async {
     if (email.trim().isEmpty) {
       emit(const LoginError('Email is required'));
@@ -81,15 +83,23 @@ class LoginCubit extends Cubit<LoginState> {
 
     emit(LoginLoading());
     try {
+      final deviceId = await DeviceService.getDeviceId();
+      final deviceLabel = await DeviceService.getDeviceLabel();
+      
       final res = await _dio.post(
         '/users/login',
         data: {
-          'email': email.trim(),
-          'password': password,
-          'tenantSlug': tenantSlug.trim(),
-        },
+  'email': email.trim(),
+  'password': password,
+  'tenantSlug': tenantSlug.trim(),
+  'deviceType': 'mobile',
+  'deviceId': deviceId,
+  'deviceLabel': deviceLabel,
+},
       );
-
+debugPrint("Device Type : mobile");
+debugPrint("Device ID: $deviceId");
+debugPrint("Device Label: $deviceLabel");
       debugPrint('[LoginCubit] full body: ${res.data}');
 
       final body = res.data;
@@ -161,6 +171,22 @@ class LoginCubit extends Cubit<LoginState> {
         await prefs.setString('profile_image', profileImage);
       }
       await LocalDb.instance.clearAll();
+      debugPrint("Before updateLocation");
+final hasPermission = await LocationService.requestPermission();
+
+      if (!hasPermission) {
+  emit(
+    const LoginError(
+      "Location permission is required to use this application.",
+    ),
+  );
+  return;
+}
+
+await LocationApiService.startLiveLocation();
+
+debugPrint("After updateLocation");
+
 
       emit(LoginSuccess());
     } on DioException catch (e) {
@@ -284,6 +310,8 @@ class LoginCubit extends Cubit<LoginState> {
 
   /// Clear saved token (logout)
   Future<void> logout() async {
+      await LocationApiService.stopLiveLocation();
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('token');
     await prefs.remove('user_id');

@@ -5,9 +5,12 @@
 // ignore_for_file: unnecessary_cast
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:crm_app/modals/followup_model.dart';
 import 'package:crm_app/screen/LeaderBoard/ui/leader_board.dart';
 import 'package:crm_app/screen/dashboard/cubit/dashboard.dart';
 import 'package:crm_app/screen/dashboard/cubit/notification_cubit.dart';
+import 'package:crm_app/screen/dashboard/ui/dashboard_followup_page.ui.dart';
+import 'package:crm_app/screen/dashboard/ui/dashboard_today_followup_ui.dart';
 import 'package:crm_app/screen/leads/ui/lead_screen.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:dio/dio.dart';
@@ -21,6 +24,7 @@ import 'package:crm_app/shareWidgets/share_widgets.dart'
 import 'package:crm_app/screen/deals/ui/deal_screen.dart' show DealsScreen;
 import 'package:crm_app/screen/profile/ui/profile_screen.dart'
     show ProfileScreen;
+import 'package:geolocator/geolocator.dart';
 import '../../invoice/ui/invoice_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
@@ -250,6 +254,7 @@ class DashboardLoaded extends DashboardState {
   final DashboardSummary summary;
   final List<PipelineStage> pipeline;
   final List<InvoiceRecord> invoices;
+  final List<FollowUpItem> todaysFollowUps;
 
   /// Raw deal rows from `/deals/getAll` for date- and user-scoped metrics.
   final List<Map<String, dynamic>> allDealRows;
@@ -264,6 +269,7 @@ class DashboardLoaded extends DashboardState {
     required this.summary,
     required this.pipeline,
     required this.invoices,
+    this.todaysFollowUps = const [],
     this.allDealRows = const [],
     this.filterRange = 'last7',
     this.filterMonth,
@@ -280,6 +286,7 @@ class DashboardLoaded extends DashboardState {
         summary,
         pipeline,
         invoices,
+        todaysFollowUps,
         allDealRows,
         filterRange,
         filterMonth,
@@ -591,6 +598,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
   Future<void> _loadDrawerProfile() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      final savedRole = (prefs.getString('role') ?? '').trim();
       final savedName = (prefs.getString('user_name') ?? '').trim();
       final savedEmail = (prefs.getString('email') ?? '').trim();
       final savedImage = ((prefs.getString('profile_image') ??
@@ -603,6 +611,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
               savedEmail.isNotEmpty ||
               savedImage.isNotEmpty)) {
         setState(() {
+          _userRole = savedRole;
           if (savedName.isNotEmpty) _drawerName = savedName;
           if (savedEmail.isNotEmpty) _drawerEmail = savedEmail;
           _drawerImage = _resolveImageUrl(savedImage);
@@ -613,7 +622,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
       if (token.isEmpty) return;
 
       final dio = Dio(BaseOptions(
-        baseUrl: 'https://crm.techzarinfo.cloud/api',
+        baseUrl: 'https://crm-backend-api.techzarinfo.cloud/api',
         connectTimeout: const Duration(seconds: 20),
         receiveTimeout: const Duration(seconds: 20),
       ));
@@ -703,7 +712,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
       path = '/$path';
     }
 
-    return 'https://sales.stagingzar.com$path';
+    return 'https://crm-backend-api.techzarinfo.cloud/$path';
   }
 
   Future<void> _logout() async {
@@ -768,7 +777,10 @@ class _CrmDrawerState extends State<_CrmDrawer> {
                               color: Colors.white,
                               fontSize: 17,
                               fontWeight: FontWeight.w800)),
-                      Text(_drawerEmail,
+                      Text(  
+                        _drawerEmail,
+                        // _userRole.isNotEmpty ? _userRole : 'CRM User',
+
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -1058,7 +1070,20 @@ class _MainContent extends StatelessWidget {
           },
           builder: (context, state) => RefreshIndicator(
             color: AppColors.primary,
-            onRefresh: () => context.read<DashboardCubit>().refresh(),
+            onRefresh: () async {
+  final result = await Connectivity().checkConnectivity();
+
+  if (result == ConnectivityResult.none) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("No internet connection"),
+      ),
+    );
+    return;
+  }
+
+  await context.read<DashboardCubit>().refresh();
+},
             child: CustomScrollView(
               physics: isDrawerOpen
                   ? const NeverScrollableScrollPhysics()
@@ -1407,6 +1432,17 @@ class _DashboardBody extends StatelessWidget {
             ),
           ],
         ),
+        const SizedBox(height: 20),
+        // ── Today's Follow-ups ────────────────────────────────
+        TodaysFollowUpsCard(
+  items: s.todaysFollowUps,
+  onViewAll: () async {
+    if (!await _canNavigate(context)) return;
+    Navigator.of(context, rootNavigator: true).push(
+      _slide(FollowUpsScreen(items: s.todaysFollowUps)),
+    );
+  },
+),
         // ── Recent Leads ──────────────────────────────────────
         const _SectionTitle('Recent Leads'),
         const SizedBox(height: 12),
@@ -1419,7 +1455,7 @@ class _DashboardBody extends StatelessWidget {
                     .map((l) => _MiniLeadCard(lead: l))
                     .toList()),
 
-        const SizedBox(height: 24),
+        const SizedBox(height: 20),
         // ── Revenue Breakdown bar ─────────────────────────────
         if (totalRev > 0) ...[
           const SizedBox(height: 16),
@@ -1430,7 +1466,7 @@ class _DashboardBody extends StatelessWidget {
           ),
         ],
 
-        const SizedBox(height: 24),
+        const SizedBox(height: 20),
 
         // ── Quick Actions ─────────────────────────────────────
         const _SectionTitle('Quick Actions'),
@@ -1470,8 +1506,18 @@ class _DashboardBody extends StatelessWidget {
               }),
         ]),
 
-        const SizedBox(height: 24),
-
+        const SizedBox(height: 20),
+      ElevatedButton(
+  onPressed: () async {
+    try {
+      final enabled = await Geolocator.isLocationServiceEnabled();
+      debugPrint("GPS Enabled: $enabled");
+    } catch (e) {
+      debugPrint("ERROR: $e");
+    }
+  },
+  child: const Text("Test Location"),
+),
         // ── Deal Pipeline ─────────────────────────────────────
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           const _SectionTitle('Deal Pipeline'),
@@ -1494,9 +1540,7 @@ class _DashboardBody extends StatelessWidget {
         _TopPerformerCard(user: topUser),
 
         const SizedBox(height: 24),
-
-        // ── Recent Leads ──────────────────────────────────────
-
+  
         const SizedBox(height: 32),
       ]),
     );

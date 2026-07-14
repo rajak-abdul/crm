@@ -6,6 +6,10 @@
 // ignore_for_file: curly_braces_in_flow_control_structures
 
 import 'dart:io';
+import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
+import 'package:crm_app/screen/leads/ui/lead_screen.dart';
+import 'package:crm_app/shareWidgets/missed_followup.dart';
+import 'package:crm_app/shareWidgets/missed_followup_helper.dart';
 import 'package:phone_numbers_parser/phone_numbers_parser.dart';
 import 'package:crm_app/modals/modals.dart' show AppConstants;
 import 'package:crm_app/screen/deals/cubit/deals_cubit.dart';
@@ -174,6 +178,7 @@ class _DealsShell extends StatefulWidget {
 class _DealsShellState extends State<_DealsShell> {
   late String _view;
   DealsLoaded? _lastLoaded;
+  bool _missedPopupShown = false;
 
   static const _viewOptions = [
     ('stages', 'Deal Stages'),
@@ -202,12 +207,41 @@ class _DealsShellState extends State<_DealsShell> {
           value: context.read<DealsCubit>(),
           child: _DealFormModal(users: users, editDeal: deal)));
 
-  void _openDetail(Deal deal) => showModalBottomSheet(
+  void openDetail(Deal deal) => showModalBottomSheet(
         context: context,
         isScrollControlled: true,
         backgroundColor: Colors.transparent,
-        builder: (ctx) => _DealDetailSheet(deal: deal),
+        builder: (ctx) => DealDetailSheet(deal: deal),
       );
+
+      Future<void> _checkMissedFollowups() async {
+  if (_missedPopupShown) return;
+
+  final leads = await LeadCubit().getAllLeads();
+
+  if (!mounted || leads.isEmpty) return;
+
+  _missedPopupShown = true;
+
+  showDialog(
+    context: context,
+    builder: (_) => MissedFollowupDialog(
+      missedLeads: leads,
+      onViewLead: (lead) {
+        Navigator.pop(context);
+
+        showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: Colors.transparent,
+          builder: (_) => LeadDetailSheet(
+            lead: lead,
+          ),
+        );
+      },
+    ),
+  );
+}
 
   Widget _buildLoaded(BuildContext ctx, DealsLoaded loaded) => AnimatedSwitcher(
       duration: const Duration(milliseconds: 200),
@@ -218,7 +252,7 @@ class _DealsShellState extends State<_DealsShell> {
               pendingDeals: loaded.pendingDeals,
               lostDeals: loaded.lostDeals,
               onCreateDeal: () => _openCreate(loaded.salesUsers),
-              onViewDeal: (d) => _openDetail(d),
+              onViewDeal: (d) => openDetail(d),
               onEditDeal: (d) => _openEdit(d, loaded.salesUsers),
               onDeleteDeal: (id) => ctx.read<DealsCubit>().deleteDeal(id))
           : _AllDealsView(
@@ -226,7 +260,7 @@ class _DealsShellState extends State<_DealsShell> {
               deals: loaded.allDeals,
               salesUsers: loaded.salesUsers,
               onCreateDeal: () => _openCreate(loaded.salesUsers),
-              onViewDeal: (d) => _openDetail(d),
+              onViewDeal: (d) => openDetail(d),
               onEditDeal: (d) => _openEdit(d, loaded.salesUsers),
               onDeleteDeal: (id) => ctx.read<DealsCubit>().deleteDeal(id)));
 
@@ -263,7 +297,13 @@ class _DealsShellState extends State<_DealsShell> {
             }
           },
           builder: (ctx, state) {
-            if (state is DealsLoaded) _lastLoaded = state;
+            if (state is DealsLoaded) {
+  _lastLoaded = state;
+
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    _checkMissedFollowups();
+  });
+}
             if (state is DealsLoading && _lastLoaded == null)
               return const LoadingState(message: 'Loading deals…');
             if (state is DealsError && _lastLoaded == null)
@@ -724,55 +764,52 @@ class _AllDealsViewState extends State<_AllDealsView> {
   DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
   List<Deal> get _filtered {
-    final allUsers = ['All Users', ...widget.salesUsers];
-    final safeUser = allUsers.contains(_userFilter) ? _userFilter : 'All Users';
-    final allStages = ['All Stages', ...DealConstants.stages];
-    final safeStage =
-        allStages.contains(_stageFilter) ? _stageFilter : 'All Stages';
-    const allClientTypes = ['All Client Types', 'B2B', 'B2C'];
-    final safeClientType = allClientTypes.contains(_clientTypeFilter)
-        ? _clientTypeFilter
-        : 'All Client Types';
-    final today = _dateOnly(DateTime.now());
-    return widget.deals.where((d) {
-      final phone =
-    d.phone.replaceAll(RegExp(r'[^0-9+]'), '').toLowerCase();
+  final allUsers = ['All Users', ...widget.salesUsers];
+  final safeUser = allUsers.contains(_userFilter) ? _userFilter : 'All Users';
+  final allStages = ['All Stages', ...DealConstants.stages];
+  final safeStage =
+      allStages.contains(_stageFilter) ? _stageFilter : 'All Stages';
+  const allClientTypes = ['All Client Types', 'B2B', 'B2C'];
+  final safeClientType = allClientTypes.contains(_clientTypeFilter)
+      ? _clientTypeFilter
+      : 'All Client Types';
+  final today = _dateOnly(DateTime.now());
+  return widget.deals.where((d) {
+    final phone = d.phone.replaceAll(RegExp(r'[^0-9+]'), '').toLowerCase();
+    final localPhone = d.phone.replaceAll(RegExp(r'[^0-9]'), '');
+    final searchQuery = _q.replaceAll(RegExp(r'[^0-9+]'), '');
 
-final localPhone =
-    d.phone.replaceAll(RegExp(r'[^0-9]'), '');
+    final matchesPhone = searchQuery.isNotEmpty &&
+        (phone.contains(searchQuery) ||
+            localPhone.contains(searchQuery.replaceAll('+', '')));
 
-final searchQuery =
-    _q.replaceAll(RegExp(r'[^0-9+]'), '');
+    final matchQ = _q.isEmpty ||
+        d.name.toLowerCase().contains(_q) ||
+        d.companyName.toLowerCase().contains(_q) ||
+        d.email.toLowerCase().contains(_q) ||
+        matchesPhone;
 
-final matchQ =
-    _q.isEmpty ||
-    d.name.toLowerCase().contains(_q) ||
-    d.companyName.toLowerCase().contains(_q) ||
-    d.email.toLowerCase().contains(_q) ||
-    phone.contains(searchQuery) ||
-    localPhone.contains(searchQuery.replaceAll('+', ''));
-      final matchStage = safeStage == 'All Stages' ||
-          DealConstants.canonicalStage(d.stage).trim().toLowerCase() ==
-              safeStage.trim().toLowerCase();
-      final matchUser = safeUser == 'All Users' ||
-          d.assignTo.trim().toLowerCase() ==
-              _userName(safeUser).trim().toLowerCase();
-      final matchClientType = safeClientType == 'All Client Types' ||
-          d.clientType.toUpperCase() == safeClientType;
-      final followUpDt = DateTime.tryParse(d.followUpDate ?? '');
-      final followUpDay = followUpDt == null
-          ? null
-          : _dateOnly(followUpDt.isUtc ? followUpDt.toLocal() : followUpDt);
-      final matchTodayFollowUps =
-          !_todayFollowupsOnly || (followUpDay != null && followUpDay == today);
-      return matchQ &&
-          matchStage &&
-          matchUser &&
-          matchClientType &&
-          matchTodayFollowUps;
-    }).toList();
-  }
-
+    final matchStage = safeStage == 'All Stages' ||
+        DealConstants.canonicalStage(d.stage).trim().toLowerCase() ==
+            safeStage.trim().toLowerCase();
+    final matchUser = safeUser == 'All Users' ||
+        d.assignTo.trim().toLowerCase() ==
+            _userName(safeUser).trim().toLowerCase();
+    final matchClientType = safeClientType == 'All Client Types' ||
+        d.clientType.toUpperCase() == safeClientType;
+    final followUpDt = DateTime.tryParse(d.followUpDate ?? '');
+    final followUpDay = followUpDt == null
+        ? null
+        : _dateOnly(followUpDt.isUtc ? followUpDt.toLocal() : followUpDt);
+    final matchTodayFollowUps =
+        !_todayFollowupsOnly || (followUpDay != null && followUpDay == today);
+    return matchQ &&
+        matchStage &&
+        matchUser &&
+        matchClientType &&
+        matchTodayFollowUps;
+  }).toList();
+}
   bool get _hasFilter =>
       _stageFilter != 'All Stages' ||
       _userFilter != 'All Users' ||
@@ -802,34 +839,85 @@ final matchQ =
     final allStages = ['All Stages', ...DealConstants.stages];
     const allClientTypes = ['All Client Types', 'B2B', 'B2C'];
     return Column(children: [
-      Container(
-          color: AppColors.surface,
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-          child: Row(children: [
-            Expanded(
-                child: _SearchBar(
-                    controller: _searchCtrl,
-                    hint: 'Search deal name…',
-                    onChanged: (v) => setState(() {
-                          _q = v.toLowerCase();
-                          _page = 1;
-                        }),
-                    onClear: () => setState(() {
-                          _q = '';
-                          _page = 1;
-                        }))),
-            const SizedBox(width: 10),
-            if (PermissionHelper.can('users_roles'))
-              ElevatedButton.icon(
-                  onPressed: widget.onCreateDeal,
-                  icon: const Icon(Icons.add, size: 16),
-                  label:
-                      const Text('Create Deal', style: TextStyle(fontSize: 13)),
-                  style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 11),
-                      minimumSize: Size.zero)),
-          ])),
+      
+      // Search
+Container(
+  color: AppColors.surface,
+  padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+  child: _SearchBar(
+    controller: _searchCtrl,
+    hint: 'Search deals...',
+    onChanged: (v) => setState(() {
+      _q = v.toLowerCase();
+      _page = 1;
+    }),
+    onClear: () => setState(() {
+      _q = '';
+      _searchCtrl.clear();
+      _page = 1;
+    }),
+  ),
+),
+
+// Buttons
+Container(
+  color: AppColors.surface,
+  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+  child: Row(
+    children: [
+      Expanded(
+        child: SizedBox(
+  height: 42,
+  child: ElevatedButton.icon(
+    onPressed: () {
+      // Reject Deal
+    },
+    icon: const Icon(
+      Icons.cancel_outlined,
+      size: 18,
+    ),
+    label: const Text(
+      "Reject Deal",
+      style: TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+    style: ElevatedButton.styleFrom(
+      elevation: 0,
+      backgroundColor: const Color(0xFFFFF1F2), // Light red
+      foregroundColor: const Color(0xFFDC2626), // Red text & icon
+      shadowColor: Colors.transparent,
+      side: const BorderSide(
+        color: Color(0xFFFCA5A5), // Thin red border
+        width: 1,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 18,
+        vertical: 12,
+      ),
+    ),
+  ),
+),
+      ),
+      const SizedBox(width: 10),
+      if (PermissionHelper.can('users_roles'))
+        Expanded(
+          child: SizedBox(
+            height: 42,
+            child: ElevatedButton.icon(
+              onPressed: widget.onCreateDeal,
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text("Create Deal"),
+            ),
+          ),
+        ),
+    ],
+  ),
+),
       Container(
           color: AppColors.surface,
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
@@ -1155,11 +1243,11 @@ class _DealRow extends StatelessWidget {
   }
 }
 
-class _DealDetailSheet extends StatelessWidget {
+class DealDetailSheet extends StatelessWidget {
   final Deal deal;
   final GlobalKey<ScaffoldMessengerState> _detailMessengerKey =
       GlobalKey<ScaffoldMessengerState>();
-  _DealDetailSheet({required this.deal});
+  DealDetailSheet({required this.deal});
 
   DateTime? _followUpLocal(String? raw) {
     if (raw == null || raw.trim().isEmpty) return null;
@@ -1201,7 +1289,7 @@ class _DealDetailSheet extends StatelessWidget {
 
   /// Public file URL on staging (same pattern as lead detail).
   String _buildPreviewUrl(String rawPath) {
-    const base = 'https://sales.stagingzar.com';
+    const base = 'https://crm.techzarinfo.cloud';
     final clean = rawPath.startsWith('/') ? rawPath : '/$rawPath';
     return '$base$clean';
   }
@@ -1252,7 +1340,7 @@ class _DealDetailSheet extends StatelessWidget {
 
     final cleanPath = rawPath.startsWith('/') ? rawPath.substring(1) : rawPath;
     final url = Uri.https(
-      'sales.stagingzar.com',
+      'https://crm.techzarinfo.cloud',
       '/api/files/download',
       {'filePath': cleanPath},
     ).toString();

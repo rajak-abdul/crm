@@ -192,7 +192,7 @@ class _LoginViewState extends State<_LoginView> {
                   const SizedBox(height: 18),
 
                   // ── Tenant Slug ───────────────────────────────
-                  const _Label('Tenant Slug'),
+                  const _Label('Workspace'),
                   const SizedBox(height: 8),
                   TextField(
                     controller: _tenantSlugCtrl,

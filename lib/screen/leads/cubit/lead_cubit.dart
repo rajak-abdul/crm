@@ -2,6 +2,7 @@
 // 1️⃣  STATE
 // ══════════════════════════════════════════════════════════════
 import 'package:crm_app/database/local_db.dart';
+import 'package:crm_app/modals/missed_followup_modal.dart';
 import 'package:crm_app/modals/modals.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:dio/dio.dart';
@@ -137,13 +138,15 @@ List<Map<String, dynamic>> _parseListIsolate(dynamic d) {
 // 2️⃣  CUBIT
 // ══════════════════════════════════════════════════════════════
 class LeadCubit extends Cubit<LeadState> {
-  static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
+  static const _domain = 'https://crm-backend-api.techzarinfo.cloud';
+  static const _base = '$_domain/api';
 
   late final Dio _dio;
   // ignore: unused_field
   final _db = LocalDb.instance;
   List<AppUser> _salesUsers = [];
   String? _cachedToken;
+  String? _cachedTenantSlug;
 
   LeadCubit() : super(LeadInitial()) {
     _dio = Dio(BaseOptions(
@@ -166,13 +169,27 @@ class LeadCubit extends Cubit<LeadState> {
     _initToken();
   }
 
-  Future<void> _initToken() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      _cachedToken = prefs.getString('token');
-    } catch (_) {}
-  }
+ Future<void> _initToken() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
 
+    _cachedToken = prefs.getString('token');
+    _cachedTenantSlug = prefs.getString('tenant_slug');
+
+    if (_cachedToken != null && _cachedToken!.isNotEmpty) {
+      _dio.options.headers['Authorization'] =
+          'Bearer $_cachedToken';
+    }
+
+    _dio.options.headers['Content-Type'] = 'application/json';
+    _dio.options.headers['Accept'] = 'application/json';
+
+    debugPrint("Token: $_cachedToken");
+    debugPrint("Headers: ${_dio.options.headers}");
+  } catch (e) {
+    debugPrint("InitToken Error: $e");
+  }
+}
   List<AppUser> get salesUsers => List.unmodifiable(_salesUsers);
 
   // ── 🌐 GET /leads/getAllLead ───────────────────────────────
@@ -546,6 +563,125 @@ class LeadCubit extends Cubit<LeadState> {
     }
   }
 
+  // ── 🌐 POST /{tenantSlug}/api/leads/:id/followup-notes ────
+  // NOTE: this endpoint lives under the tenant-scoped path
+  // (…techzarinfo.cloud/<tenantSlug>/api/…) rather than the plain
+  // /api base used by every other call in this cubit, so we build
+  // an absolute URL for this one request instead of a relative path.
+  // Response shape: { "message": "...", "lead": { ...full lead... } }
+  Future<String?> addFollowUpNote(String id, String note) async {
+    final trimmed = note.trim();
+    if (trimmed.isEmpty) return 'Note cannot be empty';
+
+    try {
+      await _initToken();
+      final tenantSlug = _cachedTenantSlug;
+      if (tenantSlug == null || tenantSlug.isEmpty) {
+        return 'Missing tenant slug — please log in again';
+      }
+
+      final res = await _dio.post(
+        '$_domain/$tenantSlug/api/leads/$id/followup-notes',
+        data: {'note': trimmed},
+      );
+
+      final updated = _extractLead(res.data);
+      if (updated == null) {
+        return 'Follow-up note saved, but response could not be parsed';
+      }
+
+      try {
+        await LocalDb.instance.upsertLeadFromApi(updated);
+      } catch (e) {
+        debugPrint('=== LEAD CACHE FOLLOWUP NOTE WRITE ERROR ===: $e');
+      }
+
+      if (!isClosed && state is LeadLoaded) {
+        final newList = (state as LeadLoaded)
+            .leads
+            .map((l) => l.id == id ? updated : l)
+            .toList();
+        final message = (res.data is Map<String, dynamic>)
+            ? (res.data['message'] as String? ?? 'Follow-up note added')
+            : 'Follow-up note added';
+        emit(LeadActionSuccess(
+            leads: newList, salesUsers: _salesUsers, message: message));
+      }
+      return null;
+    } on DioException catch (e) {
+      return _dioMsg(e);
+    } catch (e) {
+      return 'Failed to add follow-up note: $e';
+    }
+  }
+
+  // ── 🌐 PATCH /{tenantSlug}/api/leads/:id/reject ───────────
+// Request body:  { "rejectionReason": "..." }
+// Response shape: { "message": "Lead rejected", "lead": { ...full lead... } }
+Future<String?> rejectLead(String id, String reason) async {
+  final trimmed = reason.trim();
+  debugPrint("========== REJECT LEAD ==========");
+  debugPrint("ID: $id");
+  debugPrint("Reason: '$trimmed'");
+
+  if (trimmed.isEmpty) {
+    return 'Rejection reason cannot be empty';
+  }
+
+  try {
+    await _initToken();
+    final tenantSlug = _cachedTenantSlug;
+
+    if (tenantSlug == null || tenantSlug.isEmpty) {
+      return 'Missing tenant slug — please log in again';
+    }
+     final payload = {
+      "rejectionReason": trimmed,
+    };
+
+    final res = await _dio.patch(
+  '$_domain/$tenantSlug/api/leads/$id/reject',
+  options: Options(
+    headers: {
+      "Authorization": "Bearer $_cachedToken",
+      "Content-Type": "application/json",
+    },
+  ),
+  data: {
+    "reason": trimmed,
+  },
+);
+
+    final updated = _extractLead(res.data);
+    if (updated == null) {
+      return 'Lead rejected, but response could not be parsed';
+    }
+
+    try {
+      await LocalDb.instance.upsertLeadFromApi(updated);
+    } catch (e) {
+      debugPrint('=== LEAD CACHE REJECT WRITE ERROR ===: $e');
+    }
+
+    if (!isClosed && state is LeadLoaded) {
+      final newList = (state as LeadLoaded)
+          .leads
+          .map((l) => l.id == id ? updated : l)
+          .toList();
+      final message = (res.data is Map<String, dynamic>)
+          ? (res.data['message'] as String? ?? 'Lead rejected')
+          : 'Lead rejected';
+      emit(LeadActionSuccess(
+          leads: newList, salesUsers: _salesUsers, message: message));
+    }
+    return null;
+  } on DioException catch (e) {
+    return _dioMsg(e);
+  } catch (e) {
+    return 'Failed to reject lead: $e';
+  }
+}
+
   // ── 🌐 PATCH /leads/:id/convert ──────────────────────────
   Future<String?> convertToDeal(String id, double dealValue,
       DateTime expectedCloseDate, String currencyCode) async {
@@ -597,7 +733,62 @@ class LeadCubit extends Cubit<LeadState> {
       return 'Failed to convert lead: $e';
     }
   }
+//============================
+//get All Leads for pop-up
+//=============================
 
+  Future<List<Lead>> getAllLeads() async {
+  await _initToken();
+
+  final res = await _dio.get('/leads/getAllLead');
+
+  final parsed = await compute(_parseListIsolate, res.data);
+
+  return parsed.map((e) => Lead.fromJson(e)).toList();
+}
+//===================================
+// fetch Reject lead
+//===================================
+Future<void> fetchRejectedLeads({
+  int page = 1,
+  int limit = 10,
+}) async {
+  if (isClosed) return;
+
+  emit(LeadLoading());
+
+  try {
+    await _initToken();
+
+    final tenantSlug = _cachedTenantSlug;
+    if (tenantSlug == null || tenantSlug.isEmpty) {
+      emit(const LeadError('Missing tenant slug'));
+      return;
+    }
+
+    final res = await _dio.get(
+      '$_domain/$tenantSlug/api/leads/rejected',
+      queryParameters: {
+        'page': page,
+        'limit': limit,
+      },
+    );
+
+    final leads = await compute(_parseListIsolate, res.data)
+        .then((list) => list.map((e) => Lead.fromJson(e)).toList());
+
+    emit(
+      LeadLoaded(
+        leads: leads,
+        salesUsers: _salesUsers,
+      ),
+    );
+  } on DioException catch (e) {
+    emit(LeadError(_dioMsg(e)));
+  } catch (e) {
+    emit(LeadError(e.toString()));
+  }
+}
   // ── Helpers ───────────────────────────────────────────────
 
   /// Builds the request payload.

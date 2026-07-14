@@ -6,7 +6,9 @@
 
 import 'dart:async' show unawaited;
 
+import 'package:connectivity_plus/connectivity_plus.dart' show Connectivity, ConnectivityResult;
 import 'package:crm_app/database/local_db.dart';
+import 'package:crm_app/modals/followup_model.dart';
 import 'package:crm_app/modals/modals.dart' show Lead;
 import 'package:crm_app/screen/LeaderBoard/cubit/leaderBoard_cubit.dart';
 import 'package:crm_app/screen/dashboard/ui/dashboard_screen.dart'
@@ -76,7 +78,7 @@ class DashboardCubit extends Cubit<DashboardState> {
     // ── Step 1: Show last-online data immediately ─────────────
     // If the user is offline or the fetch is slow, they still see
     // real data instead of a blank/loading screen.
-    await _tryEmitCachedDashboard(userId);
+    // await _tryEmitCachedDashboard(userId);
 
     // ── Step 2: Only show spinner if nothing is on screen yet ─
     if (state is! DashboardLoaded) emit(DashboardLoading());
@@ -116,6 +118,8 @@ class DashboardCubit extends Cubit<DashboardState> {
       final recentLeads = canViewAll
           ? recentLeadsRaw
           : recentLeadsRaw.where((l) => l.assignedToId == userId).toList();
+      final todaysFollowUps =
+          _buildTodaysFollowUps(allLeads, allDealRows); // ← ADD
 
       final allRates = await _fetchRatesForInvoices(invoices);
       final revenue = _computeRevenue(invoices, rates: allRates);
@@ -222,6 +226,7 @@ class DashboardCubit extends Cubit<DashboardState> {
         ),
         pipeline: pipeline,
         invoices: invoices,
+        todaysFollowUps: todaysFollowUps, // ← ADD
         allDealRows: allDealRows,
         filterRange: 'last7',
         filterMonth: null,
@@ -243,8 +248,16 @@ class DashboardCubit extends Cubit<DashboardState> {
   }
 
   Future<void> refresh() async {
-    if (state is! DashboardLoading) await loadDashboard();
+  final result = await Connectivity().checkConnectivity();
+
+  if (result == ConnectivityResult.none) {
+    return;
   }
+
+  if (state is! DashboardLoading) {
+    await loadDashboard();
+  }
+}
 
   // ════════════════════════════════════════════════════════════
   // OFFLINE HELPERS
@@ -463,7 +476,7 @@ class DashboardCubit extends Cubit<DashboardState> {
 
     emit(
       DashboardLoaded(
-        topPerformer: topPerformer ?? cur.topPerformer,
+        topPerformer: topPerformer,
         allLeads: cur.allLeads,
         recentLeads: cur.recentLeads,
         summary: cur.summary.copyWith(
@@ -476,6 +489,8 @@ class DashboardCubit extends Cubit<DashboardState> {
         ),
         pipeline: cur.pipeline,
         invoices: cur.invoices,
+        todaysFollowUps: cur.todaysFollowUps, // ← ADD
+
         allDealRows: cur.allDealRows,
         filterRange: range,
         filterMonth: range == 'month' ? month : null,
@@ -802,6 +817,71 @@ class DashboardCubit extends Cubit<DashboardState> {
     return out;
   }
 
+  // ======================================
+  //  filter/merge helper
+  // ======================================
+
+  DateTime? _parseFollowUpDate(dynamic v) {
+    if (v == null) return null;
+    return DateTime.tryParse(v.toString());
+  }
+
+  bool _isFollowUpToday(DateTime? d) {
+    if (d == null) return false;
+    final now = DateTime.now();
+    return d.year == now.year && d.month == now.month && d.day == now.day;
+  }
+
+  List<FollowUpItem> _buildTodaysFollowUps(
+  List<Lead> leads,
+  List<Map<String, dynamic>> deals,
+) {
+  final items = <FollowUpItem>[];
+
+  for (final l in leads) {
+    final d = _parseFollowUpDate(l.followUpDate);
+    if (!_isFollowUpToday(d)) continue;
+    items.add(FollowUpItem(
+      type: FollowUpType.lead,
+      title: l.name,
+      subtitle: l.notes, // ← straight from API, no fallback text
+      followUpDate: d!,
+      id: l.id,
+      phone: l.phone,
+    ));
+  }
+
+  for (final m in deals) {
+    final d = _parseFollowUpDate(m['followUpDate']);
+    if (!_isFollowUpToday(d)) continue;
+    final title = (m['leadName'] ??
+            m['dealName'] ??
+            m['title'] ??
+            'Deal')
+        .toString();
+
+    final subtitle = (m['followUpComment'] ?? '').toString(); // ← straight from API
+
+    final rawValue = m['value'] ?? m['dealValue'] ?? m['amount'];
+    final value = rawValue != null
+        ? double.tryParse(
+            rawValue.toString().replaceAll(RegExp(r'[^\d.\-]'), ''))
+        : null;
+
+    items.add(FollowUpItem(
+      type: FollowUpType.deal,
+      title: title,
+      subtitle: subtitle,
+      followUpDate: d!,
+      id: (m['_id'] ?? m['id'] ?? '').toString(),
+      dealValue: value,
+      currency: (m['currency'] ?? 'INR').toString(),
+    ));
+  }
+
+  items.sort((a, b) => a.followUpDate.compareTo(b.followUpDate));
+  return items;
+}
   // ════════════════════════════════════════════════════════════
   // SUMMARY
   // ════════════════════════════════════════════════════════════

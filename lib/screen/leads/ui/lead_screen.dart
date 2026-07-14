@@ -14,6 +14,9 @@ import 'package:crm_app/modals/modals.dart'
 import 'package:crm_app/screen/deals/modal/deal_modal.dart' show DealConstants;
 import 'package:crm_app/screen/leads/cubit/call_cubit.dart';
 import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
+import 'package:crm_app/screen/leads/ui/reject_lead_screen.dart';
+import 'package:crm_app/shareWidgets/missed_followup.dart';
+import 'package:crm_app/shareWidgets/missed_followup_helper.dart';
 import 'package:crm_app/shareWidgets/share_widgets.dart'
     show
         SectionHeader,
@@ -144,7 +147,8 @@ String _mimeStringForAttachmentExt(String ext) {
 // SCREEN
 // ══════════════════════════════════════════════════════════════
 class LeadsScreen extends StatelessWidget {
-  const LeadsScreen({super.key});
+  final String? selectedLeadId;
+  const LeadsScreen({super.key,this.selectedLeadId,});
   @override
   Widget build(BuildContext context) => MultiBlocProvider(
         providers: [
@@ -160,8 +164,10 @@ class LeadsScreen extends StatelessWidget {
 }
 
 class _LeadsView extends StatefulWidget {
-  const _LeadsView();
-  @override
+    final String? selectedLeadId;
+const _LeadsView({
+    this.selectedLeadId,
+  });  @override
   State<_LeadsView> createState() => _LeadsViewState();
 }
 
@@ -172,12 +178,24 @@ class _LeadsViewState extends State<_LeadsView> {
       _sourceFilter = 'All Sources',
       _clientTypeFilter = 'All Client Types';
   String _assigneeFilter = 'All Assignees';
+  String _followupFilter = 'All Follow-ups';
+   List<String> _followupItems = [
+  'All Follow-ups',
+  'Completed Follow-ups',
+  'Missed Follow-ups',
+];
+  bool _showRejectedOnly = false;
+
+  final TextEditingController reasonController = TextEditingController();
 
   final Map<String, String> _assigneeIdToName = {};
   List<String> _assigneeDropdownItems = ['All Assignees'];
 
   int _currentPage = 1;
-
+  bool _missedPopupShown = false;
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+DateTime? _fromDate;
+DateTime? _toDate;
   @override
   void initState() {
     super.initState();
@@ -189,101 +207,161 @@ class _LeadsViewState extends State<_LeadsView> {
     _searchController.dispose();
     super.dispose();
   }
+Future<void> _showMissedFollowups(List<Lead> leads) async {
+  if (_missedPopupShown) return;
 
+  final prefs = await SharedPreferences.getInstance();
+  final userId = prefs.getString('user_id') ?? '';
+
+  final missedLeads = MissedFollowupHelper.getMissedFollowups(
+    leads: leads,
+    loggedInUserId: userId,
+  );
+
+  if (!mounted || missedLeads.isEmpty) return;
+
+  _missedPopupShown = true;
+
+  showDialog(
+    context: context,
+    builder: (_) => MissedFollowupDialog(
+      missedLeads: missedLeads,
+      onViewLead: (lead) {
+        
+        openDetail(context, lead);  
+      },
+    ),
+  );
+}
   Future<void> _loadAssignees() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('token') ?? '';
-      if (token.isEmpty) return;
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('token') ?? '';
+    final tenantSlug = prefs.getString('tenant_slug') ?? '';
+    if (token.isEmpty || tenantSlug.isEmpty) return;
 
-      final dio = Dio(BaseOptions(baseUrl: 'https://sales.stagingzar.com/api'));
-      final res = await dio.get(
-        '/users',
-        options: Options(
-          headers: {'Authorization': 'Bearer $token'},
-        ),
-      );
+    final dio = Dio(BaseOptions(
+      baseUrl: 'https://crm-backend-api.techzarinfo.cloud/$tenantSlug/api',
+    ));
+    final res = await dio.get(
+      '/users',
+      options: Options(
+        headers: {'Authorization': 'Bearer $token'},
+      ),
+    );
 
-      final body = res.data;
-      List<dynamic> raw = [];
-      if (body is List) {
-        raw = body;
-      } else if (body is Map) {
-        for (final k in [
-          'data',
-          'users',
-          'staff',
-          'employees',
-          'result',
-          'records'
-        ]) {
-          if (body[k] is List) {
-            raw = body[k] as List;
-            break;
-          }
+    debugPrint("Assignees response: ${res.data}");
+
+    final body = res.data;
+    List<dynamic> raw = [];
+    if (body is List) {
+      raw = body;
+    } else if (body is Map) {
+      for (final k in [
+        'data',
+        'users',
+        'staff',
+        'employees',
+        'result',
+        'records'
+      ]) {
+        if (body[k] is List) {
+          raw = body[k] as List;
+          break;
         }
       }
-
-      final idToName = <String, String>{};
-      for (final item in raw) {
-        if (item is! Map) continue;
-        final id = (item['_id'] ?? item['id'] ?? '').toString().trim();
-        if (id.isEmpty) continue;
-        final first =
-            (item['firstName'] ?? item['first_name'] ?? '').toString().trim();
-        final last =
-            (item['lastName'] ?? item['last_name'] ?? '').toString().trim();
-        final full = '$first $last'.trim();
-        idToName[id] =
-            full.isNotEmpty ? full : (item['name']?.toString().trim() ?? '');
-      }
-
-      if (!mounted) return;
-      setState(() {
-        _assigneeIdToName
-          ..clear()
-          ..addAll(idToName);
-        _assigneeDropdownItems = [
-          'All Assignees',
-          ...idToName.keys.toList()..sort(),
-        ];
-      });
-    } catch (_) {
-      // Keep dropdown as only "All Assignees" if it fails.
     }
-  }
 
+    final idToName = <String, String>{};
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final id = (item['_id'] ?? item['id'] ?? '').toString().trim();
+      if (id.isEmpty) continue;
+      final first =
+          (item['firstName'] ?? item['first_name'] ?? '').toString().trim();
+      final last =
+          (item['lastName'] ?? item['last_name'] ?? '').toString().trim();
+      final full = '$first $last'.trim();
+      idToName[id] =
+          full.isNotEmpty ? full : (item['name']?.toString().trim() ?? '');
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _assigneeIdToName
+        ..clear()
+        ..addAll(idToName);
+      _assigneeDropdownItems = [
+        'All Assignees',
+        ...idToName.keys.toList()..sort(),
+      ];
+    });
+  } catch (e, s) {
+    debugPrint("LOAD ASSIGNEES ERROR: $e");
+    debugPrint("$s");
+  }
+}
   List<Lead> _filter(List<Lead> all) {
-    if (all.isEmpty) return all;
-    final q = _search.toLowerCase();
-    return all.where((l) {
-      final phone = l.phone.replaceAll(RegExp(r'[^0-9+]'), '').toLowerCase();
+  if (all.isEmpty) return all;
+  final q = _search.toLowerCase();
+  return all.where((l) {
+    final phone = l.phone.replaceAll(RegExp(r'[^0-9+]'), '').toLowerCase();
+    final localPhone = l.phone.replaceAll(RegExp(r'[^0-9]'), '');
+    final searchQuery = q.replaceAll(RegExp(r'[^0-9+]'), '');
 
-      final localPhone = l.phone.replaceAll(RegExp(r'[^0-9]'), '');
+    final matchesPhone = searchQuery.isNotEmpty &&
+        (phone.contains(searchQuery) ||
+            localPhone.contains(searchQuery.replaceAll('+', '')));
 
-      final searchQuery = q.replaceAll(RegExp(r'[^0-9+]'), '');
+    final matchesSearch = _search.isEmpty ||
+        l.name.toLowerCase().contains(q) ||
+        l.email.toLowerCase().contains(q) ||
+        matchesPhone;
 
-      final matchesSearch = _search.isEmpty ||
-          l.name.toLowerCase().contains(q) ||
-          l.email.toLowerCase().contains(q) ||
-          phone.contains(searchQuery) ||
-          localPhone.contains(searchQuery.replaceAll('+', ''));
-      final matchesStatus =
-          _statusFilter == 'All Status' || l.status == _statusFilter;
-      final matchesSource =
-          _sourceFilter == 'All Sources' || l.source == _sourceFilter;
-      final matchesClientType = _clientTypeFilter == 'All Client Types' ||
-          (l.clientType.isNotEmpty && l.clientType == _clientTypeFilter);
-      final matchesAssignee = _assigneeFilter == 'All Assignees' ||
-          (l.assignedToId != null && l.assignedToId == _assigneeFilter) ||
-          l.assignTo.trim() == _assigneeFilter;
-      return matchesSearch &&
-          matchesStatus &&
-          matchesSource &&
-          matchesClientType &&
-          matchesAssignee;
-    }).toList();
-  }
+    final matchesStatus =
+        _statusFilter == 'All Status' || l.status == _statusFilter;
+    final matchesSource =
+        _sourceFilter == 'All Sources' || l.source == _sourceFilter;
+    final matchesClientType = _clientTypeFilter == 'All Client Types' ||
+        (l.clientType.isNotEmpty && l.clientType == _clientTypeFilter);
+    final matchesAssignee = _assigneeFilter == 'All Assignees' ||
+        (l.assignedToId != null && l.assignedToId == _assigneeFilter) ||
+        l.assignTo.trim() == _assigneeFilter;
+      final hasCompletedFollowup = l.followUpNotes.isNotEmpty;
+
+final isMissedFollowup =
+    l.followUpDate != null &&
+    l.followUpDate!.isBefore(
+      DateTime(
+        DateTime.now().year,
+        DateTime.now().month,
+        DateTime.now().day,
+      ),
+    ) &&
+    l.followUpNotes.isEmpty &&
+    l.status != "Converted" &&
+    l.status != "Rejected";
+    final matchesFollowup =
+    _followupFilter == 'All Follow-ups' ||
+    (_followupFilter == 'Completed Follow-ups' &&
+        hasCompletedFollowup) ||
+    (_followupFilter == 'Missed Follow-ups' &&
+        isMissedFollowup);
+    //     final isRejected =
+    // l.status.trim().toLowerCase().contains('Rejected');
+    
+
+    return matchesSearch &&
+        matchesStatus &&
+        matchesSource &&
+        matchesClientType &&
+        matchesAssignee &&
+        matchesFollowup;
+        
+        
+        
+  }).toList();
+}
 
   List<Lead> _paginate(List<Lead> filtered) {
     final start = (_currentPage - 1) * _kPageSize;
@@ -303,6 +381,11 @@ class _LeadsViewState extends State<_LeadsView> {
   Widget build(BuildContext context) {
     return BlocConsumer<LeadCubit, LeadState>(
       listener: (ctx, state) {
+        if (state is LeadLoaded) {
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    _showMissedFollowups(state.leads);
+  });
+}
         if (state is LeadActionSuccess) showApiSnack(ctx, state.message);
         if (state is LeadError && _isSessionExpiredMessage(state.message)) {
           Navigator.of(ctx, rootNavigator: true)
@@ -312,11 +395,241 @@ class _LeadsViewState extends State<_LeadsView> {
       builder: (context, state) {
         final allFiltered =
             state is LeadLoaded ? _filter(state.leads) : <Lead>[];
+            if (state is LeadLoaded && widget.selectedLeadId != null) {
+    final lead = state.leads.firstWhere(
+      (e) => e.id == widget.selectedLeadId,
+    );
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      openDetail(context, lead);
+    });
+  }
         final leads = _paginate(allFiltered);
         final allCount = state is LeadLoaded ? state.leads.length : 0;
         final totalPages = _totalPages(allFiltered.length);
 
         return Scaffold(
+            key: _scaffoldKey,
+            endDrawer: Drawer(
+  width: 330,
+  child: SafeArea(
+    child: Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 18,
+          ),
+          decoration: BoxDecoration(
+            color: AppColors.primary,
+          ),
+          child: const Row(
+            children: [
+              Icon(
+                Icons.filter_alt,
+                color: Colors.white,
+              ),
+              SizedBox(width: 12),
+              Text(
+                "Filters",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                _FilterDrop(
+  value: _statusFilter,
+  items: const [
+    'All Status',
+    ...AppConstants.leadStatuses,
+  ],
+  icon: Icons.flag_outlined,
+  onChanged: (v) {
+    setState(() {
+      _statusFilter = v!;
+    });
+  },
+),
+
+const SizedBox(height: 16),
+_FilterDrop(
+  value: _sourceFilter,
+  items: const [
+    'All Sources',
+    ...AppConstants.leadSources,
+  ],
+  icon: Icons.radar_outlined,
+  onChanged: (v) {
+    setState(() {
+      _sourceFilter = v!;
+    });
+  },
+),
+
+const SizedBox(height: 16),
+_FilterDrop(
+  value: _clientTypeFilter,
+  items: const [
+    'All Client Types',
+    'B2B',
+    'B2C',
+  ],
+  icon: Icons.business_outlined,
+  onChanged: (v) {
+    setState(() {
+      _clientTypeFilter = v!;
+    });
+  },
+),
+
+const SizedBox(height: 16),
+if (PermissionHelper.can('users_roles'))
+  _FilterDrop(
+    value: _assigneeFilter,
+    items: _assigneeDropdownItems,
+    icon: Icons.person_outline,
+    labelBuilder: (value) {
+      if (value == 'All Assignees') {
+        return value;
+      }
+      return _assigneeIdToName[value] ?? value;
+    },
+    onChanged: (v) {
+      setState(() {
+        _assigneeFilter = v!;
+      });
+    },
+  ),
+
+if (PermissionHelper.can('users_roles'))
+  const SizedBox(height: 16),
+  _FilterDrop(
+  value: _followupFilter,
+  items: _followupItems,
+  icon: Icons.event_available_outlined,
+  onChanged: (v) {
+    setState(() {
+      _followupFilter = v!;
+    });
+  },
+),
+
+const SizedBox(height: 16),
+InkWell(
+  onTap: () async {
+    final date = await showDatePicker(
+      context: context,
+      firstDate: DateTime(2023),
+      lastDate: DateTime(2100),
+      initialDate: _fromDate ?? DateTime.now(),
+    );
+
+    if (date != null) {
+      setState(() {
+        _fromDate = date;
+      });
+    }
+  },
+  child: InputDecorator(
+    decoration: const InputDecoration(
+      prefixIcon: Icon(Icons.calendar_today),
+      border: OutlineInputBorder(),
+    ),
+    child: Text(
+      _fromDate == null
+          ? "From Date"
+          : "${_fromDate!.day}/${_fromDate!.month}/${_fromDate!.year}",
+    ),
+  ),
+),
+
+const SizedBox(height: 16),
+
+InkWell(
+  onTap: () async {
+    final date = await showDatePicker(
+      context: context,
+      firstDate: DateTime(2023),
+      lastDate: DateTime(2100),
+      initialDate: _toDate ?? DateTime.now(),
+    );
+
+    if (date != null) {
+      setState(() {
+        _toDate = date;
+      });
+    }
+  },
+  child: InputDecorator(
+    decoration: const InputDecoration(
+      //labelText: "To Date",
+      prefixIcon: Icon(Icons.calendar_today),
+      border: OutlineInputBorder(),
+    ),
+    child: Text(
+      _toDate == null
+          ? "To Date"
+          : "${_toDate!.day}/${_toDate!.month}/${_toDate!.year}",
+    ),
+  ),
+),
+const SizedBox(height: 24),
+
+Row(
+  children: [
+    Expanded(
+      child: OutlinedButton(
+        onPressed: () {
+          setState(() {
+            _statusFilter = 'All Status';
+            _sourceFilter = 'All Sources';
+            _clientTypeFilter = 'All Client Types';
+            _assigneeFilter = 'All Assignees';
+            _followupFilter = 'All Follow-ups';
+
+            _fromDate = null;
+            _toDate = null;
+
+            _resetPage();
+          });
+
+          Navigator.pop(context);
+        },
+        child: const Text("Reset"),
+      ),
+    ),
+
+    const SizedBox(width: 12),
+
+    Expanded(
+      child: ElevatedButton(
+        onPressed: () {
+          _resetPage();
+          Navigator.pop(context);
+        },
+        child: const Text("Apply"),
+      ),
+    ),
+  ],
+),
+              ],
+            ),
+          ),
+        ),
+      ],
+    ),
+  ),
+),
           backgroundColor: AppColors.background,
           appBar: AppBar(
             title: const Text('Leads'),
@@ -344,133 +657,106 @@ class _LeadsViewState extends State<_LeadsView> {
               color: AppColors.surface,
               padding: const EdgeInsets.all(14),
               child: Column(children: [
-                Row(children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _searchController,
-                      onChanged: (v) {
-                        setState(() {
-                          _search = _searchController.text;
-                          _resetPage();
-                        });
-                      },
-                      decoration: InputDecoration(
-                        hintText: 'Search leads...',
-                        prefixIcon: const Icon(Icons.search,
-                            color: AppColors.textSecondary, size: 20),
-                        suffixIcon: _search.isNotEmpty
-                            ? IconButton(
-                                icon: const Icon(Icons.clear, size: 18),
-                                onPressed: () => setState(() {
-                                      _searchController.clear();
-                                      _search = '';
-                                      _resetPage();
-                                    }))
-                            : null,
-                        filled: true,
-                        fillColor: AppColors.background,
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 12),
-                        border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide:
-                                const BorderSide(color: AppColors.border)),
-                        enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide:
-                                const BorderSide(color: AppColors.border)),
-                        focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(
-                                color: AppColors.primary, width: 1.5)),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  if (PermissionHelper.can('users_roles'))
-                    ElevatedButton.icon(
-                      onPressed: () => _openCreate(context),
-                      icon:
-                          const Icon(Icons.add, size: 16, color: Colors.white),
-                      label: const Text(
-                        'Create Lead',
-                        style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary,
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 14),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                        minimumSize: Size.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                    ),
-                ]),
+                  
+//                 TextField(
+//                       controller: _searchController,
+//                       onChanged: (value) {
+//   setState(() {
+//     _search = value.trim().toLowerCase();
+//     _resetPage();
+//   });
+// },
+//                       decoration: InputDecoration(
+//                         hintText: 'Search leads...',
+//                         prefixIcon: const Icon(Icons.search,
+//                             color: AppColors.textSecondary, size: 20),
+//                         suffixIcon: _search.isNotEmpty
+//                             ? IconButton(
+//                                 icon: const Icon(Icons.clear, size: 18),
+//                                 onPressed: () {
+//   _searchController.clear();
+//   setState(() {
+//     _search = '';
+//     _resetPage();
+//   });
+// },)
+//                             : null,
+//                         filled: true,
+//                         fillColor: AppColors.background,
+//                         contentPadding: const EdgeInsets.symmetric(
+//                             horizontal: 14, vertical: 12),
+//                         border: OutlineInputBorder(
+//                             borderRadius: BorderRadius.circular(12),
+//                             borderSide:
+//                                 const BorderSide(color: AppColors.border)),
+//                         enabledBorder: OutlineInputBorder(
+//                             borderRadius: BorderRadius.circular(12),
+//                             borderSide:
+//                                 const BorderSide(color: AppColors.border)),
+//                         focusedBorder: OutlineInputBorder(
+//                             borderRadius: BorderRadius.circular(12),
+//                             borderSide: const BorderSide(
+//                                 color: AppColors.primary, width: 1.5)),
+//                       ),
+//                     ),
+//                     const SizedBox(height: 10),
+                Row(
+  children: [
+
+    Expanded(
+      child: TextField(
+        controller: _searchController,
+        onChanged: (value) {
+          setState(() {
+            _search = value;
+            _resetPage();
+          });
+        },
+        decoration: const InputDecoration(
+          hintText: "Search Leads",
+          prefixIcon: Icon(Icons.search),
+        ),
+      ),
+    ),
+
+    const SizedBox(width: 8),
+
+    IconButton(
+      icon: const Icon(Icons.filter_alt_outlined),
+      onPressed: () {
+        _scaffoldKey.currentState!.openEndDrawer();
+      },
+    ),
+
+    PopupMenuButton<String>(
+      onSelected: (value) {
+        if (value == "reject") {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => BlocProvider.value(
+                value: context.read<LeadCubit>(),
+                child: const RejectedLeadsScreen(),
+              ),
+            ),
+          );
+        }
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(
+          value: "reject",
+          child: Text("Rejected Leads"),
+        ),
+      ],
+    ),
+
+  ],
+),
                 const SizedBox(height: 10),
-                Row(children: [
-                  Expanded(
-                      child: _FilterDrop(
-                          value: _statusFilter,
-                          items: const [
-                            'All Status',
-                            ...AppConstants.leadStatuses
-                          ],
-                          icon: Icons.flag_outlined,
-                          onChanged: (v) => setState(() {
-                                _statusFilter = v!;
-                                _resetPage();
-                              }))),
-                  const SizedBox(width: 10),
-                  Expanded(
-                      child: _FilterDrop(
-                          value: _sourceFilter,
-                          items: const [
-                            'All Sources',
-                            ...AppConstants.leadSources
-                          ],
-                          icon: Icons.radar_outlined,
-                          onChanged: (v) => setState(() {
-                                _sourceFilter = v!;
-                                _resetPage();
-                              }))),
-                ]),
-                const SizedBox(height: 10),
-                Row(children: [
-                  Expanded(
-                      child: _FilterDrop(
-                          value: _clientTypeFilter,
-                          items: const [
-                            'All Client Types',
-                            'B2B',
-                            'B2C',
-                          ],
-                          icon: Icons.corporate_fare_outlined,
-                          onChanged: (v) => setState(() {
-                                _clientTypeFilter = v!;
-                                _resetPage();
-                              }))),
-                  const SizedBox(width: 10),
-                  Expanded(
-                      child: _FilterDrop(
-                          value: _assigneeFilter,
-                          items: _assigneeDropdownItems,
-                          icon: Icons.person_outline,
-                          labelBuilder: (id) => id == 'All Assignees'
-                              ? 'All Assignees'
-                              : (_assigneeIdToName[id] ?? id),
-                          onChanged: (v) => setState(() {
-                                _assigneeFilter = v ?? 'All Assignees';
-                                _resetPage();
-                              }))),
-                ]),
+                // stoppped
               ]),
             ),
+            
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               child: Row(children: [
@@ -491,6 +777,7 @@ class _LeadsViewState extends State<_LeadsView> {
                       _sourceFilter = 'All Sources';
                       _clientTypeFilter = 'All Client Types';
                       _assigneeFilter = 'All Assignees';
+                      _showRejectedOnly = false;
                       _resetPage();
                     }),
                     child: const Text('Clear',
@@ -521,6 +808,7 @@ class _LeadsViewState extends State<_LeadsView> {
         );
       },
     );
+    
   }
 
   Widget _buildList(
@@ -546,17 +834,151 @@ class _LeadsViewState extends State<_LeadsView> {
         itemCount: leads.length,
         itemBuilder: (_, i) => _LeadCard(
           lead: leads[i],
-          onTap: () => _openDetail(context, leads[i]),
+          onTap: () => openDetail(context, leads[i]),
           onEdit: () => _openEdit(context, leads[i]),
-          onDelete: () => _confirmDelete(context, leads[i].id),
+          onReject: () => _confirmReject(context, leads[i].id),
           onStatusChange: (s) =>
               context.read<LeadCubit>().updateStatus(leads[i].id, s),
+          onAddFollowUp: () => showAddFollowUpDialog(context, leads[i]),
           onConvert: () => _openConvert(context, leads[i]),
         ),
       ),
     );
   }
+  
+Future<void> showAddFollowUpDialog(
+  BuildContext context,
+  Lead lead,
+) async {
+  final notesController = TextEditingController();
+  final leadCubit = context.read<LeadCubit>(); // capture before dialog opens
+  bool saving = false;
 
+  await showDialog(
+    context: context,
+    builder: (dialogCtx) => StatefulBuilder(
+      builder: (dialogCtx, setDialogState) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+        ),
+        backgroundColor: AppColors.surface,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+        titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+        contentPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(
+                Icons.event_available_outlined,
+                color: AppColors.primary,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Text(
+              "Add Follow-up",
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Divider(),
+            const SizedBox(height: 10),
+            RichText(
+              text: TextSpan(
+                style: const TextStyle(color: Colors.black),
+                children: [
+                  const TextSpan(
+                    text: "Lead: ",
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  TextSpan(text: lead.name),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              "Notes *",
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: notesController,
+              maxLines: 5,
+              enabled: !saving,
+              decoration: InputDecoration(
+                hintText: "Enter follow-up notes...",
+                filled: true,
+                fillColor: AppColors.background,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: AppColors.border),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: AppColors.primary),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: saving ? null : () => Navigator.pop(dialogCtx),
+            child: const Text("Cancel"),
+          ),
+          ElevatedButton.icon(
+            onPressed: saving
+                ? null
+                : () async {
+                    final note = notesController.text.trim();
+                    if (note.isEmpty) return;
+
+                    setDialogState(() => saving = true);
+
+                    final error =
+                        await leadCubit.addFollowUpNote(lead.id, note);
+
+                    if (!dialogCtx.mounted) return;
+
+                    if (error == null) {
+                      Navigator.pop(dialogCtx);
+                      showApiSnack(context, 'Follow-up note added');
+                    } else {
+                      setDialogState(() => saving = false);
+                      showApiSnack(context, error, isError: true);
+                    }
+                  },
+            icon: saving
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white),
+                  )
+                : const SizedBox.shrink(),
+            label: Text(saving ? "Saving..." : "Save Follow-up"),
+          ),
+        ],
+      ),
+    ),
+  );
+}
   void _openCreate(BuildContext ctx) {
     final salesUsers = ctx.read<LeadCubit>().salesUsers;
     showModalBottomSheet(
@@ -595,7 +1017,7 @@ class _LeadsViewState extends State<_LeadsView> {
     );
   }
 
-  void _openDetail(BuildContext ctx, Lead lead) async {
+  void openDetail(BuildContext ctx, Lead lead) async {
     final cubit = ctx.read<LeadCubit>();
     final fullLead = await cubit.fetchLeadById(lead.id);
     if (!ctx.mounted) return;
@@ -609,7 +1031,7 @@ class _LeadsViewState extends State<_LeadsView> {
           resizeToAvoidBottomInset: true,
           body: BlocProvider.value(
             value: cubit,
-            child: _LeadDetailSheet(lead: fullLead ?? lead),
+            child: LeadDetailSheet(lead: fullLead ?? lead),
           ),
         ),
       ),
@@ -639,28 +1061,76 @@ class _LeadsViewState extends State<_LeadsView> {
     );
   }
 
-  Future<void> _confirmDelete(BuildContext ctx, String id) async {
-    final ok = await showDialog<bool>(
-      context: ctx,
-      builder: (_) => AlertDialog(
-        title: const Text('Delete Lead'),
-        content: const Text('This will permanently delete the lead. Continue?'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel')),
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Delete',
-                  style: TextStyle(color: AppColors.danger))),
+  Future<void> _confirmReject(BuildContext ctx, String id) async {
+  final reasonController = TextEditingController();
+
+  final reason = await showDialog<String>(
+    context: ctx,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text("Reject Lead"),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            "Please enter the reason for rejecting this lead.",
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: reasonController,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              hintText: "Enter reason...",
+              border: OutlineInputBorder(),
+            ),
+          ),
         ],
       ),
-    );
-    if (ok == true && ctx.mounted) {
-      final err = await ctx.read<LeadCubit>().deleteLead(id);
-      if (err != null && ctx.mounted) showApiSnack(ctx, err, isError: true);
-    }
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext),
+          child: const Text("Cancel"),
+        ),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.danger,
+          ),
+          onPressed: () {
+            final text = reasonController.text.trim();
+
+            if (text.isEmpty) {
+              ScaffoldMessenger.of(ctx).showSnackBar(
+                const SnackBar(
+                  content: Text("Please enter a rejection reason"),
+                  backgroundColor: Colors.red,
+                ),
+              );
+              return;
+            }
+
+            Navigator.pop(dialogContext, text);
+          },
+          child: const Text(
+            "Reject",
+            style: TextStyle(color: Colors.white),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  if (reason == null || reason.isEmpty) return;
+
+  debugPrint("Reject Reason: $reason");
+
+  final err = await ctx.read<LeadCubit>().rejectLead(
+        id,
+        reason,
+      );
+
+  if (err != null && ctx.mounted) {
+    showApiSnack(ctx, err, isError: true);
   }
+}
 }
 
 // ── Pagination Bar ────────────────────────────────────────────
@@ -781,15 +1251,17 @@ class _FilterDrop extends StatelessWidget {
 // ─── Lead Card ────────────────────────────────────────────────
 class _LeadCard extends StatelessWidget {
   final Lead lead;
-  final VoidCallback onTap, onEdit, onDelete, onConvert;
+  final VoidCallback onTap, onEdit, onReject, onConvert,onAddFollowUp;
   final Future<String?> Function(String) onStatusChange;
   const _LeadCard(
       {required this.lead,
       required this.onTap,
       required this.onEdit,
-      required this.onDelete,
+      required this.onReject,
       required this.onStatusChange,
-      required this.onConvert});
+      required this.onConvert,
+       required this.onAddFollowUp
+      });
 
   @override
   Widget build(BuildContext ctx) {
@@ -859,22 +1331,111 @@ class _LeadCard extends StatelessWidget {
                       color: Colors.green,
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 4),
                   if (!isConverted)
                     GestureDetector(
                         onTap: onConvert,
                         child: const Icon(Icons.swap_horiz_outlined,
                             size: 18, color: AppColors.textHint)),
-                  if (!isConverted) const SizedBox(width: 8),
-                  GestureDetector(
-                      onTap: onEdit,
-                      child: const Icon(Icons.edit_outlined,
-                          size: 18, color: AppColors.textHint)),
-                  const SizedBox(width: 10),
-                  GestureDetector(
-                      onTap: onDelete,
-                      child: const Icon(Icons.delete_outline,
-                          size: 18, color: AppColors.textHint)),
+                  if (!isConverted)
+      const SizedBox(width: 0),
+      
+IconButton(
+    padding: EdgeInsets.zero,
+
+  icon: Icon(
+    size: 18,
+    Icons.visibility,
+    color: lead.followUpNotes.isEmpty
+        ? Colors.red
+        : Colors.black87,
+  ),
+  tooltip: "View Follow-up Notes",
+  onPressed: () => _showFollowUpNotes(
+    ctx,
+    lead,
+  ),
+),
+    PopupMenuButton<String>(
+      color: AppColors.surface,
+      surfaceTintColor: Colors.transparent,
+       elevation: 6,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: AppColors.border),
+      ),
+      icon: const Icon(
+        Icons.more_vert,
+        size: 20,
+        color: AppColors.textHint,
+      ),
+      onSelected: (value) {
+        switch (value) {
+          case 'edit':
+            onEdit();
+            break;
+
+          case 'followup':
+            onAddFollowUp();
+            break;
+
+          case 'Reject':
+            onReject();
+            break;
+        }
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem<String>(
+          value: 'edit',
+          child: Row(
+            children: [
+              Icon(Icons.edit_outlined, size: 18),
+              SizedBox(width: 12),
+              Text('Edit'),
+            ],
+          ),
+        ),
+        PopupMenuDivider(),
+        PopupMenuItem<String>(
+  value: 'followup',
+  child: Row(
+    children: const [
+      Icon(
+        Icons.event_available_outlined,
+        size: 18,
+        color: AppColors.primary,
+      ),
+      SizedBox(width: 12),
+      Text(
+        'Add Follow-up',
+        style: TextStyle(
+          color: AppColors.primary,
+        ),
+      ),
+    ],
+  ),
+),
+PopupMenuDivider(),
+        PopupMenuItem<String>(
+          value: 'Reject',
+          child: Row(
+            children: [
+              Icon(
+                Icons.block,
+                size: 18,
+                color: AppColors.danger,
+              ),
+              SizedBox(width: 12),
+              Text(
+                'Reject',
+                style: TextStyle(color: AppColors.danger),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+
                 ]),
               ]),
             ]),
@@ -906,6 +1467,80 @@ class _LeadCard extends StatelessWidget {
       ),
     );
   }
+  void _showFollowUpNotes(
+  BuildContext context,
+  Lead lead,
+) {
+  if (lead.followUpNotes.isEmpty) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(
+              Icons.warning_amber_rounded,
+              color: Colors.red,
+            ),
+            SizedBox(width: 8),
+            Text("Missed Follow-up"),
+          ],
+        ),
+        content: const Text(
+          "No follow-up notes logged — this follow-up was missed.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
+    return;
+  }
+
+  showDialog(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Text("Follow-up Notes"),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: ListView.separated(
+          shrinkWrap: true,
+          itemCount: lead.followUpNotes.length,
+          separatorBuilder: (_, __) => const Divider(),
+          itemBuilder: (_, index) {
+            final note = lead.followUpNotes[index];
+
+            return ListTile(
+              leading: CircleAvatar(
+                backgroundColor: Colors.blue.shade50,
+                child: const Icon(
+                  Icons.notes,
+                  color: Colors.blue,
+                ),
+              ),
+              title: Text(note.note),
+              subtitle: Text(
+  note.createdAt == null
+      ? "-"
+      : DateFormat(
+          "dd MMM yyyy • hh:mm a",
+        ).format(note.createdAt!),
+),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text("Close"),
+        ),
+      ],
+    ),
+  );
+}
 
   void _showStatusMenu(BuildContext ctx) {
     showModalBottomSheet(
@@ -988,15 +1623,15 @@ class _StatusPickerSheet extends StatelessWidget {
 // ══════════════════════════════════════════════════════════════
 // LEAD DETAIL SHEET
 // ══════════════════════════════════════════════════════════════
-class _LeadDetailSheet extends StatefulWidget {
+class LeadDetailSheet extends StatefulWidget {
   final Lead lead;
-  const _LeadDetailSheet({required this.lead});
+  const LeadDetailSheet({required this.lead});
 
   @override
-  State<_LeadDetailSheet> createState() => _LeadDetailSheetState();
+  State<LeadDetailSheet> createState() => LeadDetailSheetState();
 }
 
-class _LeadDetailSheetState extends State<_LeadDetailSheet> {
+class LeadDetailSheetState extends State<LeadDetailSheet> {
   Lead get lead => widget.lead;
 
   ScaffoldMessengerState? _snackMessenger(BuildContext context) {
@@ -1029,7 +1664,7 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
   }
 
   String _buildUrl(String rawPath) {
-    const base = 'https://sales.stagingzar.com';
+    const base = 'https://crm.techzarinfo.cloud';
     final clean = rawPath.startsWith('/') ? rawPath : '/$rawPath';
     return '$base$clean';
   }
@@ -1085,7 +1720,7 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
 
     final cleanPath = rawPath.startsWith('/') ? rawPath.substring(1) : rawPath;
     final url = Uri.https(
-      'sales.stagingzar.com',
+      'crm.techzarinfo.cloud',
       '/api/files/download',
       {'filePath': cleanPath},
     ).toString();

@@ -9,6 +9,9 @@ import 'package:crm_app/screen/invoice/cubit/invoice_cubit.dart';
 import 'package:crm_app/screen/invoice/modal/invoice_model.dart';
 import 'package:crm_app/screen/invoice/ui/dealOption.dart';
 import 'package:crm_app/screen/invoice/ui/invoice_details_screen.dart';
+import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
+import 'package:crm_app/screen/leads/ui/lead_screen.dart';
+import 'package:crm_app/shareWidgets/missed_followup.dart';
 import 'package:crm_app/shareWidgets/share_widgets.dart'
     show showApiSnack, LoadingState, ErrorState;
 import 'package:crm_app/thems/app_themes.dart' show AppColors;
@@ -96,6 +99,7 @@ class _InvoiceViewState extends State<_InvoiceView> {
   String _statusFilter = 'All Status';
   DateTime? _selectedDate;
   static const _statuses = ['All Status', 'Paid', 'Unpaid'];
+  bool _missedPopupShown = false;
 
   @override
   void dispose() {
@@ -200,7 +204,34 @@ class _InvoiceViewState extends State<_InvoiceView> {
           ),
         ),
       );
+Future<void> _checkMissedFollowups() async {
+  if (_missedPopupShown) return;
 
+  final leads = await LeadCubit().getAllLeads();
+
+  if (!mounted || leads.isEmpty) return;
+
+  _missedPopupShown = true;
+
+  showDialog(
+    context: context,
+    builder: (_) => MissedFollowupDialog(
+      missedLeads: leads,
+      onViewLead: (lead) {
+        Navigator.pop(context);
+
+        showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: Colors.transparent,
+          builder: (_) => LeadDetailSheet(
+            lead: lead,
+          ),
+        );
+      },
+    ),
+  );
+}
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
@@ -243,6 +274,9 @@ class _InvoiceViewState extends State<_InvoiceView> {
           }
           if (state is InvoiceLoaded) {
             final filtered = _filtered(state.invoices);
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+    _checkMissedFollowups();
+  });
             return Column(
               children: [
                 _SummaryCarousel(

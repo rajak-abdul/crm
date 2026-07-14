@@ -7,11 +7,109 @@ import 'dart:convert'; // ✅ FIX #1: was missing — needed for jsonDecode in L
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
 
-const kBaseUrl = 'https://sales.stagingzar.com/api';
+/// ══════════════════════════════════════════════════════════════
+/// LEAD STATUS ENUM
+/// ══════════════════════════════════════════════════════════════
+/// Minimal user reference used by rejectedBy / convertedBy.
+/// Note: these payloads may omit `email` (unlike assignTo), so keep it nullable.
+class UserRef {
+  final String id;
+  final String firstName;
+  final String lastName;
+  final String? email;
+
+  const UserRef({
+    required this.id,
+    this.firstName = '',
+    this.lastName = '',
+    this.email,
+  });
+
+  String get fullName {
+    final full = [firstName, lastName].where((s) => s.isNotEmpty).join(' ');
+    return full.isNotEmpty ? full : (email ?? id);
+  }
+
+  factory UserRef.fromJson(Map<String, dynamic> j) => UserRef(
+        id: (j['_id'] ?? '').toString(),
+        firstName: (j['firstName'] ?? '').toString(),
+        lastName: (j['lastName'] ?? '').toString(),
+        email: j['email']?.toString(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        '_id': id,
+        'firstName': firstName,
+        'lastName': lastName,
+        if (email != null) 'email': email,
+      };
+
+  /// Handles the case where the field might arrive as just an ID string
+  /// (e.g. from some legacy or partially-populated responses).
+  static UserRef? tryParse(dynamic v) {
+    if (v == null) return null;
+    if (v is Map) return UserRef.fromJson(Map<String, dynamic>.from(v));
+    if (v is String && v.isNotEmpty) return UserRef(id: v);
+    return null;
+  }
+}
+
+class StatusHistoryEntry {
+  final String id;
+  final String status;
+  final DateTime? changedAt;
+
+  const StatusHistoryEntry({
+    required this.id,
+    required this.status,
+    this.changedAt,
+  });
+
+  factory StatusHistoryEntry.fromJson(Map<String, dynamic> j) =>
+      StatusHistoryEntry(
+        id: (j['_id'] ?? '').toString(),
+        status: (j['status'] ?? '').toString(),
+        changedAt: j['changedAt'] != null
+            ? DateTime.tryParse(j['changedAt'].toString())
+            : null,
+      );
+
+  Map<String, dynamic> toJson() => {
+        '_id': id,
+        'status': status,
+        if (changedAt != null) 'changedAt': changedAt!.toIso8601String(),
+      };
+}
 
 // ══════════════════════════════════════════════════════════════
 // LEAD
 // ══════════════════════════════════════════════════════════════
+class FollowUpNote {
+  final String id;
+  final String note;
+  final DateTime? createdAt;
+
+  const FollowUpNote({
+    required this.id,
+    required this.note,
+    this.createdAt,
+  });
+
+  factory FollowUpNote.fromJson(Map<String, dynamic> j) => FollowUpNote(
+        id: (j['_id'] ?? '').toString(),
+        note: (j['note'] ?? '').toString(),
+        createdAt: j['createdAt'] != null
+            ? DateTime.tryParse(j['createdAt'].toString())
+            : null,
+      );
+
+  Map<String, dynamic> toJson() => {
+        '_id': id,
+        'note': note,
+        if (createdAt != null) 'createdAt': createdAt!.toIso8601String(),
+      };
+}
+
 class Lead {
   final String id;
   final String name;
@@ -27,6 +125,8 @@ class Lead {
   final String clientType;
   final String requirement;
   final String status;
+
+  /// Display name of assigned salesman, e.g. "Kishore S".
   final String assignTo;
   final DateTime? followUpDate;
   final String notes;
@@ -36,9 +136,19 @@ class Lead {
   final DateTime? lastReminderAt;
   final List<Attachment> attachments;
   final String? assignedToId;
+  final String? assignedToEmail;
+
+  final List<FollowUpNote> followUpNotes;
+  final bool isActive;
+  final String rejectionReason;
+  final List<StatusHistoryEntry> statusHistory;
+  final UserRef? rejectedBy;
+  final DateTime? rejectedAt;
+  final UserRef? convertedBy;
 
   const Lead({
     this.assignedToId,
+    this.assignedToEmail,
     this.attachments = const [],
     required this.id,
     required this.name,
@@ -59,6 +169,13 @@ class Lead {
     this.createdAt,
     this.updatedAt,
     this.lastReminderAt,
+    this.followUpNotes = const [],
+    this.isActive = true,
+    this.rejectionReason = '',
+    this.statusHistory = const [],
+    this.rejectedBy,
+    this.rejectedAt,
+    this.convertedBy,
   });
 
   static String _s(dynamic v, [String fallback = '']) =>
@@ -70,6 +187,34 @@ class Lead {
     final u = raw.toUpperCase();
     if (u == 'B2B' || u == 'B2C') return u;
     return '';
+  }
+
+  /// `assignTo` can arrive as:
+  /// - a Map (new backend): { _id, firstName, lastName, email, role }
+  /// - a plain string (legacy/local cache)
+  /// - null
+  static String _assignToName(dynamic v) {
+    if (v == null) return '';
+    if (v is Map) {
+      final first = _s(v['firstName']).trim();
+      final last = _s(v['lastName']).trim();
+      final full = [first, last].where((s) => s.isNotEmpty).join(' ');
+      if (full.isNotEmpty) return full;
+      return _s(v['email'] ?? v['_id']);
+    }
+    return v.toString();
+  }
+
+  static String _assignToId(dynamic v) {
+  if (v is Map<String, dynamic>) {
+    return _s(v['_id']);
+  }
+  return '';
+}
+
+  static String? _assignToEmail(dynamic v) {
+    if (v is Map) return _s(v['email']);
+    return null;
   }
 
   factory Lead.fromJson(Map<String, dynamic> j) => Lead(
@@ -85,7 +230,7 @@ class Lead {
         clientType: _normalizeClientType(j['clientType']),
         requirement: _s(j['requirement']),
         status: _s(j['status'], 'Hot'),
-        assignTo: _s(j['assignTo'] ?? j['assignedTo']),
+        assignTo: _assignToName(j['assignTo']),
         notes: _s(j['notes']),
         attachments: (j['attachments'] as List?)
                 ?.map((e) => Attachment.fromJson(e as Map<String, dynamic>))
@@ -104,8 +249,29 @@ class Lead {
         lastReminderAt: j['lastReminderAt'] != null
             ? DateTime.tryParse(j['lastReminderAt'].toString())
             : null,
-        assignedToId: j['assignedToId'] ??
-            (j['assignTo'] is Map ? _s((j['assignTo'] as Map)['_id']) : null),
+        assignedToId: _s(j['assignedToId'], '').isNotEmpty
+            ? _s(j['assignedToId'])
+            : _assignToId(j['assignTo']),
+        assignedToEmail: _assignToEmail(j['assignTo']),
+        followUpNotes: (j['followUpNotes'] as List?)
+                ?.whereType<Map>()
+                .map((e) => FollowUpNote.fromJson(Map<String, dynamic>.from(e)))
+                .toList() ??
+            [],
+        isActive: j['isActive'] is bool ? j['isActive'] as bool : true,
+        rejectionReason: _s(j['rejectionReason']),
+        statusHistory: (j['statusHistory'] as List?)
+                ?.whereType<Map>()
+                .map((e) =>
+                    StatusHistoryEntry.fromJson(Map<String, dynamic>.from(e)))
+                .toList() ??
+            [],
+        rejectedBy: UserRef.tryParse(j['rejectedBy']),
+        rejectedAt: j['rejectedAt'] != null
+            ? DateTime.tryParse(j['rejectedAt'].toString())
+            : null,
+        convertedBy: UserRef.tryParse(j['convertedBy']),
+      
       );
 
   factory Lead.fromMap(Map<String, dynamic> map) {
@@ -129,6 +295,48 @@ class Lead {
           .toList();
     }
 
+    // parse followUpNotes from JSON string stored in SQLite
+    List<FollowUpNote> followUpNotes = [];
+    final rawNotes = map['followUpNotes'];
+    if (rawNotes is String && rawNotes.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawNotes);
+        if (decoded is List) {
+          followUpNotes = decoded
+              .whereType<Map>()
+              .map((e) => FollowUpNote.fromJson(Map<String, dynamic>.from(e)))
+              .toList();
+        }
+      } catch (_) {}
+    }
+
+    List<StatusHistoryEntry> statusHistory = [];
+    final rawHistory = map['statusHistory'];
+    if (rawHistory is String && rawHistory.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawHistory);
+        if (decoded is List) {
+          statusHistory = decoded
+              .whereType<Map>()
+              .map((e) =>
+                  StatusHistoryEntry.fromJson(Map<String, dynamic>.from(e)))
+              .toList();
+        }
+      } catch (_) {}
+    }
+
+    UserRef? decodeUserRef(dynamic raw) {
+      if (raw is String && raw.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(raw);
+          if (decoded is Map) {
+            return UserRef.fromJson(Map<String, dynamic>.from(decoded));
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+
     return Lead(
       id: map['id']?.toString() ?? '',
       name: map['name']?.toString() ?? '',
@@ -144,6 +352,7 @@ class Lead {
       status: map['status']?.toString() ?? 'Hot',
       assignTo: map['assignTo']?.toString() ?? '',
       assignedToId: map['assignedToId']?.toString(),
+      assignedToEmail: map['assignedToEmail']?.toString(),
       followUpDate: map['followUpDate'] != null
           ? DateTime.tryParse(map['followUpDate'].toString())
           : null,
@@ -159,10 +368,18 @@ class Lead {
       lastReminderAt: map['lastReminderAt'] != null
           ? DateTime.tryParse(map['lastReminderAt'].toString())
           : null,
+      followUpNotes: followUpNotes,
+      isActive: (map['isActive'] as int? ?? 1) == 1,
+      rejectionReason: map['rejectionReason']?.toString() ?? '',
+      statusHistory: statusHistory,
+      rejectedBy: decodeUserRef(map['rejectedBy']),
+      rejectedAt: map['rejectedAt'] != null
+          ? DateTime.tryParse(map['rejectedAt'].toString())
+          : null,
+      convertedBy: decodeUserRef(map['convertedBy']),
     );
   }
 
-  // ✅ FIX #3: toMap() now includes clientType and attachments so they persist to SQLite
   Map<String, dynamic> toMap() => {
         'id': id,
         'name': name,
@@ -178,14 +395,25 @@ class Lead {
         'status': status,
         'assignTo': assignTo,
         'assignedToId': assignedToId,
+        'assignedToEmail': assignedToEmail,
         'notes': notes,
         'isLocal': isLocal ? 1 : 0,
         'followUpDate': followUpDate?.toIso8601String(),
         'createdAt': createdAt?.toIso8601String(),
         'updatedAt': updatedAt?.toIso8601String(),
         'lastReminderAt': lastReminderAt?.toIso8601String(),
-        // ✅ Serialize attachments to JSON string for SQLite storage
         'attachments': jsonEncode(attachments.map((a) => a.toJson()).toList()),
+        'followUpNotes':
+            jsonEncode(followUpNotes.map((n) => n.toJson()).toList()),
+        'isActive': isActive ? 1 : 0,
+        'rejectionReason': rejectionReason,
+        'statusHistory':
+            jsonEncode(statusHistory.map((s) => s.toJson()).toList()),
+        'rejectedBy': rejectedBy != null ? jsonEncode(rejectedBy!.toJson()) : null,
+        'rejectedAt': rejectedAt?.toIso8601String(),
+        'convertedBy':
+            convertedBy != null ? jsonEncode(convertedBy!.toJson()) : null,
+
       };
 
   Map<String, dynamic> toJson() => {
@@ -227,6 +455,14 @@ class Lead {
     DateTime? lastReminderAt,
     List<Attachment>? attachments,
     String? assignedToId,
+    String? assignedToEmail,
+    List<FollowUpNote>? followUpNotes,
+    bool? isActive,
+    String? rejectionReason,
+    List<StatusHistoryEntry>? statusHistory,
+    UserRef? rejectedBy,
+    DateTime? rejectedAt,
+    UserRef? convertedBy,
   }) =>
       Lead(
         id: id ?? this.id,
@@ -250,6 +486,14 @@ class Lead {
         lastReminderAt: lastReminderAt ?? this.lastReminderAt,
         attachments: attachments ?? this.attachments,
         assignedToId: assignedToId ?? this.assignedToId,
+        assignedToEmail: assignedToEmail ?? this.assignedToEmail,
+        followUpNotes: followUpNotes ?? this.followUpNotes,
+        isActive: isActive ?? this.isActive,
+        rejectionReason: rejectionReason ?? this.rejectionReason,
+         statusHistory: statusHistory ?? this.statusHistory,
+        rejectedBy: rejectedBy ?? this.rejectedBy,
+        rejectedAt: rejectedAt ?? this.rejectedAt,
+        convertedBy: convertedBy ?? this.convertedBy,
       );
 }
 
