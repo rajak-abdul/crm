@@ -2,26 +2,36 @@ import 'dart:io';
 
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:uuid/uuid.dart';
 
 class DeviceService {
   static final DeviceInfoPlugin _deviceInfo = DeviceInfoPlugin();
 
-  /// Returns a stable ID for this app installation.
   static Future<String> getDeviceId() async {
     final prefs = await SharedPreferences.getInstance();
 
     String? deviceId = prefs.getString('device_id');
 
-    if (deviceId == null) {
-      deviceId = const Uuid().v4();
-      await prefs.setString('device_id', deviceId);
+    if (deviceId != null && deviceId.isNotEmpty) {
+      return deviceId;
     }
+
+    if (Platform.isAndroid) {
+      final android = await _deviceInfo.androidInfo;
+
+      deviceId = android.id; // Android ID
+    } else if (Platform.isIOS) {
+      final ios = await _deviceInfo.iosInfo;
+
+      deviceId = ios.identifierForVendor;
+    } else {
+      deviceId = DateTime.now().millisecondsSinceEpoch.toString();
+    }
+
+    await prefs.setString('device_id', deviceId!);
 
     return deviceId;
   }
 
-  /// Returns a readable device name.
   static Future<String> getDeviceLabel() async {
     try {
       if (Platform.isAndroid) {

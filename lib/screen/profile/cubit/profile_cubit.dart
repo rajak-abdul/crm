@@ -106,12 +106,15 @@ class ProfileUser extends Equatable {
   static Map<String, dynamic> _extractUserMap(dynamic body) {
     if (body is! Map) return <String, dynamic>{};
     final root = Map<String, dynamic>.from(body);
-    if (root['data'] is Map)
+    if (root['data'] is Map) {
       return Map<String, dynamic>.from(root['data'] as Map);
-    if (root['user'] is Map)
+    }
+    if (root['user'] is Map) {
       return Map<String, dynamic>.from(root['user'] as Map);
-    if (root['result'] is Map)
+    }
+    if (root['result'] is Map) {
       return Map<String, dynamic>.from(root['result'] as Map);
+    }
     return root;
   }
 

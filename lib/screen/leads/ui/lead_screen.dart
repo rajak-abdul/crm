@@ -151,6 +151,7 @@ class LeadsScreen extends StatelessWidget {
   const LeadsScreen({super.key,this.selectedLeadId,});
   @override
   Widget build(BuildContext context) => MultiBlocProvider(
+    
         providers: [
           BlocProvider(
             create: (_) => LeadCubit()..fetchAllLeads(),
@@ -165,13 +166,17 @@ class LeadsScreen extends StatelessWidget {
 
 class _LeadsView extends StatefulWidget {
     final String? selectedLeadId;
+    
 const _LeadsView({
+    super.key,
     this.selectedLeadId,
-  });  @override
+  });
+ @override
   State<_LeadsView> createState() => _LeadsViewState();
 }
 
 class _LeadsViewState extends State<_LeadsView> {
+  
   final TextEditingController _searchController = TextEditingController();
   String _search = '',
       _statusFilter = 'All Status',
@@ -179,10 +184,11 @@ class _LeadsViewState extends State<_LeadsView> {
       _clientTypeFilter = 'All Client Types';
   String _assigneeFilter = 'All Assignees';
   String _followupFilter = 'All Follow-ups';
-   List<String> _followupItems = [
+   final List<String> _followupItems = [
   'All Follow-ups',
-  'Completed Follow-ups',
+  'Today Follow-ups',
   'Missed Follow-ups',
+  'Completed Follow-ups',
 ];
   bool _showRejectedOnly = false;
 
@@ -207,6 +213,7 @@ DateTime? _toDate;
     _searchController.dispose();
     super.dispose();
   }
+  
 Future<void> _showMissedFollowups(List<Lead> leads) async {
   if (_missedPopupShown) return;
 
@@ -327,36 +334,63 @@ Future<void> _showMissedFollowups(List<Lead> leads) async {
     final matchesAssignee = _assigneeFilter == 'All Assignees' ||
         (l.assignedToId != null && l.assignedToId == _assigneeFilter) ||
         l.assignTo.trim() == _assigneeFilter;
-      final hasCompletedFollowup = l.followUpNotes.isNotEmpty;
+      final today = DateTime.now();
+final todayOnly = DateTime(today.year, today.month, today.day);
+
+final followupDate = l.followUpDate == null
+    ? null
+    : DateTime(
+        l.followUpDate!.year,
+        l.followUpDate!.month,
+        l.followUpDate!.day,
+      );
+final matchesDate =
+    (_fromDate == null || (followupDate != null && !followupDate.isBefore(_fromDate!))) &&
+    (_toDate == null || (followupDate != null && !followupDate.isAfter(_toDate!)));
+
+final status = l.status.trim().toLowerCase();
+
+final hasCompletedFollowup =
+    l.followUpNotes.isNotEmpty;
+
+final isTodayFollowup =
+    followupDate != null &&
+    followupDate == todayOnly &&
+    status != "converted" &&
+    status != "rejected";
 
 final isMissedFollowup =
-    l.followUpDate != null &&
-    l.followUpDate!.isBefore(
-      DateTime(
-        DateTime.now().year,
-        DateTime.now().month,
-        DateTime.now().day,
-      ),
-    ) &&
+    followupDate != null &&
+    followupDate.isBefore(todayOnly) &&
     l.followUpNotes.isEmpty &&
-    l.status != "Converted" &&
-    l.status != "Rejected";
+    status != "converted";
     final matchesFollowup =
     _followupFilter == 'All Follow-ups' ||
-    (_followupFilter == 'Completed Follow-ups' &&
-        hasCompletedFollowup) ||
+
+    (_followupFilter == 'Today Follow-ups' &&
+        isTodayFollowup) ||
+
     (_followupFilter == 'Missed Follow-ups' &&
-        isMissedFollowup);
+        isMissedFollowup) ||
+
+    (_followupFilter == 'Completed Follow-ups' &&
+        hasCompletedFollowup);
     //     final isRejected =
     // l.status.trim().toLowerCase().contains('Rejected');
-    
+debugPrint(
+  "${l.name} | "
+  "assignedToId=${l.assignedToId} | "
+  "assignTo=${l.assignTo} | "
+  "selected=$_assigneeFilter",
+);    
 
     return matchesSearch &&
-        matchesStatus &&
-        matchesSource &&
-        matchesClientType &&
-        matchesAssignee &&
-        matchesFollowup;
+    matchesStatus &&
+    matchesSource &&
+    matchesClientType &&
+    matchesAssignee &&
+    matchesFollowup &&
+    matchesDate;
         
         
         
@@ -381,7 +415,7 @@ final isMissedFollowup =
   Widget build(BuildContext context) {
     return BlocConsumer<LeadCubit, LeadState>(
       listener: (ctx, state) {
-        if (state is LeadLoaded) {
+        if (state is LeadLoaded && !PermissionHelper.can('users_roles')) {
   WidgetsBinding.instance.addPostFrameCallback((_) {
     _showMissedFollowups(state.leads);
   });
@@ -410,8 +444,8 @@ final isMissedFollowup =
 
         return Scaffold(
             key: _scaffoldKey,
-            endDrawer: Drawer(
-  width: 330,
+            drawer: Drawer(
+  width: 250,
   child: SafeArea(
     child: Column(
       children: [
@@ -420,7 +454,7 @@ final isMissedFollowup =
             horizontal: 20,
             vertical: 18,
           ),
-          decoration: BoxDecoration(
+          decoration: const BoxDecoration(
             color: AppColors.primary,
           ),
           child: const Row(
@@ -510,6 +544,7 @@ if (PermissionHelper.can('users_roles'))
       });
     },
   ),
+  
 
 if (PermissionHelper.can('users_roles'))
   const SizedBox(height: 16),
@@ -517,11 +552,15 @@ if (PermissionHelper.can('users_roles'))
   value: _followupFilter,
   items: _followupItems,
   icon: Icons.event_available_outlined,
-  onChanged: (v) {
-    setState(() {
-      _followupFilter = v!;
-    });
-  },
+  onChanged: (value) async {
+  if (value == null) return;
+
+  setState(() {
+    _followupFilter = value;
+  });
+
+  await context.read<LeadCubit>().fetchAllLeads();
+},
 ),
 
 const SizedBox(height: 16),
@@ -613,10 +652,13 @@ Row(
 
     Expanded(
       child: ElevatedButton(
-        onPressed: () {
-          _resetPage();
-          Navigator.pop(context);
-        },
+        onPressed: () async {
+  _resetPage();
+  await context.read<LeadCubit>().fetchAllLeads();
+  if (mounted) {
+    Navigator.pop(context);
+  }
+},
         child: const Text("Apply"),
       ),
     ),
@@ -632,6 +674,13 @@ Row(
 ),
           backgroundColor: AppColors.background,
           appBar: AppBar(
+            automaticallyImplyLeading: false,
+            leading: IconButton(
+    icon: const Icon(Icons.arrow_back),
+    onPressed: () {
+      Navigator.pop(context); // Closes the drawer
+    },
+  ),
             title: const Text('Leads'),
             backgroundColor: AppColors.surface,
             actions: [
@@ -724,31 +773,81 @@ Row(
     IconButton(
       icon: const Icon(Icons.filter_alt_outlined),
       onPressed: () {
-        _scaffoldKey.currentState!.openEndDrawer();
+        _scaffoldKey.currentState!.openDrawer();
       },
     ),
-
+if (PermissionHelper.can('users_roles'))
     PopupMenuButton<String>(
-      onSelected: (value) {
-        if (value == "reject") {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => BlocProvider.value(
-                value: context.read<LeadCubit>(),
-                child: const RejectedLeadsScreen(),
-              ),
+      color: AppColors.surface,
+  onSelected: (value) async {
+    switch (value) {
+      case "reject":
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => BlocProvider.value(
+              value: context.read<LeadCubit>(),
+              child: const RejectedLeadsScreen(),
             ),
-          );
-        }
-      },
-      itemBuilder: (_) => const [
-        PopupMenuItem(
-          value: "reject",
-          child: Text("Rejected Leads"),
-        ),
+          ),
+        );
+        break;
+
+      case "template":
+        _downloadTemplate(context);
+        break;
+
+      case "import":
+        _pickAndImportLeads(context);
+        break;
+
+      case "export":
+  showExportLeadsDialog(
+    context,
+    context.read<LeadCubit>(),
+  );
+  break;
+    }
+  },
+  
+  itemBuilder: (_) => [
+  const PopupMenuItem<String>(
+    value: 'edit',
+    child: Row(
+      children: [
+        Icon(Icons.edit_outlined, size: 18),
+        SizedBox(width: 12),
+        Text('Edit'),
       ],
     ),
+  ),
+  const PopupMenuDivider(),
+  const PopupMenuItem<String>(
+    value: 'followup',
+    child: Row(
+      children: [
+        Icon(Icons.event_available_outlined, size: 18, color: AppColors.primary),
+        SizedBox(width: 12),
+        Text('Add Follow-up', style: TextStyle(color: AppColors.primary)),
+      ],
+    ),
+  ),
+  
+  if (PermissionHelper.can('users_roles')) ...[
+    const PopupMenuDivider(),
+    const PopupMenuItem<String>(
+      value: 'Reject',
+      child: Row(
+        children: [
+          Icon(Icons.block, size: 18, color: AppColors.danger),
+          SizedBox(width: 12),
+          Text('Reject', style: TextStyle(color: AppColors.danger)),
+        ],
+      ),
+    ),
+  ],
+],
+),
 
   ],
 ),
@@ -805,12 +904,221 @@ Row(
                     : null,
               ),
           ]),
+          
+          floatingActionButton: PermissionHelper.can('users_roles')
+    ? Padding(
+        padding: const EdgeInsets.only(bottom: 60), // Move FAB up
+        child: FloatingActionButton(
+          onPressed: () => _openCreate(context),
+          backgroundColor: AppColors.primary,
+          foregroundColor: Colors.white,
+          child: const Icon(Icons.add),
+        ),
+      )
+    : null,
         );
       },
     );
     
   }
+Future<void> showExportLeadsDialog(BuildContext context,LeadCubit leadCubit) async {
+  DateTime? startDate;
+  DateTime? endDate;
 
+  await showDialog(
+    context: context,
+    builder: (context) {
+      return StatefulBuilder(
+        builder: (context, setState) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+            titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+            contentPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            title: Row(
+              children: [
+                const Icon(
+                  Icons.download,
+                  color: AppColors.primary,
+                ),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    "Export Leads",
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close),
+                )
+              ],
+            ),
+            content: SizedBox(
+              width: 330,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    "Optionally filter by date range. Leave both blank to export all leads.",
+                    style: TextStyle(
+                      color: Colors.grey,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  const Text(
+                    "Start Date",
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+
+                  InkWell(
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        firstDate: DateTime(2023),
+                        lastDate: DateTime(2100),
+                        initialDate: startDate ?? DateTime.now(),
+                      );
+
+                      if (picked != null) {
+                        setState(() {
+                          startDate = picked;
+                        });
+                      }
+                    },
+                    child: InputDecorator(
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        suffixIcon: Icon(Icons.calendar_today),
+                      ),
+                      child: Text(
+                        startDate == null
+                            ? "Select Start Date"
+                            : DateFormat("dd/MM/yyyy").format(startDate!),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 18),
+
+                  const Text(
+                    "End Date",
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+
+                  InkWell(
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        firstDate: DateTime(2023),
+                        lastDate: DateTime(2100),
+                        initialDate: endDate ?? DateTime.now(),
+                      );
+
+                      if (picked != null) {
+                        setState(() {
+                          endDate = picked;
+                        });
+                      }
+                    },
+                    child: InputDecorator(
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        suffixIcon: Icon(Icons.calendar_today),
+                      ),
+                      child: Text(
+                        endDate == null
+                            ? "Select End Date"
+                            : DateFormat("dd/MM/yyyy").format(endDate!),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              OutlinedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                },
+                child: const Text("Cancel"),
+              ),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.download,color: Colors.white,),
+                label: const Text("Export"),
+                onPressed: ()async {
+
+                  // Call Export API here
+                  await leadCubit.exportLeads(
+  startDate: startDate,
+  endDate: endDate,
+);
+debugPrint("exportLeads called");
+                  Navigator.pop(context);
+
+                },
+              )
+            ],
+          );
+        },
+      );
+    },
+  );
+}
+
+Future<void> _downloadTemplate(BuildContext context) async {
+  final leadCubit = context.read<LeadCubit>();
+  final error = await leadCubit.downloadLeadTemplate();
+  if (!context.mounted) return;
+  showApiSnack(
+    context,
+    error != null
+        ? 'Failed to download template: $error'
+        : 'Template downloaded',
+    isError: error != null,
+  );
+}
+
+Future<void> _pickAndImportLeads(BuildContext context) async {
+  final leadCubit = context.read<LeadCubit>();
+
+  final picked = await FilePicker.platform.pickFiles(
+    type: FileType.custom,
+    allowedExtensions: ['xlsx'],
+    withData: true,
+  );
+  final file = picked?.files.first;
+  if (file == null) return;
+
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => const Center(child: CircularProgressIndicator()),
+  );
+
+  try {
+    final r = await leadCubit.importLeadsFromFile(file);
+    debugPrint('=== IMPORT ===: success=${r.successCount} failed=${r.failedCount}');
+    r.errors.forEach(debugPrint);
+    if (!context.mounted) return;
+    Navigator.pop(context);
+    showApiSnack(context, 'Imported ${r.successCount}, failed ${r.failedCount}',
+        isError: r.failedCount > 0);
+  } catch (e) {
+    debugPrint('=== IMPORT ERROR ===: $e');
+    if (!context.mounted) return;
+    Navigator.pop(context);
+    showApiSnack(context, 'Import failed: $e', isError: true);
+  }
+}
   Widget _buildList(
       BuildContext context, LeadState state, List<Lead> leads, int total) {
     if (state is LeadLoading) {
@@ -1229,20 +1537,21 @@ class _FilterDrop extends StatelessWidget {
               fontWeight: active ? FontWeight.w600 : FontWeight.w400,
               color: active ? AppColors.primary : AppColors.textSecondary),
           items: items
-              .toSet()
-              .toList()
-              .map((e) => DropdownMenuItem(
-                  value: e,
-                  child: Row(children: [
-                    Icon(icon, size: 13, color: AppColors.textSecondary),
-                    const SizedBox(width: 5),
-                    Expanded(
-                        child: Text(
-                      labelBuilder != null ? labelBuilder!(e) : e,
-                      overflow: TextOverflow.ellipsis,
-                    )),
-                  ])))
-              .toList(),
+    .map((e) => DropdownMenuItem(
+      value: e,
+      child: Row(
+        children: [
+          Icon(icon, size: 13),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(
+              labelBuilder != null ? labelBuilder!(e) : e,
+            ),
+          ),
+        ],
+      ),
+    ))
+    .toList(),
           onChanged: onChanged,
         )),
       );
@@ -1265,7 +1574,25 @@ class _LeadCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext ctx) {
+
     final isConverted = lead.status.trim().toLowerCase() == 'converted';
+    final today = DateTime.now();
+final todayOnly = DateTime(today.year, today.month, today.day);
+
+final followupDate = lead.followUpDate == null
+    ? null
+    : DateTime(
+        lead.followUpDate!.year,
+        lead.followUpDate!.month,
+        lead.followUpDate!.day,
+      );
+
+final isMissedFollowup =
+    followupDate != null &&
+    followupDate.isBefore(todayOnly) &&
+    lead.followUpNotes.isEmpty &&
+    lead.status.trim().toLowerCase() != "converted" &&
+    lead.status.trim().toLowerCase() != "rejected";
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -1346,9 +1673,9 @@ IconButton(
   icon: Icon(
     size: 18,
     Icons.visibility,
-    color: lead.followUpNotes.isEmpty
-        ? Colors.red
-        : Colors.black87,
+    color: isMissedFollowup
+    ? Colors.red
+    : Colors.black87,
   ),
   tooltip: "View Follow-up Notes",
   onPressed: () => _showFollowUpNotes(
@@ -1384,56 +1711,58 @@ IconButton(
             break;
         }
       },
-      itemBuilder: (_) => const [
-        PopupMenuItem<String>(
-          value: 'edit',
-          child: Row(
-            children: [
-              Icon(Icons.edit_outlined, size: 18),
-              SizedBox(width: 12),
-              Text('Edit'),
-            ],
-          ),
-        ),
-        PopupMenuDivider(),
-        PopupMenuItem<String>(
-  value: 'followup',
-  child: Row(
-    children: const [
-      Icon(
-        Icons.event_available_outlined,
-        size: 18,
-        color: AppColors.primary,
-      ),
-      SizedBox(width: 12),
-      Text(
-        'Add Follow-up',
-        style: TextStyle(
+      itemBuilder: (_) => [
+  const PopupMenuItem<String>(
+    value: 'edit',
+    child: Row(
+      children: [
+        Icon(Icons.edit_outlined, size: 18),
+        SizedBox(width: 12),
+        Text('Edit'),
+      ],
+    ),
+  ),
+  const PopupMenuDivider(),
+  const PopupMenuItem<String>(
+    value: 'followup',
+    child: Row(
+      children: [
+        Icon(
+          Icons.event_available_outlined,
+          size: 18,
           color: AppColors.primary,
         ),
-      ),
-    ],
-  ),
-),
-PopupMenuDivider(),
-        PopupMenuItem<String>(
-          value: 'Reject',
-          child: Row(
-            children: [
-              Icon(
-                Icons.block,
-                size: 18,
-                color: AppColors.danger,
-              ),
-              SizedBox(width: 12),
-              Text(
-                'Reject',
-                style: TextStyle(color: AppColors.danger),
-              ),
-            ],
+        SizedBox(width: 12),
+        Text(
+          'Add Follow-up',
+          style: TextStyle(
+            color: AppColors.primary,
           ),
         ),
       ],
+    ),
+  ),
+  if (PermissionHelper.can('users_roles')) ...[
+    const PopupMenuDivider(),
+    const PopupMenuItem<String>(
+      value: 'Reject',
+      child: Row(
+        children: [
+          Icon(
+            Icons.block,
+            size: 18,
+            color: AppColors.danger,
+          ),
+          SizedBox(width: 12),
+          Text(
+            'Reject',
+            style: TextStyle(color: AppColors.danger),
+          ),
+        ],
+      ),
+    ),
+  ],
+],
     ),
 
                 ]),
@@ -1458,9 +1787,33 @@ PopupMenuDivider(),
               ],
               const Spacer(),
               if (lead.followUpDate != null)
-                _chip(Icons.event_outlined,
-                    DateFormat('dd MMM').format(lead.followUpDate!),
-                    c: AppColors.primary),
+  InkWell(
+    borderRadius: BorderRadius.circular(8),
+    onTap: () async {
+      final picked = await showDatePicker(
+        context: ctx,
+        initialDate: lead.followUpDate!,
+        firstDate: DateTime(2023),
+        lastDate: DateTime(2100),
+      );
+
+      if (picked != null) {
+        final err = await ctx.read<LeadCubit>().updateFollowUp(
+          lead.id,
+          picked,
+        );
+
+        if (err != null) {
+          showApiSnack(ctx, err, isError: true);
+        }
+      }
+    },
+    child: _chip(
+      Icons.event_outlined,
+      DateFormat('dd MMM').format(lead.followUpDate!),
+      c: AppColors.primary,
+    ),
+  ),
             ]),
           ),
         ]),
@@ -1471,33 +1824,51 @@ PopupMenuDivider(),
   BuildContext context,
   Lead lead,
 ) {
-  if (lead.followUpNotes.isEmpty) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(
-              Icons.warning_amber_rounded,
-              color: Colors.red,
-            ),
-            SizedBox(width: 8),
-            Text("Missed Follow-up"),
-          ],
-        ),
-        content: const Text(
-          "No follow-up notes logged — this follow-up was missed.",
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("OK"),
+  final today = DateTime.now();
+final todayOnly = DateTime(today.year, today.month, today.day);
+
+final followupDate = lead.followUpDate == null
+    ? null
+    : DateTime(
+        lead.followUpDate!.year,
+        lead.followUpDate!.month,
+        lead.followUpDate!.day,
+      );
+
+final isMissedFollowup =
+    followupDate != null &&
+    followupDate.isBefore(todayOnly) &&
+    lead.followUpNotes.isEmpty &&
+    lead.status.trim().toLowerCase() != "converted" &&
+    lead.status.trim().toLowerCase() != "rejected";
+
+if (isMissedFollowup) {
+  showDialog(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Row(
+        children: [
+          Icon(
+            Icons.warning_amber_rounded,
+            color: Colors.red,
           ),
+          SizedBox(width: 8),
+          Text("Missed Follow-up"),
         ],
       ),
-    );
-    return;
-  }
+      content: const Text(
+        "No follow-up notes logged — this follow-up was missed.",
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text("OK"),
+        ),
+      ],
+    ),
+  );
+  return;
+}
 
   showDialog(
     context: context,
@@ -1625,7 +1996,7 @@ class _StatusPickerSheet extends StatelessWidget {
 // ══════════════════════════════════════════════════════════════
 class LeadDetailSheet extends StatefulWidget {
   final Lead lead;
-  const LeadDetailSheet({required this.lead});
+  const LeadDetailSheet({super.key, required this.lead});
 
   @override
   State<LeadDetailSheet> createState() => LeadDetailSheetState();
@@ -2660,7 +3031,7 @@ class _LeadFormModalState extends State<_LeadFormModal> {
       country: _country ?? '',
       industry: _industry ?? '',
       source: _source ?? '',
-      clientType: _clientType!,
+      clientType: _clientType ?? '',
       requirement: _req.text.trim(),
       status: _status,
       assignTo: _selectedAssignUserId ?? '',
@@ -2685,12 +3056,11 @@ class _LeadFormModalState extends State<_LeadFormModal> {
     if (!mounted) return;
 
     setState(() => _saving = false);
-    if (err == null) {
-      Navigator.pop(context);
-    } else {
-      showApiSnack(context, err, isError: true);
-    }
-  }
+showApiSnack(
+  context,
+  err ?? "Something went wrong",
+  isError: true,
+);    }
 
   @override
   Widget build(BuildContext ctx) => DraggableScrollableSheet(
@@ -2825,15 +3195,8 @@ class _LeadFormModalState extends State<_LeadFormModal> {
                           : (_step < 3
                               ? () {
                                   if (_step == 0 && !_validateStep0()) return;
-                                  if (_step == 1 &&
-                                      (_clientType == null ||
-                                          _clientType!.isEmpty)) {
-                                    showApiSnack(
-                                      context,
-                                      'Please select Client Type (B2B or B2C).',
-                                      isError: true,
-                                    );
-                                    return;
+                                  if (_step == 1 ) {
+                                    
                                   }
                                   setState(() => _step++);
                                 }

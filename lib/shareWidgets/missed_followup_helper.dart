@@ -1,4 +1,5 @@
-import 'package:crm_app/modals/modals.dart';
+
+import '../modals/modals.dart';
 
 class MissedFollowupHelper {
   static List<Lead> getMissedFollowups({

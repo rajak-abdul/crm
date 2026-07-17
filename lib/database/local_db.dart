@@ -6,12 +6,13 @@
 // ╚══════════════════════════════════════════════════════════════╝
 
 import 'dart:convert';
-
-import 'package:crm_app/modals/modals.dart' show AppRole, AppUser, Lead;
-import 'package:crm_app/screen/dashboard/ui/dashboard_screen.dart';
-import 'package:flutter/material.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'package:flutter/foundation.dart';
+import 'package:sqflite/sqflite.dart';
+
+import '../modals/modals.dart';
+import '../screen/dashboard/ui/dashboard_screen.dart';
+
 
 class LocalDb {
   LocalDb._();
@@ -459,8 +460,9 @@ class LocalDb {
     };
     await db.update('users', row, where: 'id = ?', whereArgs: [id]);
     final updated = await db.query('users', where: 'id = ?', whereArgs: [id]);
-    if (updated.isNotEmpty) if (updated.isNotEmpty)
+    if (updated.isNotEmpty) if (updated.isNotEmpty) {
       return AppUser.fromMap(Map<String, dynamic>.from(updated.first));
+    }
 
     return AppUser.fromMap({...row, 'id': id, 'isLocal': user.isLocal ? 1 : 0});
   }

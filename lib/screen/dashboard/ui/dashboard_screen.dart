@@ -669,12 +669,15 @@ class _CrmDrawerState extends State<_CrmDrawer> {
 
   Map<String, dynamic> _extractUserMap(dynamic body) {
     if (body is Map) {
-      if (body['data'] is Map)
+      if (body['data'] is Map) {
         return Map<String, dynamic>.from(body['data'] as Map);
-      if (body['user'] is Map)
+      }
+      if (body['user'] is Map) {
         return Map<String, dynamic>.from(body['user'] as Map);
-      if (body['result'] is Map)
+      }
+      if (body['result'] is Map) {
         return Map<String, dynamic>.from(body['result'] as Map);
+      }
       return Map<String, dynamic>.from(body);
     }
     return <String, dynamic>{};
@@ -1337,6 +1340,7 @@ class _DashboardBody extends StatelessWidget {
     return true;
   }
 
+  @override
   Widget build(BuildContext context) {
     final sm = s.summary;
     final totalLeads = sm.totalLeads > 0 ? sm.totalLeads : s.allLeads.length;
@@ -1491,7 +1495,7 @@ class _DashboardBody extends StatelessWidget {
                 if (!await _canNavigate(context)) return;
 
                 Navigator.of(context, rootNavigator: true)
-                    .push(_slide(DealsScreen(initialTab: 0)));
+                    .push(_slide(const DealsScreen(initialTab: 0)));
               }),
           const SizedBox(width: 12),
           _QuickCard(
@@ -1502,22 +1506,12 @@ class _DashboardBody extends StatelessWidget {
                 if (!await _canNavigate(context)) return;
 
                 Navigator.of(context, rootNavigator: true)
-                    .push(_slide(InvoiceScreen()));
+                    .push(_slide(const InvoiceScreen()));
               }),
         ]),
 
         const SizedBox(height: 20),
-      ElevatedButton(
-  onPressed: () async {
-    try {
-      final enabled = await Geolocator.isLocationServiceEnabled();
-      debugPrint("GPS Enabled: $enabled");
-    } catch (e) {
-      debugPrint("ERROR: $e");
-    }
-  },
-  child: const Text("Test Location"),
-),
+   
         // ── Deal Pipeline ─────────────────────────────────────
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           const _SectionTitle('Deal Pipeline'),
@@ -1533,7 +1527,7 @@ class _DashboardBody extends StatelessWidget {
         const SizedBox(height: 24),
 
         // ── Top Performer ─────────────────────────────────────
-        _SectionTitle('Top Performer'),
+        const _SectionTitle('Top Performer'),
 
         const SizedBox(height: 12),
 
@@ -2180,7 +2174,7 @@ class _MiniLeadCard extends StatelessWidget {
 class _TopPerformerCard extends StatelessWidget {
   final Map<String, dynamic> user;
 
-  _TopPerformerCard({required this.user});
+  const _TopPerformerCard({required this.user});
 
   @override
   Widget build(BuildContext context) {

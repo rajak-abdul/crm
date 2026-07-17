@@ -123,6 +123,9 @@ debugPrint("Device Label: $deviceLabel");
       // ✅ NEW: persist tenant slug for building tenant-scoped API calls later
       await prefs.setString('tenant_slug', tenantSlug.trim());
 
+      await prefs.setString('device_id', deviceId);
+await prefs.setString('device_label', deviceLabel);
+
       // ✅ role + permissions — role is at root now, not nested under data
       Map<String, dynamic>? role;
       Map<String, dynamic>? permissions;

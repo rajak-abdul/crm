@@ -77,18 +77,20 @@ class LeaderboardService {
           cached = await db.getCachedLeaderboard(defaultKey);
         }
 
-        if (cached != null) {
-          final data = cached['data'];
-          if (data is List && data.isNotEmpty) {
-            return LeaderboardResponse.fromJson(
-                Map<String, dynamic>.from(cached));
-          }
-          if (cached['stats'] != null) {
-            return LeaderboardResponse.fromJson(
-                Map<String, dynamic>.from(cached));
-          }
-        }
-      } catch (cacheError) {
+if (cached == null) {
+  throw Exception('No cached leaderboard found');
+}
+
+final data = cached['data'];
+
+if (data is List && data.isNotEmpty) {
+  return LeaderboardResponse.fromJson(cached);
+}
+
+if (cached['stats'] != null) {
+  return LeaderboardResponse.fromJson(cached);
+}
+            } catch (cacheError) {
         // Cache read failed — fall through
       }
 

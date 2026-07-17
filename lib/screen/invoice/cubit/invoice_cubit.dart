@@ -627,9 +627,9 @@ class InvoiceCubit extends Cubit<InvoiceState> {
             String cur = 'INR';
 
             if (rawCurrency.isNotEmpty) {
-              if (rawCurrency.contains('INR'))
+              if (rawCurrency.contains('INR')) {
                 cur = 'INR';
-              else if (rawCurrency.contains('USD'))
+              } else if (rawCurrency.contains('USD'))
                 cur = 'USD';
               else if (rawCurrency.contains('EUR'))
                 cur = 'EUR';

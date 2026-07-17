@@ -6,7 +6,7 @@ import 'package:intl/intl.dart';
 class TodaysFollowUpsCard extends StatelessWidget {
   final List<FollowUpItem> items;
   final VoidCallback? onViewAll;
-  const TodaysFollowUpsCard({required this.items, this.onViewAll});
+  const TodaysFollowUpsCard({super.key, required this.items, this.onViewAll});
 
   static const _visibleCount = 2;
 
@@ -54,7 +54,7 @@ class TodaysFollowUpsCard extends StatelessWidget {
               ),
               GestureDetector(
                 onTap: onViewAll,
-                child: Row(children: const [
+                child: const Row(children: [
                   Text('View All',
                       style: TextStyle(
                           fontSize: 12,

@@ -61,10 +61,12 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
 
   Future<void> _loadData({bool forceRefresh = false}) async {
     // Guard: don't fetch if required dates are missing
-    if (_filterIndex == 0 && _startDate == null)
+    if (_filterIndex == 0 && _startDate == null) {
       return; // Single Day needs a date
-    if (_filterIndex == 1 && _startDate == null)
+    }
+    if (_filterIndex == 1 && _startDate == null) {
       return; // Range needs at least start
+    }
 
     setState(() {
       _isLoading = true;

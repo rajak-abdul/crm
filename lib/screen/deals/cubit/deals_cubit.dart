@@ -234,19 +234,27 @@ class DealsCubit extends Cubit<DealsState> {
   }
 
   Future<Deal?> getDealById(String id) async {
-    try {
-      final res = await _dio.get('/deals/getAll/$id');
-      final data = res.data;
-      Map<String, dynamic>? map;
-      if (data is Map) map = Map<String, dynamic>.from(data);
-      if (data is List && data.isNotEmpty) {
-        map = Map<String, dynamic>.from(data.first as Map);
-      }
-      return map != null ? Deal.fromJson(map) : null;
-    } catch (_) {
+  try {
+    final res = await _dio.get('/deals/getAll/$id');
+    final data = res.data;
+
+    Map<String, dynamic>? map;
+
+    if (data is Map) {
+      map = Map<String, dynamic>.from(data);
+    } else if (data is List && data.isNotEmpty) {
+      map = Map<String, dynamic>.from(data.first as Map);
+    }
+
+    if (map == null) {
       return null;
     }
+
+    return Deal.fromJson(map);
+  } catch (_) {
+    return null;
   }
+}
 
   // ── CREATE ────────────────────────────────────────────────────
 
@@ -327,22 +335,26 @@ class DealsCubit extends Cubit<DealsState> {
       debugPrint('[DealsCubit] createDeal → newId=$newId');
 
       // Optimistic insert if we have the deal map
-      if (dealMap != null && prev is DealsLoaded && !isClosed) {
-        try {
-          final newDeal = Deal.fromJson(dealMap);
-          emit(prev.copyWithDeals([newDeal, ...prev.allDeals]));
-        } catch (_) {}
-        try {
-          await LocalDb.instance.upsertDealFromApi(dealMap);
-        } catch (e) {
-          debugPrint('[DealsCubit] create local cache write failed: $e');
-        }
+      if (prev is DealsLoaded && !isClosed) {
+        if (dealMap != null) {
+  try {
+    final newDeal = Deal.fromJson(dealMap);
+    emit(prev.copyWithDeals([newDeal, ...prev.allDeals]));
+  } catch (_) {}
+
+  try {
+    await LocalDb.instance.upsertDealFromApi(dealMap);
+  } catch (e) {
+    debugPrint('[DealsCubit] create local cache write failed: $e');
+  }
+}
       }
 
       // Always reload to get consistent server state
       await loadDeals();
-      if (!isClosed)
+      if (!isClosed) {
         emit(const DealsActionSuccess('Deal created successfully'));
+      }
 
       return newId;
     } on DioException catch (e) {
@@ -474,8 +486,9 @@ class DealsCubit extends Cubit<DealsState> {
       if (_isOfflineDio(e)) {
         try {
           await LocalDb.instance.updateLocalDeal(id, {'stage': newStage});
-          if (!isClosed)
+          if (!isClosed) {
             emit(const DealsActionSuccess('Stage updated offline'));
+          }
           return;
         } catch (dbErr) {
           debugPrint('[DealsCubit] updateDealStage offline save error: $dbErr');
@@ -520,8 +533,9 @@ class DealsCubit extends Cubit<DealsState> {
       await loadDeals();
       if (!isClosed) emit(const DealsActionSuccess('Follow-up completed'));
     } on DioException catch (e) {
-      if (!isClosed)
+      if (!isClosed) {
         emit(DealsError(_dioMsg(e, 'Failed to complete follow-up')));
+      }
     }
   }
 

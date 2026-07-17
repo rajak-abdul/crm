@@ -1,13 +1,18 @@
 // ══════════════════════════════════════════════════════════════
 // 1️⃣  STATE
 // ══════════════════════════════════════════════════════════════
+import 'dart:io' show Platform;
+
 import 'package:crm_app/database/local_db.dart';
-import 'package:crm_app/modals/missed_followup_modal.dart';
 import 'package:crm_app/modals/modals.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:dio/dio.dart';
 import 'package:equatable/equatable.dart';
+import 'package:excel/excel.dart' as xls;
+import 'package:file_picker/file_picker.dart';
+import 'package:file_saver/file_saver.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -134,6 +139,17 @@ List<Map<String, dynamic>> _parseListIsolate(dynamic d) {
   }).toList();
 }
 
+class LeadImportResult {
+  final int successCount;
+  final int failedCount;
+  final List<String> errors;
+  const LeadImportResult({
+    required this.successCount,
+    required this.failedCount,
+    this.errors = const [],
+  });
+}
+
 // ══════════════════════════════════════════════════════════════
 // 2️⃣  CUBIT
 // ══════════════════════════════════════════════════════════════
@@ -193,6 +209,11 @@ class LeadCubit extends Cubit<LeadState> {
   List<AppUser> get salesUsers => List.unmodifiable(_salesUsers);
 
   // ── 🌐 GET /leads/getAllLead ───────────────────────────────
+  // NOTE: This now ALWAYS merges in rejected leads (via getRejectedLeads())
+  // on top of the normal lead list, with NO de-duplication — by design,
+  // per current requirements: every filter combination (All Assignee,
+  // Missed Follow-ups, both together) should show the same combined,
+  // un-deduped list of normal + rejected leads.
   Future<void> fetchAllLeads(
       {int page = 1, int limit = 50, String? status}) async {
     if (isClosed) return;
@@ -219,9 +240,19 @@ class LeadCubit extends Cubit<LeadState> {
       final leadsRaw = results[0].data;
       final usersRaw = results[1].data;
 
-// ✅ PARSE DATA
+// ✅ PARSE DATA (no de-dup — duplicates from the API are intentionally kept)
       final apiLeads = await compute(_parseListIsolate, leadsRaw)
           .then((list) => list.map((e) => Lead.fromJson(e)).toList());
+
+// ✅ ALWAYS merge in rejected leads too (no de-dup against apiLeads either)
+      List<Lead> rejectedLeads = [];
+      try {
+        rejectedLeads = await getRejectedLeads();
+      } catch (e) {
+        debugPrint('=== REJECTED LEADS FETCH ERROR (fetchAllLeads) ===: $e');
+      }
+
+      final combinedLeads = [...apiLeads, ...rejectedLeads];
 
       final parsedUsers = _parseListIsolate(usersRaw);
 
@@ -229,9 +260,12 @@ class LeadCubit extends Cubit<LeadState> {
       final currentUserId = prefs.getString('user_id'); // save this at login
 
       final filteredLeads = PermissionHelper.can('users_roles')
-          ? apiLeads
-          : apiLeads.where((l) => l.assignedToId == currentUserId).toList();
-      for (final lead in apiLeads) {
+          ? combinedLeads
+          : combinedLeads
+              .where((l) => l.assignedToId == currentUserId)
+              .toList();
+
+      for (final lead in combinedLeads) {
         try {
           await LocalDb.instance.upsertLeadFromApi(lead);
         } catch (e) {
@@ -789,6 +823,276 @@ Future<void> fetchRejectedLeads({
     emit(LeadError(e.toString()));
   }
 }
+// ==================
+// get Rejected leads
+//===================
+Future<List<Lead>> getRejectedLeads() async {
+  await _initToken();
+
+  final tenantSlug = _cachedTenantSlug;
+  if (tenantSlug == null || tenantSlug.isEmpty) {
+    return [];
+  }
+
+  final res = await _dio.get(
+    '$_domain/$tenantSlug/api/leads/rejected',
+  );
+
+  final parsed = await compute(_parseListIsolate, res.data);
+
+  return parsed.map((e) => Lead.fromJson(e)).toList();
+}
+
+// =======================
+// fetch the missed leads
+//========================
+// NOTE: fetchAllLeads() now already merges in rejected leads on every
+// call, so this method is functionally equivalent to fetchAllLeads()
+// for the "Missed Follow-ups" filter path. Left in place in case any
+// other call site still references it directly.
+Future<void> fetchMissedFollowups() async {
+  if (isClosed) return;
+
+  emit(LeadLoading());
+
+  try {
+    final allLeads = await getAllLeads();
+    final rejectedLeads = await getRejectedLeads();
+
+    final combined = [...allLeads, ...rejectedLeads];
+
+    emit(
+      LeadLoaded(
+        leads: combined,
+        salesUsers: _salesUsers,
+      ),
+    );
+  } catch (e) {
+    emit(LeadError(e.toString()));
+  }
+}
+
+// ===============
+// Export the leads
+// ================
+Future<String?> exportLeads({
+  DateTime? startDate,
+  DateTime? endDate,
+}) async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+
+    final token = prefs.getString("token") ?? "";
+    final slug = prefs.getString("tenant_slug") ?? "";
+
+    final query = {
+      "page": "1",
+      "limit": "100000",
+    };
+
+    if (startDate != null) {
+      query["startDate"] =
+          DateFormat("yyyy-MM-dd").format(startDate);
+    }
+
+    if (endDate != null) {
+      query["endDate"] =
+          DateFormat("yyyy-MM-dd").format(endDate);
+    }
+
+    final response = await Dio().get<List<int>>(
+      "https://crm-backend-api.techzarinfo.cloud/$slug/api/leads/getAllLead",
+      queryParameters: query,
+      options: Options(
+        responseType: ResponseType.bytes,
+        headers: {
+          "Authorization": "Bearer $token",
+        },
+      ),
+    );
+    debugPrint(response.statusCode.toString());
+debugPrint(response.headers.toString());
+debugPrint(response.data.runtimeType.toString());
+    final bytes = response.data!;
+
+    final savedPath = await _saveXlsxToDownloads('Leads.xlsx', bytes);
+
+debugPrint("Save Path: $savedPath");
+
+    return null;
+  } catch (e) {
+    return e.toString();
+  }
+}
+
+// ===============
+// Download Import Template
+// ================
+Future<String?> downloadLeadTemplate() async {
+  try {
+    final workbook = xls.Excel.createExcel();
+    const sheetName = 'Leads Template';
+    final sheet = workbook[sheetName];
+    if (workbook.sheets.containsKey('Sheet1') && sheetName != 'Sheet1') {
+      workbook.delete('Sheet1');
+    }
+
+    const headers = [
+      'Lead Name',
+      'Company Name',
+      'Phone Number',
+      'Email',
+      'Address',
+      'Country',
+      'Client Type (B2B/B2C)',
+      'Industry',
+      'Source',
+      'Requirement',
+      'Status',
+      'Assign To (Email)',
+      'Follow-up Date (YYYY-MM-DD)',
+      'Notes',
+    ];
+    sheet.appendRow(headers.map((h) => xls.TextCellValue(h)).toList());
+
+    final bytes = workbook.save();
+    if (bytes == null) return 'Failed to generate template';
+
+     final savedPath =
+        await _saveXlsxToDownloads('Leads_Import_Template.xlsx', bytes);
+    debugPrint('Template Save Path: $savedPath');
+    return null;
+  } catch (e) {
+    return e.toString();
+  }
+}
+
+// ===============
+// Import Leads from Excel
+// ================
+Future<LeadImportResult> importLeadsFromFile(PlatformFile file) async {
+  await _initToken();
+
+  if (file.bytes == null) {
+    throw Exception('Could not read file');
+  }
+
+  final workbook = xls.Excel.decodeBytes(file.bytes!);
+  if (workbook.tables.isEmpty) {
+    throw Exception('No sheet found in the selected file');
+  }
+  final sheet = workbook.tables[workbook.tables.keys.first]!;
+  if (sheet.maxRows <= 1) {
+    throw Exception('No data found in the selected file');
+  }
+
+  // 👇 NEW: build an email -> id lookup from the sales users you already have
+  final assigneeByEmail = <String, String>{
+    for (final u in _salesUsers)
+      if (u.email.trim().isNotEmpty) u.email.trim().toLowerCase(): u.id
+  };
+
+  int success = 0;
+  int failed = 0;
+  final errors = <String>[];
+
+  for (var i = 1; i < sheet.maxRows; i++) {
+    final row = sheet.row(i);
+
+    String cell(int idx) {
+      if (idx >= row.length) return '';
+      return row[idx]?.value?.toString().trim() ?? '';
+    }
+
+    final isBlank = row.every(
+        (c) => c?.value == null || c!.value.toString().trim().isEmpty);
+    if (isBlank) continue;
+
+    final leadName = cell(0);
+    if (leadName.isEmpty) {
+      failed++;
+      errors.add('Row ${i + 1}: Lead Name is required');
+      continue;
+    }
+
+    final followUpRaw = cell(12);
+    String? followUpDate;
+    if (followUpRaw.isNotEmpty) {
+      try {
+        followUpDate =
+            DateFormat('yyyy-MM-dd').format(DateTime.parse(followUpRaw));
+      } catch (_) {}
+    }
+
+    // 👇 NEW: optional heads-up if the email doesn't match a known user
+    if (cell(11).isNotEmpty &&
+        !assigneeByEmail.containsKey(cell(11).trim().toLowerCase())) {
+      debugPrint(
+          'Row ${i + 1} ($leadName): assignee email "${cell(11)}" not found — importing unassigned');
+    }
+
+    final payload = <String, dynamic>{
+      'leadName': leadName,
+      'companyName': cell(1),
+      'phoneNumber': cell(2),
+      'email': cell(3),
+      'address': cell(4),
+      'country': cell(5),
+      if (cell(6).isNotEmpty) 'clientType': cell(6),
+      'industry': cell(7),
+      'source': cell(8),
+      'requirement': cell(9),
+      'status': cell(10).isEmpty ? 'New' : cell(10),
+      // 👇 CHANGED: was `cell(11)` (raw email string), now resolved to the user's id
+      if (assigneeByEmail[cell(11).trim().toLowerCase()] != null)
+        'assignTo': assigneeByEmail[cell(11).trim().toLowerCase()],
+      if (followUpDate != null) 'followUpDate': followUpDate,
+      'notes': cell(13),
+    };
+
+    try {
+      await _dio.post('/leads/create', data: payload);
+      success++;
+    } on DioException catch (e) {
+      failed++;
+      errors.add('Row ${i + 1} ($leadName): ${_dioMsg(e)}');
+    } catch (e) {
+      failed++;
+      errors.add('Row ${i + 1} ($leadName): $e');
+    }
+  }
+
+  await fetchAllLeads();
+
+  return LeadImportResult(
+      successCount: success, failedCount: failed, errors: errors);
+}
+
+// path
+ MethodChannel _leadDownloadsChannel = MethodChannel('crm/downloads');
+
+Future<String> _saveXlsxToDownloads(String fileName, List<int> bytes) async {
+  if (Platform.isAndroid) {
+    final path = await _leadDownloadsChannel.invokeMethod<String>(
+      'saveToDownloads',
+      <String, dynamic>{
+        'fileName': fileName,
+        'bytes': Uint8List.fromList(bytes),
+        'mimeType':
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      },
+    );
+    return path ?? '';
+  }
+  return FileSaver.instance.saveFile(
+    name: fileName.replaceAll('.xlsx', ''),
+    bytes: Uint8List.fromList(bytes),
+    ext: 'xlsx',
+    mimeType: MimeType.microsoftExcel,
+  );
+}
+
+
   // ── Helpers ───────────────────────────────────────────────
 
   /// Builds the request payload.

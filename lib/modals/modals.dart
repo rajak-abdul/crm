@@ -4,8 +4,6 @@
 
 import 'dart:convert'; // ✅ FIX #1: was missing — needed for jsonDecode in Lead.fromMap
 
-import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart' as p;
 
 /// ══════════════════════════════════════════════════════════════
 /// LEAD STATUS ENUM

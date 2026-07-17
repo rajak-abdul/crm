@@ -578,7 +578,9 @@ class DashboardCubit extends Cubit<DashboardState> {
       final d = _dealFilterDate(m);
       if (!_dealDayInRange(d,
           rangeStartDay: rangeStartDay,
-          rangeEndExclusiveDay: rangeEndExclusiveDay)) continue;
+          rangeEndExclusiveDay: rangeEndExclusiveDay)) {
+        continue;
+      }
       total++;
       if (_isWonDealStage(m['stage']?.toString())) won++;
     }
@@ -1105,7 +1107,9 @@ class DashboardCubit extends Cubit<DashboardState> {
     if (k == 'proposalsent') return true;
     if (k.contains('proposal') &&
         k.contains('sent') &&
-        k.contains('negotiation')) return true;
+        k.contains('negotiation')) {
+      return true;
+    }
     if (k == 'proposalsentnegotiation') return true;
     if (k.contains('proposal') && k.contains('negotiation')) return true;
     return false;

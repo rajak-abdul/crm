@@ -37,7 +37,7 @@ import 'package:intl/intl.dart';
 class InvoiceDetailsModal extends StatefulWidget {
   final Invoice invoice;
 
-  const InvoiceDetailsModal({
+  const InvoiceDetailsModal({super.key, 
     required this.invoice,
   });
 

@@ -24,7 +24,7 @@ class _RejectedLeadsScreenState
 
   String _search = '';
   int _currentPage = 1;
- int _pageSize = 5; 
+ final int _pageSize = 5; 
 
   @override
   void initState() {

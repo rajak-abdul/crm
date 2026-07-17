@@ -297,12 +297,14 @@ class _DealsShellState extends State<_DealsShell> {
             }
           },
           builder: (ctx, state) {
-            if (state is DealsLoaded) {
+            if (state is DealsLoaded ) {
   _lastLoaded = state;
 
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    _checkMissedFollowups();
-  });
+    if (!PermissionHelper.can('users_roles')) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _checkMissedFollowups();
+      });
+    }
 }
             if (state is DealsLoading && _lastLoaded == null)
               return const LoadingState(message: 'Loading deals…');
@@ -316,6 +318,22 @@ class _DealsShellState extends State<_DealsShell> {
             return const SizedBox.shrink();
           },
         ),
+              floatingActionButton: PermissionHelper.can('users_roles')
+          ? Padding(
+              padding: const EdgeInsets.only(bottom: 60),
+              child:FloatingActionButton(
+              onPressed: () {
+                if (_lastLoaded != null) {
+                  _openCreate(_lastLoaded!.salesUsers);
+                }
+              },
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              child: const Icon(Icons.add),
+              ),
+            )
+          : null,
+    
       );
 }
 
@@ -844,80 +862,69 @@ class _AllDealsViewState extends State<_AllDealsView> {
 Container(
   color: AppColors.surface,
   padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
-  child: _SearchBar(
-    controller: _searchCtrl,
-    hint: 'Search deals...',
-    onChanged: (v) => setState(() {
-      _q = v.toLowerCase();
-      _page = 1;
-    }),
-    onClear: () => setState(() {
-      _q = '';
-      _searchCtrl.clear();
-      _page = 1;
-    }),
+  child: Row(
+    children: [
+      Expanded(
+        child: _SearchBar(
+          controller: _searchCtrl,
+          hint: 'Search deals...',
+          onChanged: (v) => setState(() {
+            _q = v.toLowerCase();
+            _page = 1;
+          }),
+          onClear: () => setState(() {
+            _q = '';
+            _searchCtrl.clear();
+            _page = 1;
+          }),
+        ),
+      ),
+
+      const SizedBox(width: 8),
+
+      // Filter
+      IconButton(
+        tooltip: 'Filter',
+        onPressed: () {
+          // Open your filter drawer / bottom sheet
+          Scaffold.of(context).openEndDrawer();
+        },
+        icon: const Icon(Icons.filter_list_rounded),
+      ),
+
+      // Menu
+      PopupMenuButton<String>(
+        onSelected: (value) {
+          switch (value) {
+            case 'rejected':
+              // Navigator.push(
+              //   context,
+              //   MaterialPageRoute(
+              //     builder: (_) => const RejectedDealsScreen(),
+              //   ),
+              // );
+              break;
+          }
+        },
+        itemBuilder: (_) => const [
+          PopupMenuItem(
+            value: 'rejected',
+            child: Row(
+              children: [
+                Icon(Icons.cancel_outlined,
+                    color: Colors.red, size: 20),
+                SizedBox(width: 10),
+                Text('Rejected Deals'),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ],
   ),
 ),
 
 // Buttons
-Container(
-  color: AppColors.surface,
-  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-  child: Row(
-    children: [
-      Expanded(
-        child: SizedBox(
-  height: 42,
-  child: ElevatedButton.icon(
-    onPressed: () {
-      // Reject Deal
-    },
-    icon: const Icon(
-      Icons.cancel_outlined,
-      size: 18,
-    ),
-    label: const Text(
-      "Reject Deal",
-      style: TextStyle(
-        fontSize: 14,
-        fontWeight: FontWeight.w600,
-      ),
-    ),
-    style: ElevatedButton.styleFrom(
-      elevation: 0,
-      backgroundColor: const Color(0xFFFFF1F2), // Light red
-      foregroundColor: const Color(0xFFDC2626), // Red text & icon
-      shadowColor: Colors.transparent,
-      side: const BorderSide(
-        color: Color(0xFFFCA5A5), // Thin red border
-        width: 1,
-      ),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-      ),
-      padding: const EdgeInsets.symmetric(
-        horizontal: 18,
-        vertical: 12,
-      ),
-    ),
-  ),
-),
-      ),
-      const SizedBox(width: 10),
-      if (PermissionHelper.can('users_roles'))
-        Expanded(
-          child: SizedBox(
-            height: 42,
-            child: ElevatedButton.icon(
-              onPressed: widget.onCreateDeal,
-              icon: const Icon(Icons.add, size: 16),
-              label: const Text("Create Deal"),
-            ),
-          ),
-        ),
-    ],
-  ),
-),
       Container(
           color: AppColors.surface,
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
@@ -1067,6 +1074,7 @@ Container(
           onNext: _page < _totalPages ? () => setState(() => _page += 1) : null,
         ),
     ]);
+    
   }
 }
 
@@ -1247,7 +1255,7 @@ class DealDetailSheet extends StatelessWidget {
   final Deal deal;
   final GlobalKey<ScaffoldMessengerState> _detailMessengerKey =
       GlobalKey<ScaffoldMessengerState>();
-  DealDetailSheet({required this.deal});
+  DealDetailSheet({super.key, required this.deal});
 
   DateTime? _followUpLocal(String? raw) {
     if (raw == null || raw.trim().isEmpty) return null;
@@ -2233,24 +2241,32 @@ class _DealFormModalState extends State<_DealFormModal> {
     if (!mounted) return;
 
     // ── Schedule follow-up (both create + edit) ───────────────
-    if (dealId != null && _followUpDate != null) {
-      final tod = _followUpTime ?? const TimeOfDay(hour: 9, minute: 0);
-      final dt = DateTime(_followUpDate!.year, _followUpDate!.month,
-          _followUpDate!.day, tod.hour, tod.minute);
-      final ok = await cubit.scheduleFollowUp(dealId,
-          followUpDate: dt, comment: _followUpComment.text);
-      if (!ok && mounted) {
-        _showSheetSnack(
-          'Deal saved — follow-up scheduling failed',
-          backgroundColor: AppColors.warning,
-        );
-      }
-    }
+    if (_followUpDate != null && dealId != null) {
+  final tod = _followUpTime ?? const TimeOfDay(hour: 9, minute: 0);
 
-    if (dealId != null) {
-      await cubit.loadDeals();
-    }
+  final dt = DateTime(
+    _followUpDate!.year,
+    _followUpDate!.month,
+    _followUpDate!.day,
+    tod.hour,
+    tod.minute,
+  );
 
+  final ok = await cubit.scheduleFollowUp(
+    dealId,
+    followUpDate: dt,
+    comment: _followUpComment.text,
+  );
+
+  if (!ok && mounted) {
+    _showSheetSnack(
+      'Deal saved — follow-up scheduling failed',
+      backgroundColor: AppColors.warning,
+    );
+  }
+}
+    await cubit.loadDeals();
+  
     if (!mounted) return;
     setState(() => _saving = false);
 

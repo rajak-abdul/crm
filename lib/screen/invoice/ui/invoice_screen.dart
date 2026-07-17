@@ -264,8 +264,9 @@ Future<void> _checkMissedFollowups() async {
       ),
       body: BlocBuilder<InvoiceCubit, InvoiceState>(
         builder: (ctx, state) {
-          if (state is InvoiceLoading)
+          if (state is InvoiceLoading) {
             return const LoadingState(message: 'Loading invoices…');
+          }
           if (state is InvoiceError) {
             return ErrorState(
               message: state.message,
@@ -274,9 +275,11 @@ Future<void> _checkMissedFollowups() async {
           }
           if (state is InvoiceLoaded) {
             final filtered = _filtered(state.invoices);
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-    _checkMissedFollowups();
-  });
+              if (!PermissionHelper.can('users_roles')) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _checkMissedFollowups();
+      });
+    }
             return Column(
               children: [
                 _SummaryCarousel(
