@@ -1,6 +1,6 @@
 import 'package:crm_app/modals/followup_model.dart';
 import 'package:crm_app/screen/deals/cubit/deals_cubit.dart';
-import 'package:crm_app/screen/deals/ui/deal_screen.dart' show DealsScreen, DealDetailSheet;
+import 'package:crm_app/screen/deals/ui/deal_detail_sheet.dart';
 import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
 import 'package:crm_app/screen/leads/ui/lead_screen.dart';
 import 'package:crm_app/thems/app_themes.dart';

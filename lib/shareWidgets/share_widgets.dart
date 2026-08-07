@@ -73,32 +73,90 @@ import 'package:flutter/services.dart';
  
  // ─── Section Header ────────────────────────────────────────────
  class SectionHeader extends StatelessWidget {
-   final String title;
-   final IconData icon;
-   const SectionHeader({super.key, required this.title, required this.icon});
- 
-   @override
-   Widget build(BuildContext context) => Padding(
-         padding: const EdgeInsets.only(bottom: 14, top: 4),
-         child: Row(children: [
-           Container(
-               padding: const EdgeInsets.all(6),
-               decoration: BoxDecoration(
-                   color: AppColors.primaryLight,
-                   borderRadius: BorderRadius.circular(8)),
-               child: Icon(icon, size: 16, color: AppColors.primary)),
-           const SizedBox(width: 10),
-           Text(title,
-               style: const TextStyle(
-                   fontSize: 14,
-                   fontWeight: FontWeight.w700,
-                   color: AppColors.textPrimary)),
-           const SizedBox(width: 10),
-           const Expanded(
-               child: Divider(color: AppColors.divider, thickness: 1.5)),
-         ]),
-       );
- }
+  final String title;
+  final IconData icon;
+  final VoidCallback? onAddField;
+
+  const SectionHeader({
+    super.key,
+    required this.title,
+    required this.icon,
+    this.onAddField,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14, top: 4),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: AppColors.primaryLight,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              icon,
+              size: 16,
+              color: AppColors.primary,
+            ),
+          ),
+          const SizedBox(width: 10),
+
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textPrimary,
+            ),
+          ),
+
+          const SizedBox(width: 10),
+
+          const Expanded(
+            child: Divider(
+              color: AppColors.divider,
+              thickness: 1.5,
+            ),
+          ),
+
+          if (onAddField != null) ...[
+            const SizedBox(width: 10),
+            OutlinedButton.icon(
+              onPressed: onAddField,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.primary,
+                side: const BorderSide(
+                  color: AppColors.primary,
+                ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+              icon: const Icon(
+                Icons.add_circle_outline,
+                size: 16,
+              ),
+              label: const Text(
+                "Add Field",
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
  
  // ─── CRM Text Field ────────────────────────────────────────────
  class CrmTextField extends StatelessWidget {

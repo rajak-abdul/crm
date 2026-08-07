@@ -18,6 +18,26 @@ class Invoice {
   final DateTime createdAt;
   final DateTime updatedAt;
   final bool isLocal;
+  final double amountPaid;
+  final DateTime? paidAt;
+  final DateTime? emailSentAt;
+
+  final String preferredCurrency;
+  final double preferredCurrencyValue;
+
+  final String billingAddress;
+  final String clientTaxId;
+  final String poNumber;
+  final String clientState;
+
+  final List<dynamic> customFields;
+
+  // Deal information
+  final String dealPhone;
+  final String dealEmail;
+  final String companyName;
+  final String dealAddress;
+  final String dealCountry;
 
   const Invoice({
     required this.id,
@@ -40,6 +60,21 @@ class Invoice {
     required this.createdAt,
     required this.updatedAt,
     this.isLocal = false,
+    required this.amountPaid,
+    this.paidAt,
+    this.emailSentAt,
+    required this.preferredCurrency,
+    required this.preferredCurrencyValue,
+    required this.billingAddress,
+    required this.clientTaxId,
+    required this.poNumber,
+    required this.clientState,
+    required this.customFields,
+    required this.dealPhone,
+    required this.dealEmail,
+    required this.companyName,
+    required this.dealAddress,
+    required this.dealCountry,
   });
 
   // ── UI display values (Title case) ──────────────────────────────
@@ -48,15 +83,21 @@ class Invoice {
 
   /// "paid" → "Paid", "unpaid" → "Unpaid", already cased → unchanged
   static String normaliseStatus(String s) {
-    switch (s.toLowerCase().trim()) {
-      case 'paid':
-        return 'Paid';
-      case 'unpaid':
-        return 'Unpaid';
-      default:
-        return s.isEmpty ? 'Unpaid' : s;
-    }
+  switch (s.toLowerCase().trim()) {
+    case 'paid':
+      return 'Paid';
+
+    case 'unpaid':
+      return 'Unpaid';
+
+    case 'partially_paid':
+    case 'partially paid':
+      return 'Partially Paid';
+
+    default:
+      return s;
   }
+}
 
   /// "fixed" → "Fixed Amount", "percentage" → "Percentage",
   /// "none"/"zero"/"" → fallback
@@ -139,6 +180,11 @@ class Invoice {
       (inrAmount != null && inrAmount! > 0) ||
       currency.toUpperCase().trim() == 'INR';
 
+  /// Remaining balance after what's been paid so far.
+  double get balanceDue => (total - amountPaid).clamp(0, double.infinity);
+
+  bool get isFullyPaid => amountPaid >= total && total > 0;
+
   // ── Helpers ─────────────────────────────────────────────────────
   static String _s(dynamic v, [String fb = '']) =>
       v == null ? fb : v.toString();
@@ -146,6 +192,13 @@ class Invoice {
     if (v == null) return null;
     if (v is num) return v.toDouble();
     return double.tryParse(v.toString().replaceAll(',', ''));
+  }
+
+  static DateTime? _dt(dynamic v) {
+    if (v == null) return null;
+    final s = v.toString().trim();
+    if (s.isEmpty) return null;
+    return DateTime.tryParse(s);
   }
 
   // ── fromMap (local SQLite) ───────────────────────────────────────
@@ -174,6 +227,21 @@ class Invoice {
             ? DateTime.tryParse(m['updatedAt'].toString()) ?? DateTime.now()
             : DateTime.now(),
         isLocal: (m['isLocal'] as int? ?? 0) == 1,
+        amountPaid: _d(m['amountPaid']) ?? 0,
+        paidAt: _dt(m['paidAt']),
+        emailSentAt: _dt(m['emailSentAt']),
+        preferredCurrency: _s(m['preferredCurrency'], _s(m['currency'], 'INR')),
+        preferredCurrencyValue: _d(m['preferredCurrencyValue']) ?? 0,
+        billingAddress: _s(m['billingAddress']),
+        clientTaxId: _s(m['clientTaxId']),
+        poNumber: _s(m['poNumber']),
+        clientState: _s(m['clientState']),
+        customFields: (m['customFields'] is List) ? m['customFields'] as List : const [],
+        dealPhone: _s(m['dealPhone']),
+        dealEmail: _s(m['dealEmail']),
+        companyName: _s(m['companyName']),
+        dealAddress: _s(m['dealAddress']),
+        dealCountry: _s(m['dealCountry']),
       );
 
   // ── fromJson (API response) ──────────────────────────────────────
@@ -192,6 +260,12 @@ class Invoice {
     // deal — from items[0].deal or top-level dealId/dealName
     String dealId = '';
     String dealName = '';
+    String dealPhone = '';
+    String dealEmail = '';
+    String companyName = '';
+    String dealAddress = '';
+    String dealCountry = '';
+
     final items = j['items'];
     if (items is List && items.isNotEmpty && items.first is Map) {
       final firstItem = items.first as Map;
@@ -200,6 +274,11 @@ class Invoice {
         dealId = _s(rawDeal['_id'] ?? rawDeal['id']);
         dealName =
             _s(rawDeal['dealName'] ?? rawDeal['name'] ?? rawDeal['title']);
+        dealPhone = _s(rawDeal['phoneNumber'] ?? rawDeal['phone']);
+        dealEmail = _s(rawDeal['email']);
+        companyName = _s(rawDeal['companyName'] ?? rawDeal['company']);
+        dealAddress = _s(rawDeal['address']);
+        dealCountry = _s(rawDeal['country']);
       } else if (rawDeal != null) {
         dealId = rawDeal.toString();
       }
@@ -211,6 +290,11 @@ class Invoice {
         dealId = _s(rawDeal['_id'] ?? rawDeal['id']);
         dealName =
             _s(rawDeal['dealName'] ?? rawDeal['name'] ?? rawDeal['title']);
+        dealPhone = _s(rawDeal['phoneNumber'] ?? rawDeal['phone']);
+        dealEmail = _s(rawDeal['email']);
+        companyName = _s(rawDeal['companyName'] ?? rawDeal['company']);
+        dealAddress = _s(rawDeal['address']);
+        dealCountry = _s(rawDeal['country']);
       } else {
         dealId = _s(j['dealId'] ?? j['deal_id'] ?? '');
         dealName = _s(j['dealName'] ?? j['deal_name'] ?? '');
@@ -319,6 +403,21 @@ class Invoice {
           ? DateTime.tryParse(j['updatedAt'].toString()) ?? DateTime.now()
           : DateTime.now(),
       isLocal: false,
+      amountPaid: _d(j['amountPaid']) ?? 0,
+      paidAt: _dt(j['paidAt']),
+      emailSentAt: _dt(j['emailSentAt']),
+      preferredCurrency: _s(j['preferredCurrency'], currency),
+      preferredCurrencyValue: _d(j['preferredCurrencyValue']) ?? 0,
+      billingAddress: _s(j['billingAddress']),
+      clientTaxId: _s(j['clientTaxId']),
+      poNumber: _s(j['poNumber']),
+      clientState: _s(j['clientState']),
+      customFields: (j['customFields'] is List) ? j['customFields'] as List : const [],
+      dealPhone: dealPhone,
+      dealEmail: dealEmail,
+      companyName: companyName,
+      dealAddress: dealAddress,
+      dealCountry: dealCountry,
     );
   }
 
@@ -336,6 +435,21 @@ class Invoice {
         'price': price,
         'notes': notes,
         'currency': currency,
+        'amountPaid': amountPaid,
+        'paidAt': paidAt?.toIso8601String(),
+        'emailSentAt': emailSentAt?.toIso8601String(),
+        'preferredCurrency': preferredCurrency,
+        'preferredCurrencyValue': preferredCurrencyValue,
+        'billingAddress': billingAddress,
+        'clientTaxId': clientTaxId,
+        'poNumber': poNumber,
+        'clientState': clientState,
+        'customFields': customFields,
+        'dealPhone': dealPhone,
+        'dealEmail': dealEmail,
+        'companyName': companyName,
+        'dealAddress': dealAddress,
+        'dealCountry': dealCountry,
       };
 
   Invoice copyWith({
@@ -355,6 +469,21 @@ class Invoice {
     double? inrAmount,
     double? exchangeRate,
     bool? isLocal,
+    double? amountPaid,
+    DateTime? paidAt,
+    DateTime? emailSentAt,
+    String? preferredCurrency,
+    double? preferredCurrencyValue,
+    String? billingAddress,
+    String? clientTaxId,
+    String? poNumber,
+    String? clientState,
+    List<dynamic>? customFields,
+    String? dealPhone,
+    String? dealEmail,
+    String? companyName,
+    String? dealAddress,
+    String? dealCountry,
   }) =>
       Invoice(
         id: id,
@@ -377,6 +506,22 @@ class Invoice {
         currency: currency ?? this.currency,
         inrAmount: inrAmount ?? this.inrAmount,
         exchangeRate: exchangeRate ?? this.exchangeRate,
+        amountPaid: amountPaid ?? this.amountPaid,
+        paidAt: paidAt ?? this.paidAt,
+        emailSentAt: emailSentAt ?? this.emailSentAt,
+        preferredCurrency: preferredCurrency ?? this.preferredCurrency,
+        preferredCurrencyValue:
+            preferredCurrencyValue ?? this.preferredCurrencyValue,
+        billingAddress: billingAddress ?? this.billingAddress,
+        clientTaxId: clientTaxId ?? this.clientTaxId,
+        poNumber: poNumber ?? this.poNumber,
+        clientState: clientState ?? this.clientState,
+        customFields: customFields ?? this.customFields,
+        dealPhone: dealPhone ?? this.dealPhone,
+        dealEmail: dealEmail ?? this.dealEmail,
+        companyName: companyName ?? this.companyName,
+        dealAddress: dealAddress ?? this.dealAddress,
+        dealCountry: dealCountry ?? this.dealCountry,
       );
 }
 

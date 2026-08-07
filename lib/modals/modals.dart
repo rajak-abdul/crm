@@ -85,17 +85,23 @@ class StatusHistoryEntry {
 class FollowUpNote {
   final String id;
   final String note;
+  final String? audioPath;
+  final String? audioName;
   final DateTime? createdAt;
 
   const FollowUpNote({
     required this.id,
     required this.note,
+    this.audioPath,
+    this.audioName,
     this.createdAt,
   });
 
   factory FollowUpNote.fromJson(Map<String, dynamic> j) => FollowUpNote(
         id: (j['_id'] ?? '').toString(),
         note: (j['note'] ?? '').toString(),
+        audioPath: j['audioPath']?.toString(),
+        audioName: j['audioName']?.toString(),
         createdAt: j['createdAt'] != null
             ? DateTime.tryParse(j['createdAt'].toString())
             : null,
@@ -104,7 +110,79 @@ class FollowUpNote {
   Map<String, dynamic> toJson() => {
         '_id': id,
         'note': note,
-        if (createdAt != null) 'createdAt': createdAt!.toIso8601String(),
+        'audioPath': audioPath,
+        'audioName': audioName,
+        if (createdAt != null)
+          'createdAt': createdAt!.toIso8601String(),
+      };
+}
+
+/// Admin-configured dynamic field on a lead, grouped for display by [cardTitle].
+class CustomField {
+  final String id;
+  final String cardTitle;
+  final String name;
+  final String type;
+  final List<String> options;
+   String value;
+
+   CustomField({
+    required this.id,
+    this.cardTitle = '',
+    required this.name,
+    this.type = 'text',
+    this.options = const [],
+    this.value = '',
+  });
+
+  factory CustomField.fromJson(Map<String, dynamic> j) => CustomField(
+        id: (j['_id'] ?? '').toString(),
+        cardTitle: (j['cardTitle'] ?? '').toString(),
+        name: (j['name'] ?? '').toString(),
+        type: (j['type'] ?? 'text').toString(),
+        options: (j['options'] as List?)?.map((e) => e.toString()).toList() ??
+            const [],
+        value: (j['value'] ?? '').toString(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        '_id': id,
+        'cardTitle': cardTitle,
+        'name': name,
+        'type': type,
+        'options': options,
+        'value': value,
+      };
+}
+
+/// Metadata for leads captured via Facebook/Instagram lead-gen ads.
+class LeadMeta {
+  final String? leadgenId;
+  final String? pageId;
+  final String? formId;
+  final Map<String, dynamic> rawFields;
+
+  const LeadMeta({
+    this.leadgenId,
+    this.pageId,
+    this.formId,
+    this.rawFields = const {},
+  });
+
+  factory LeadMeta.fromJson(Map<String, dynamic> j) => LeadMeta(
+        leadgenId: j['leadgenId']?.toString(),
+        pageId: j['pageId']?.toString(),
+        formId: j['formId']?.toString(),
+        rawFields: j['rawFields'] is Map
+            ? Map<String, dynamic>.from(j['rawFields'] as Map)
+            : const {},
+      );
+
+  Map<String, dynamic> toJson() => {
+        'leadgenId': leadgenId,
+        'pageId': pageId,
+        'formId': formId,
+        'rawFields': rawFields,
       };
 }
 
@@ -144,6 +222,37 @@ class Lead {
   final DateTime? rejectedAt;
   final UserRef? convertedBy;
 
+  final String alternatePhoneNumber;
+  final String alternateEmail;
+  final String? sourceId;
+  final String city;
+  final String state;
+  final String pincode;
+  final int? numberOfEmployees;
+  final double? latitude;
+  final double? longitude;
+  final bool trash;
+  final DateTime? trashedAt;
+  final bool taskAdminActivityDismissed;
+  final bool targetAdminActivityDismissed;
+  final DateTime? emailSentAt;
+  final UserRef? notesUpdatedBy;
+  final DateTime? notesUpdatedAt;
+  final String? instagramUsername;
+  final String? linkedinLeadId;
+  final String? linkedinCampaignId;
+  final String? linkedinCampaignName;
+  final String? linkedinFormId;
+  final String? linkedinFormName;
+  final List<CustomField> customFields;
+  final List<Map<String, dynamic>> assignmentHistory;
+  final List<Map<String, dynamic>> notesHistory;
+  final List<Map<String, dynamic>> followUpNotesHistory;
+  final LeadMeta? meta;
+  final UserRef? createdBy;
+  final UserRef? lastUpdatedBy;
+  final DateTime? lastUpdatedAt;
+
   const Lead({
     this.assignedToId,
     this.assignedToEmail,
@@ -174,6 +283,36 @@ class Lead {
     this.rejectedBy,
     this.rejectedAt,
     this.convertedBy,
+    this.alternatePhoneNumber = '',
+    this.alternateEmail = '',
+    this.sourceId,
+    this.city = '',
+    this.state = '',
+    this.pincode = '',
+    this.numberOfEmployees,
+    this.latitude,
+    this.longitude,
+    this.trash = false,
+    this.trashedAt,
+    this.taskAdminActivityDismissed = false,
+    this.targetAdminActivityDismissed = false,
+    this.emailSentAt,
+    this.notesUpdatedBy,
+    this.notesUpdatedAt,
+    this.instagramUsername,
+    this.linkedinLeadId,
+    this.linkedinCampaignId,
+    this.linkedinCampaignName,
+    this.linkedinFormId,
+    this.linkedinFormName,
+    this.customFields = const [],
+    this.assignmentHistory = const [],
+    this.notesHistory = const [],
+    this.followUpNotesHistory = const [],
+    this.meta,
+    this.createdBy,
+    this.lastUpdatedBy,
+    this.lastUpdatedAt,
   });
 
   static String _s(dynamic v, [String fallback = '']) =>
@@ -269,7 +408,68 @@ class Lead {
             ? DateTime.tryParse(j['rejectedAt'].toString())
             : null,
         convertedBy: UserRef.tryParse(j['convertedBy']),
-      
+        alternatePhoneNumber: _s(j['alternatePhoneNumber']),
+        alternateEmail: _s(j['alternateEmail']),
+        sourceId: j['sourceId']?.toString(),
+        city: _s(j['city']),
+        state: _s(j['state']),
+        pincode: _s(j['pincode']),
+        numberOfEmployees: (j['NumberOfEmployees'] ?? j['numberOfEmployees']) is num
+            ? ((j['NumberOfEmployees'] ?? j['numberOfEmployees']) as num).toInt()
+            : null,
+        latitude: (j['latitude'] as num?)?.toDouble(),
+        longitude: (j['longitude'] as num?)?.toDouble(),
+        trash: j['trash'] is bool ? j['trash'] as bool : false,
+        trashedAt: j['trashedAt'] != null
+            ? DateTime.tryParse(j['trashedAt'].toString())
+            : null,
+        taskAdminActivityDismissed: j['taskAdminActivityDismissed'] is bool
+            ? j['taskAdminActivityDismissed'] as bool
+            : false,
+        targetAdminActivityDismissed: j['targetAdminActivityDismissed'] is bool
+            ? j['targetAdminActivityDismissed'] as bool
+            : false,
+        emailSentAt: j['emailSentAt'] != null
+            ? DateTime.tryParse(j['emailSentAt'].toString())
+            : null,
+        notesUpdatedBy: UserRef.tryParse(j['notesUpdatedBy']),
+        notesUpdatedAt: j['notesUpdatedAt'] != null
+            ? DateTime.tryParse(j['notesUpdatedAt'].toString())
+            : null,
+        instagramUsername: j['instagramUsername']?.toString(),
+        linkedinLeadId: j['linkedinLeadId']?.toString(),
+        linkedinCampaignId: j['linkedinCampaignId']?.toString(),
+        linkedinCampaignName: j['linkedinCampaignName']?.toString(),
+        linkedinFormId: j['linkedinFormId']?.toString(),
+        linkedinFormName: j['linkedinFormName']?.toString(),
+        customFields: (j['customFields'] as List?)
+                ?.whereType<Map>()
+                .map((e) => CustomField.fromJson(Map<String, dynamic>.from(e)))
+                .toList() ??
+            const [],
+        assignmentHistory: (j['assignmentHistory'] as List?)
+                ?.whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e))
+                .toList() ??
+            const [],
+        notesHistory: (j['notesHistory'] as List?)
+                ?.whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e))
+                .toList() ??
+            const [],
+        followUpNotesHistory: (j['followUpNotesHistory'] as List?)
+                ?.whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e))
+                .toList() ??
+            const [],
+        meta: j['meta'] is Map
+            ? LeadMeta.fromJson(Map<String, dynamic>.from(j['meta'] as Map))
+            : null,
+        createdBy: UserRef.tryParse(j['createdBy']),
+        lastUpdatedBy: UserRef.tryParse(j['lastUpdatedBy']),
+        lastUpdatedAt: j['lastUpdatedAt'] != null
+            ? DateTime.tryParse(j['lastUpdatedAt'].toString())
+            : null,
       );
 
   factory Lead.fromMap(Map<String, dynamic> map) {
@@ -335,6 +535,48 @@ class Lead {
       return null;
     }
 
+    List<CustomField> decodeCustomFields(dynamic raw) {
+      if (raw is String && raw.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(raw);
+          if (decoded is List) {
+            return decoded
+                .whereType<Map>()
+                .map((e) => CustomField.fromJson(Map<String, dynamic>.from(e)))
+                .toList();
+          }
+        } catch (_) {}
+      }
+      return const [];
+    }
+
+    List<Map<String, dynamic>> decodeMapList(dynamic raw) {
+      if (raw is String && raw.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(raw);
+          if (decoded is List) {
+            return decoded
+                .whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e))
+                .toList();
+          }
+        } catch (_) {}
+      }
+      return const [];
+    }
+
+    LeadMeta? decodeMeta(dynamic raw) {
+      if (raw is String && raw.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(raw);
+          if (decoded is Map) {
+            return LeadMeta.fromJson(Map<String, dynamic>.from(decoded));
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+
     return Lead(
       id: map['id']?.toString() ?? '',
       name: map['name']?.toString() ?? '',
@@ -375,6 +617,46 @@ class Lead {
           ? DateTime.tryParse(map['rejectedAt'].toString())
           : null,
       convertedBy: decodeUserRef(map['convertedBy']),
+      alternatePhoneNumber: map['alternatePhoneNumber']?.toString() ?? '',
+      alternateEmail: map['alternateEmail']?.toString() ?? '',
+      sourceId: map['sourceId']?.toString(),
+      city: map['city']?.toString() ?? '',
+      state: map['state']?.toString() ?? '',
+      pincode: map['pincode']?.toString() ?? '',
+      numberOfEmployees: (map['numberOfEmployees'] as num?)?.toInt(),
+      latitude: (map['latitude'] as num?)?.toDouble(),
+      longitude: (map['longitude'] as num?)?.toDouble(),
+      trash: (map['trash'] as int? ?? 0) == 1,
+      trashedAt: map['trashedAt'] != null
+          ? DateTime.tryParse(map['trashedAt'].toString())
+          : null,
+      taskAdminActivityDismissed:
+          (map['taskAdminActivityDismissed'] as int? ?? 0) == 1,
+      targetAdminActivityDismissed:
+          (map['targetAdminActivityDismissed'] as int? ?? 0) == 1,
+      emailSentAt: map['emailSentAt'] != null
+          ? DateTime.tryParse(map['emailSentAt'].toString())
+          : null,
+      notesUpdatedBy: decodeUserRef(map['notesUpdatedBy']),
+      notesUpdatedAt: map['notesUpdatedAt'] != null
+          ? DateTime.tryParse(map['notesUpdatedAt'].toString())
+          : null,
+      instagramUsername: map['instagramUsername']?.toString(),
+      linkedinLeadId: map['linkedinLeadId']?.toString(),
+      linkedinCampaignId: map['linkedinCampaignId']?.toString(),
+      linkedinCampaignName: map['linkedinCampaignName']?.toString(),
+      linkedinFormId: map['linkedinFormId']?.toString(),
+      linkedinFormName: map['linkedinFormName']?.toString(),
+      customFields: decodeCustomFields(map['customFields']),
+      assignmentHistory: decodeMapList(map['assignmentHistory']),
+      notesHistory: decodeMapList(map['notesHistory']),
+      followUpNotesHistory: decodeMapList(map['followUpNotesHistory']),
+      meta: decodeMeta(map['meta']),
+      createdBy: decodeUserRef(map['createdBy']),
+      lastUpdatedBy: decodeUserRef(map['lastUpdatedBy']),
+      lastUpdatedAt: map['lastUpdatedAt'] != null
+          ? DateTime.tryParse(map['lastUpdatedAt'].toString())
+          : null,
     );
   }
 
@@ -411,7 +693,39 @@ class Lead {
         'rejectedAt': rejectedAt?.toIso8601String(),
         'convertedBy':
             convertedBy != null ? jsonEncode(convertedBy!.toJson()) : null,
-
+        'alternatePhoneNumber': alternatePhoneNumber,
+        'alternateEmail': alternateEmail,
+        'sourceId': sourceId,
+        'city': city,
+        'state': state,
+        'pincode': pincode,
+        'numberOfEmployees': numberOfEmployees,
+        'latitude': latitude,
+        'longitude': longitude,
+        'trash': trash ? 1 : 0,
+        'trashedAt': trashedAt?.toIso8601String(),
+        'taskAdminActivityDismissed': taskAdminActivityDismissed ? 1 : 0,
+        'targetAdminActivityDismissed': targetAdminActivityDismissed ? 1 : 0,
+        'emailSentAt': emailSentAt?.toIso8601String(),
+        'notesUpdatedBy':
+            notesUpdatedBy != null ? jsonEncode(notesUpdatedBy!.toJson()) : null,
+        'notesUpdatedAt': notesUpdatedAt?.toIso8601String(),
+        'instagramUsername': instagramUsername,
+        'linkedinLeadId': linkedinLeadId,
+        'linkedinCampaignId': linkedinCampaignId,
+        'linkedinCampaignName': linkedinCampaignName,
+        'linkedinFormId': linkedinFormId,
+        'linkedinFormName': linkedinFormName,
+        'customFields':
+            jsonEncode(customFields.map((c) => c.toJson()).toList()),
+        'assignmentHistory': jsonEncode(assignmentHistory),
+        'notesHistory': jsonEncode(notesHistory),
+        'followUpNotesHistory': jsonEncode(followUpNotesHistory),
+        'meta': meta != null ? jsonEncode(meta!.toJson()) : null,
+        'createdBy': createdBy != null ? jsonEncode(createdBy!.toJson()) : null,
+        'lastUpdatedBy':
+            lastUpdatedBy != null ? jsonEncode(lastUpdatedBy!.toJson()) : null,
+        'lastUpdatedAt': lastUpdatedAt?.toIso8601String(),
       };
 
   Map<String, dynamic> toJson() => {
@@ -461,6 +775,36 @@ class Lead {
     UserRef? rejectedBy,
     DateTime? rejectedAt,
     UserRef? convertedBy,
+    String? alternatePhoneNumber,
+    String? alternateEmail,
+    String? sourceId,
+    String? city,
+    String? state,
+    String? pincode,
+    int? numberOfEmployees,
+    double? latitude,
+    double? longitude,
+    bool? trash,
+    DateTime? trashedAt,
+    bool? taskAdminActivityDismissed,
+    bool? targetAdminActivityDismissed,
+    DateTime? emailSentAt,
+    UserRef? notesUpdatedBy,
+    DateTime? notesUpdatedAt,
+    String? instagramUsername,
+    String? linkedinLeadId,
+    String? linkedinCampaignId,
+    String? linkedinCampaignName,
+    String? linkedinFormId,
+    String? linkedinFormName,
+    List<CustomField>? customFields,
+    List<Map<String, dynamic>>? assignmentHistory,
+    List<Map<String, dynamic>>? notesHistory,
+    List<Map<String, dynamic>>? followUpNotesHistory,
+    LeadMeta? meta,
+    UserRef? createdBy,
+    UserRef? lastUpdatedBy,
+    DateTime? lastUpdatedAt,
   }) =>
       Lead(
         id: id ?? this.id,
@@ -492,6 +836,38 @@ class Lead {
         rejectedBy: rejectedBy ?? this.rejectedBy,
         rejectedAt: rejectedAt ?? this.rejectedAt,
         convertedBy: convertedBy ?? this.convertedBy,
+        alternatePhoneNumber: alternatePhoneNumber ?? this.alternatePhoneNumber,
+        alternateEmail: alternateEmail ?? this.alternateEmail,
+        sourceId: sourceId ?? this.sourceId,
+        city: city ?? this.city,
+        state: state ?? this.state,
+        pincode: pincode ?? this.pincode,
+        numberOfEmployees: numberOfEmployees ?? this.numberOfEmployees,
+        latitude: latitude ?? this.latitude,
+        longitude: longitude ?? this.longitude,
+        trash: trash ?? this.trash,
+        trashedAt: trashedAt ?? this.trashedAt,
+        taskAdminActivityDismissed:
+            taskAdminActivityDismissed ?? this.taskAdminActivityDismissed,
+        targetAdminActivityDismissed:
+            targetAdminActivityDismissed ?? this.targetAdminActivityDismissed,
+        emailSentAt: emailSentAt ?? this.emailSentAt,
+        notesUpdatedBy: notesUpdatedBy ?? this.notesUpdatedBy,
+        notesUpdatedAt: notesUpdatedAt ?? this.notesUpdatedAt,
+        instagramUsername: instagramUsername ?? this.instagramUsername,
+        linkedinLeadId: linkedinLeadId ?? this.linkedinLeadId,
+        linkedinCampaignId: linkedinCampaignId ?? this.linkedinCampaignId,
+        linkedinCampaignName: linkedinCampaignName ?? this.linkedinCampaignName,
+        linkedinFormId: linkedinFormId ?? this.linkedinFormId,
+        linkedinFormName: linkedinFormName ?? this.linkedinFormName,
+        customFields: customFields ?? this.customFields,
+        assignmentHistory: assignmentHistory ?? this.assignmentHistory,
+        notesHistory: notesHistory ?? this.notesHistory,
+        followUpNotesHistory: followUpNotesHistory ?? this.followUpNotesHistory,
+        meta: meta ?? this.meta,
+        createdBy: createdBy ?? this.createdBy,
+        lastUpdatedBy: lastUpdatedBy ?? this.lastUpdatedBy,
+        lastUpdatedAt: lastUpdatedAt ?? this.lastUpdatedAt,
       );
 }
 

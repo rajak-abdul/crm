@@ -33,31 +33,56 @@ import 'package:crm_app/utils/permission_helper.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class InvoiceCubit extends Cubit<InvoiceState> {
-  static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
   static const MethodChannel _downloadsChannel = MethodChannel('crm/downloads');
-  late final Dio _dio;
+
+  late Dio _dio;
   final Map<String, double> _rateCache = {};
+  final Set<String> _sendingEmails = {};
+
+bool isSendingEmail(String invoiceId) =>
+    _sendingEmails.contains(invoiceId);
 
   InvoiceCubit() : super(InvoiceInitial()) {
-    _dio = Dio(BaseOptions(
-      baseUrl: _base,
-      connectTimeout: const Duration(seconds: 20),
-      receiveTimeout: const Duration(seconds: 20),
-    ));
-    _dio.interceptors.add(InterceptorsWrapper(
-      onRequest: (opt, handler) async {
-        final p = await SharedPreferences.getInstance();
-        final t = p.getString('token');
-        if (t != null) opt.headers['Authorization'] = 'Bearer $t';
-        handler.next(opt);
-      },
-    ));
+    _initDio();
   }
+ 
+bool _dioReady = false;
+
+Future<void> _ensureDio() async {
+  if (!_dioReady) {
+    await _initDio();
+  }
+}
+
+
+Future<void> _initDio() async {
+  final prefs = await SharedPreferences.getInstance();
+
+  final token = prefs.getString('token') ?? '';
+  final slug = prefs.getString('tenant_slug') ?? '';
+
+  _dio = Dio(
+    BaseOptions(
+      baseUrl: 'https://crm-backend-api.techzarinfo.cloud/$slug/api',
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+    ),
+  );
+
+  _dioReady = true;
+
+  debugPrint("Invoice Base URL => ${_dio.options.baseUrl}");
+}
+
 
   // ─────────────────────────────────────────────────────────────
   // LOAD
   // ─────────────────────────────────────────────────────────────
   Future<void> load() async {
+    await _ensureDio();
     emit(InvoiceLoading());
 
     // Permissions + current user (used to scope invoice visibility)
@@ -165,6 +190,7 @@ class InvoiceCubit extends Cubit<InvoiceState> {
     if (ccy.isEmpty || ccy == 'INR') return 1;
     // if (_rateCache.containsKey(ccy)) return _rateCache[ccy];
     try {
+      await _ensureDio();
       final res = await _dio.get('/invoices/exchange-rate/$ccy');
       final rate = double.tryParse(res.data?['rate']?.toString() ?? '');
       if (rate != null && rate > 0) {
@@ -180,6 +206,7 @@ class InvoiceCubit extends Cubit<InvoiceState> {
   // ─────────────────────────────────────────────────────────────
   Future<Invoice?> getById(String id) async {
     try {
+      await _ensureDio();
       final res = await _dio.get('/Invoices/getSingle/$id');
       return _parseOne(res.data);
     } catch (_) {
@@ -190,23 +217,30 @@ class InvoiceCubit extends Cubit<InvoiceState> {
   // ─────────────────────────────────────────────────────────────
   // DOWNLOAD
   // ─────────────────────────────────────────────────────────────
-  String downloadUrl(String id) => '$_base/invoices/download/$id';
+  String downloadUrl(String id) => '${_dio.options.baseUrl}/invoices/download/$id';
+  
 
   Future<String?> downloadInvoicePdf(String id,
       {required String fileName}) async {
     try {
+      await _ensureDio();
+      final prefs = await SharedPreferences.getInstance();
+final slug = prefs.getString('tenant_slug') ?? ''; 
       final safeName =
           fileName.trim().isEmpty ? 'invoice_$id' : fileName.trim();
+          debugPrint("BASE URL: ${_dio.options.baseUrl}");
+debugPrint("PATH: /invoices/download/$id");
+debugPrint("FULL URL: ${_dio.options.baseUrl}/invoices/download/$id");
       final response = await _dio.get<List<int>>(
-        '/invoices/download/$id',
-        options: Options(responseType: ResponseType.bytes),
-      );
+  '/invoices/download/$id',
+  options: Options(responseType: ResponseType.bytes),
+);
       final data = response.data;
       if (data == null || data.isEmpty) {
         return 'Empty invoice file received.';
       }
       if (Platform.isAndroid) {
-        await _downloadsChannel.invokeMethod<String>(
+        final result = await _downloadsChannel.invokeMethod<String>(
           'saveToDownloads',
           <String, dynamic>{
             'fileName': '$safeName.pdf',
@@ -214,6 +248,7 @@ class InvoiceCubit extends Cubit<InvoiceState> {
             'mimeType': 'application/pdf',
           },
         );
+        debugPrint("result{$result}");
       } else {
         await FileSaver.instance.saveFile(
           name: safeName,
@@ -224,6 +259,10 @@ class InvoiceCubit extends Cubit<InvoiceState> {
       }
       return null;
     } on DioException catch (e) {
+        debugPrint("STATUS: ${e.response?.statusCode}");
+  debugPrint("DATA: ${e.response?.data}");
+  debugPrint("URI: ${e.requestOptions.uri}");
+
       return _dioMsg(e);
     } on PlatformException catch (e) {
       return e.message ?? e.code;
@@ -236,6 +275,7 @@ class InvoiceCubit extends Cubit<InvoiceState> {
   // CREATE
   // ─────────────────────────────────────────────────────────────
   Future<String?> createInvoice(Map<String, dynamic> data) async {
+    await _ensureDio();
     final normalizedData = _normalizeCreateDataForUi(data);
     print("CREATE INVOICE DATA => $data");
     print("PRICE BEFORE API => ${data['price']}");
@@ -246,6 +286,7 @@ class InvoiceCubit extends Cubit<InvoiceState> {
     final prevState = state;
 
     try {
+      await _ensureDio();
       final res = await _dio.post(
         '/Invoices/createinvoice',
         data: _toApiBody(normalizedData),
@@ -283,6 +324,7 @@ class InvoiceCubit extends Cubit<InvoiceState> {
   // UPDATE
   // ─────────────────────────────────────────────────────────────
   Future<String?> updateInvoice(String id, Map<String, dynamic> data) async {
+    await _ensureDio();
     final prevState = state;
 
     if (state is InvoiceLoaded) {
@@ -315,6 +357,19 @@ class InvoiceCubit extends Cubit<InvoiceState> {
           price: (data['price'] as num?)?.toDouble(),
           notes: data['notes']?.toString(),
           currency: data['currency']?.toString(),
+          amountPaid: (data['amountPaid'] as num?)?.toDouble(),
+          paidAt: _parseDateField(data['paidAt']),
+          emailSentAt: _parseDateField(data['emailSentAt']),
+          preferredCurrency: data['preferredCurrency']?.toString(),
+          preferredCurrencyValue:
+              (data['preferredCurrencyValue'] as num?)?.toDouble(),
+          billingAddress: data['billingAddress']?.toString(),
+          clientTaxId: data['clientTaxId']?.toString(),
+          poNumber: data['poNumber']?.toString(),
+          clientState: data['clientState']?.toString(),
+          customFields: data['customFields'] is List
+              ? data['customFields'] as List
+              : null,
         );
       }).toList()));
     }
@@ -322,10 +377,15 @@ class InvoiceCubit extends Cubit<InvoiceState> {
     // ✅ FIX 7: Always write to SQLite first (optimistic) — works online AND offline.
 
     try {
+      await _ensureDio();
       await _dio.put('/Invoices/updateInvoice/$id', data: _toApiBody(data));
       return null;
     } on DioException catch (e) {
-      // ✅ FIX 8: Offline → SQLite already updated; silently succeed.
+  debugPrint('Status Code: ${e.response?.statusCode}');
+  debugPrint('Response: ${e.response?.data}');
+  debugPrint('Request URL: ${e.requestOptions.uri}');
+  debugPrint('Request Body: ${e.requestOptions.data}');
+  debugPrint('Headers: ${e.requestOptions.headers}');
       if (_isOfflineError(e)) return null;
       emit(prevState);
       return _dioMsg(e);
@@ -339,6 +399,7 @@ class InvoiceCubit extends Cubit<InvoiceState> {
   // DELETE
   // ─────────────────────────────────────────────────────────────
   Future<String?> deleteInvoice(String id) async {
+    await _ensureDio();
     final prevState = state;
 
     // ✅ FIX 9: Remove from SQLite immediately (optimistic) before the API call.
@@ -366,6 +427,7 @@ class InvoiceCubit extends Cubit<InvoiceState> {
   // BULK DELETE
   // ─────────────────────────────────────────────────────────────
   Future<String?> bulkDeleteInvoices(List<String> ids) async {
+    await _ensureDio();
     if (ids.isEmpty) return null;
     final prevState = state;
     final idSet = ids.toSet();
@@ -395,6 +457,7 @@ class InvoiceCubit extends Cubit<InvoiceState> {
   // SEND EMAIL
   // ─────────────────────────────────────────────────────────────
   Future<String?> sendEmail(String id) async {
+    await _ensureDio();
     try {
       await _dio.post('/invoices/sendEmail/$id');
       return null;
@@ -409,12 +472,23 @@ class InvoiceCubit extends Cubit<InvoiceState> {
   // REFRESH
   // ─────────────────────────────────────────────────────────────
   Future<void> refresh() async {
+    await _ensureDio();
     if (state is! InvoiceLoading) load();
   }
 
   // ═══════════════════════════════════════════════════════════════
   // PRIVATE HELPERS
   // ═══════════════════════════════════════════════════════════════
+
+  /// Parses a date-ish value coming from a form/data map (String, DateTime,
+  /// or null) into a DateTime? — used for `paidAt` / `emailSentAt` overrides.
+  DateTime? _parseDateField(dynamic v) {
+    if (v == null) return null;
+    if (v is DateTime) return v;
+    final s = v.toString().trim();
+    if (s.isEmpty) return null;
+    return DateTime.tryParse(s);
+  }
 
   /// Converts an [Invoice] object into the flat map shape expected by
 
@@ -425,7 +499,7 @@ class InvoiceCubit extends Cubit<InvoiceState> {
     final dealName = data['dealName']?.toString() ?? '';
     final itemDesc = data['dealRequirement']?.toString() ?? '';
 
-    return {
+    final body = <String, dynamic>{
       'assignTo': data['assignToId'] ?? data['assignTo'],
       'deal': dealId,
       'issueDate': _toApiDate(data['issueDate']?.toString() ?? ''),
@@ -452,6 +526,50 @@ class InvoiceCubit extends Cubit<InvoiceState> {
         },
       ],
     };
+
+    // Client / billing details — only sent when the caller actually
+    // provided them, so partial updates don't clobber existing values.
+    if (data.containsKey('billingAddress')) {
+      body['billingAddress'] = data['billingAddress']?.toString() ?? '';
+    }
+    if (data.containsKey('clientTaxId')) {
+      body['clientTaxId'] = data['clientTaxId']?.toString() ?? '';
+    }
+    if (data.containsKey('poNumber')) {
+      body['poNumber'] = data['poNumber']?.toString() ?? '';
+    }
+    if (data.containsKey('clientState')) {
+      body['clientState'] = data['clientState']?.toString() ?? '';
+    }
+    if (data.containsKey('customFields')) {
+      body['customFields'] = data['customFields'] is List
+          ? data['customFields']
+          : <dynamic>[];
+    }
+
+    // Preferred-currency display values, if the caller supplied them.
+    if (data.containsKey('preferredCurrency')) {
+      body['preferredCurrency'] = data['preferredCurrency']?.toString() ??
+          (data['currency']?.toString() ?? 'INR');
+    }
+    if (data.containsKey('preferredCurrencyValue')) {
+      body['preferredCurrencyValue'] = _num(data['preferredCurrencyValue']);
+    }
+
+    // Payment status — only relevant for record-payment / mark-paid flows.
+    if (data.containsKey('amountPaid')) {
+      body['amountPaid'] = _num(data['amountPaid']);
+    }
+    if (data.containsKey('paidAt')) {
+      final paidAt = _parseDateField(data['paidAt']);
+      body['paidAt'] = paidAt?.toUtc().toIso8601String();
+    }
+    if (data.containsKey('emailSentAt')) {
+      final emailSentAt = _parseDateField(data['emailSentAt']);
+      body['emailSentAt'] = emailSentAt?.toUtc().toIso8601String();
+    }
+
+    return body;
   }
 
   /// Matches API: discount on subtotal, tax on (subtotal − discount), total = subtotal − discount + tax.
@@ -539,12 +657,15 @@ class InvoiceCubit extends Cubit<InvoiceState> {
   }
 
   Future<List<Invoice>> _fetchInvoices(String path) async {
+      await _ensureDio();
+
     final res = await _dio.get(path);
     final list = _rawList(res.data, keys: ['data', 'invoices', 'result']);
     return list.map(_safeFromJson).whereType<Invoice>().toList();
   }
 
   Future<List<Invoice>> _fetchSafe(String path) async {
+    await _ensureDio();
     try {
       final res = await _dio.get(path);
       final list = _rawList(res.data, keys: [
@@ -565,6 +686,7 @@ class InvoiceCubit extends Cubit<InvoiceState> {
   }
 
   Future<List<SalesUser>> _fetchUsers() async {
+    await _ensureDio();
     try {
       final res = await _dio.get('/users/sales');
       final list = _rawList(res.data,
@@ -791,6 +913,24 @@ class InvoiceCubit extends Cubit<InvoiceState> {
         .map((e) => Map<String, dynamic>.from(e))
         .toList();
   }
+  // ==================
+  // invoice email
+  // ==================
+  Future<String?> sendInvoiceEmail(String invoiceId) async {
+  try {
+    final res = await _dio.post(
+      '/invoices/sendEmail/$invoiceId',
+    );
+
+    return res.data['message']?.toString() ??
+        'Invoice email sent successfully!';
+  } on DioException catch (e) {
+    return _dioMsg(e,);
+  } catch (e) {
+    return 'Failed to send invoice email';
+  }
+}
+
 
   String _dioMsg(DioException e) {
     if (e.type == DioExceptionType.connectionTimeout ||

@@ -93,19 +93,22 @@ class DashboardCubit extends Cubit<DashboardState> {
 
       // Fetch everything in parallel
       final results = await Future.wait([
-        _fetchLeads('/leads/getAllLead'),
-        _safeLeads('/leads/recent'),
-        _fetchSummary(),
-        _fetchInvoices(),
-        _fetchPipelineResolved(
-          canViewAll: canViewAll,
-          userId: userId,
-          userName: userName,
-        ),
-        _fetchAllDealMaps(),
-      ]);
+  _fetchLeads('/leads/getAllLead'),
+  _safeLeads('/leads/recent'),
+  _fetchSummary(),
+  _fetchInvoices(),
+  _fetchPipelineResolved(
+    canViewAll: canViewAll,
+    userId: userId,
+    userName: userName,
+  ),
+  _fetchAllDealMaps(),
+]);
 
-      final allLeadsRaw = results[0] as List<Lead>;
+final leadsResult = results[0] as ({List<Lead> leads, int? total});
+final allLeadsRaw = leadsResult.leads;
+final leadsTotalFromApi = leadsResult.total;
+
       final recentLeadsRaw = results[1] as List<Lead>;
       final base = results[2] as DashboardSummary;
       final invoices = results[3] as List<InvoiceRecord>;
@@ -146,53 +149,70 @@ class DashboardCubit extends Cubit<DashboardState> {
 //
       Map<String, dynamic>? topPerformer;
 
-      try {
-        final now = DateTime.now();
+try {
+  final now = DateTime.now();
 
-        final start = DateTime(
-          now.year,
-          now.month,
-          now.day,
-        ).subtract(const Duration(days: 6));
+  final start = DateTime(
+    now.year,
+    now.month,
+    now.day,
+  ).subtract(const Duration(days: 6));
 
-        final end = DateTime(
-          now.year,
-          now.month,
-          now.day,
-        );
+  final end = DateTime(
+    now.year,
+    now.month,
+    now.day,
+  );
 
-        final leaderboard = await LeaderboardService.fetchLeaderboard(
-          token: _cachedToken ?? '',
-          filterType: 'last7',
-          startDate:
-              "${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')}",
-          endDate:
-              "${end.year}-${end.month.toString().padLeft(2, '0')}-${end.day.toString().padLeft(2, '0')}",
-        );
+  final leaderboard = await LeaderboardService.fetchLeaderboard(
+    token: _cachedToken ?? '',
+    filterType: 'last7',
+    startDate:
+        "${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')}",
+    endDate:
+        "${end.year}-${end.month.toString().padLeft(2, '0')}-${end.day.toString().padLeft(2, '0')}",
+  );
 
-        if (leaderboard.data.isNotEmpty) {
-          leaderboard.data.sort(
-            (a, b) => b.convertedLeads.compareTo(a.convertedLeads),
-          );
-
-          final top = leaderboard.data.first;
-
-          topPerformer = {
-            "name": top.name,
-            "email": top.email,
-            "conversionRate": top.conversionRate,
-            "convertedLeads": top.convertedLeads,
-            "totalLeads": top.totalLeads,
-            "productiveDays": top.productiveDays,
-          };
-        }
-      } catch (_) {}
+  if (leaderboard.data.isNotEmpty) {
+    if (canViewAll) {
+      // Admin/manager view — show the actual #1 performer.
+      leaderboard.data.sort(
+        (a, b) => b.convertedLeads.compareTo(a.convertedLeads),
+      );
+      final top = leaderboard.data.first;
+      topPerformer = {
+        "name": top.name,
+        "email": top.email,
+        "conversionRate": top.conversionRate,
+        "convertedLeads": top.convertedLeads,
+        "totalLeads": top.totalLeads,
+        "productiveDays": top.productiveDays,
+      };
+    } else {
+      // Salesperson view — show their own stats, not the leaderboard's #1.
+      final mine = _findOwnLeaderboardEntry(
+        leaderboard.data,
+        userId: userId,
+        userName: userName,
+      );
+      if (mine != null) {
+        topPerformer = {
+          "name": mine.name,
+          "email": mine.email,
+          "conversionRate": mine.conversionRate,
+          "convertedLeads": mine.convertedLeads,
+          "totalLeads": mine.totalLeads,
+          "productiveDays": mine.productiveDays,
+        };
+      }
+    }
+  }
+} catch (_) {}
       final summary = DashboardSummary(
-        totalLeads: canViewAll
-            ? (base.totalLeads > 0 ? base.totalLeads : allLeads.length)
-            : allLeads.length,
+         totalLeads: allLeads.length,
+
         totalDeals: dealMetrics.totalDeals,
-        dealsWon: dealMetrics.dealsWon,
+        dealsWon: _totalWonDealsCount(scopedDeals),        
         pendingLeads: pendingLeads,
         leadsChange: base.leadsChange,
         dealsChange: dealMetrics.dealsChange,
@@ -338,71 +358,15 @@ class DashboardCubit extends Cubit<DashboardState> {
       dealsFetched: cur.allDealRows.isNotEmpty,
     );
 
-    List<InvoiceRecord> filtered = cur.invoices;
+    final window = _periodWindow(range, month: month, year: year);
 
-    // TODAY
-    if (range == 'today') {
-      final now = DateTime.now();
+    List<InvoiceRecord> filtered = cur.invoices.where((inv) {
+      return _dateInWindow(inv.issueDate, window);
+    }).toList();
 
-      final today = DateTime(
-        now.year,
-        now.month,
-        now.day,
-      );
-
-      filtered = cur.invoices.where((inv) {
-        final d = inv.issueDate;
-
-        if (d == null) return false;
-
-        final invoiceDay = DateTime(
-          d.year,
-          d.month,
-          d.day,
-        );
-
-        return invoiceDay == today;
-      }).toList();
-    }
-
-    // LAST 7 DAYS
-    else if (range == 'last7') {
-      final now = DateTime.now();
-
-      final start = DateTime(
-        now.year,
-        now.month,
-        now.day,
-      ).subtract(const Duration(days: 6));
-
-      filtered = cur.invoices.where((inv) {
-        final d = inv.issueDate;
-
-        if (d == null) return false;
-
-        return !DateTime(
-          d.year,
-          d.month,
-          d.day,
-        ).isBefore(start);
-      }).toList();
-    }
-
-    // MONTH
-    else if (month != null || year != null) {
-      filtered = cur.invoices.where((inv) {
-        final d = inv.issueDate;
-
-        if (d == null) return false;
-
-        if (month != null && d.month != month) return false;
-
-        if (year != null && d.year != year) return false;
-
-        return true;
-      }).toList();
-    }
-
+    List<Lead> leadsInRange = cur.allLeads.where((l) {
+      return _dateInWindow(l.createdAt, window);
+    }).toList();
     // Revenue
     Map<String, double> rates = {};
 
@@ -436,6 +400,13 @@ class DashboardCubit extends Cubit<DashboardState> {
         endDate = startDate;
       }
 
+      // YEAR
+if (range == 'year' && year != null) {
+  filterType = 'year';
+  startDate = "$year-01-01";
+  endDate = "$year-12-31";
+}
+
       // MONTH
       if (range == 'month' && month != null && year != null) {
         filterType = 'month';
@@ -455,21 +426,37 @@ class DashboardCubit extends Cubit<DashboardState> {
       );
 
       if (leaderboard.data.isNotEmpty) {
-        leaderboard.data.sort(
-          (a, b) => b.convertedLeads.compareTo(a.convertedLeads),
-        );
-
-        final top = leaderboard.data.first;
-
-        topPerformer = {
-          "name": top.name,
-          "email": top.email,
-          "conversionRate": top.conversionRate,
-          "convertedLeads": top.convertedLeads,
-          "totalLeads": top.totalLeads,
-          "productiveDays": top.productiveDays,
-        };
-      }
+  if (canViewAll) {
+    leaderboard.data.sort(
+      (a, b) => b.convertedLeads.compareTo(a.convertedLeads),
+    );
+    final top = leaderboard.data.first;
+    topPerformer = {
+      "name": top.name,
+      "email": top.email,
+      "conversionRate": top.conversionRate,
+      "convertedLeads": top.convertedLeads,
+      "totalLeads": top.totalLeads,
+      "productiveDays": top.productiveDays,
+    };
+  } else {
+    final mine = _findOwnLeaderboardEntry(
+      leaderboard.data,
+      userId: userId,
+      userName: userName,
+    );
+    if (mine != null) {
+      topPerformer = {
+        "name": mine.name,
+        "email": mine.email,
+        "conversionRate": mine.conversionRate,
+        "convertedLeads": mine.convertedLeads,
+        "totalLeads": mine.totalLeads,
+        "productiveDays": mine.productiveDays,
+      };
+    }
+  }
+}
     } catch (_) {}
 
     if (isClosed) return;
@@ -480,21 +467,25 @@ class DashboardCubit extends Cubit<DashboardState> {
         allLeads: cur.allLeads,
         recentLeads: cur.recentLeads,
         summary: cur.summary.copyWith(
-          paidRevenue: revenue.paid,
-          unpaidRevenue: revenue.unpaid,
-          totalRevenue: revenue.total,
-          totalDeals: dealMetrics.totalDeals,
-          dealsWon: dealMetrics.dealsWon,
-          dealsChange: dealMetrics.dealsChange,
-        ),
+  paidRevenue: revenue.paid,
+  unpaidRevenue: revenue.unpaid,
+  totalRevenue: revenue.total,
+  totalLeads: leadsInRange.length,
+  totalDeals: dealMetrics.totalDeals,
+  dealsWon: dealMetrics.dealsWon,
+  dealsChange: dealMetrics.dealsChange,
+),
         pipeline: cur.pipeline,
-        invoices: cur.invoices,
-        todaysFollowUps: cur.todaysFollowUps, // ← ADD
+invoices: filtered,
+todaysFollowUps: cur.todaysFollowUps
+    .where((f) => _dateInWindow(f.followUpDate, window))
+    .toList(),
 
-        allDealRows: cur.allDealRows,
+
+allDealRows: cur.allDealRows,
         filterRange: range,
         filterMonth: range == 'month' ? month : null,
-        filterYear: range == 'month' ? year : null,
+        filterYear: (range == 'month' || range == 'year') ? year : null,
       ),
     );
   }
@@ -568,30 +559,86 @@ class DashboardCubit extends Cubit<DashboardState> {
     return true;
   }
 
-  ({int total, int won}) _dealCountsInRange(
-    List<Map<String, dynamic>> deals, {
-    required DateTime rangeStartDay,
-    DateTime? rangeEndExclusiveDay,
-  }) {
-    var total = 0, won = 0;
-    for (final m in deals) {
-      final d = _dealFilterDate(m);
-      if (!_dealDayInRange(d,
+  DateTime? _dealWonDate(Map<String, dynamic> m) =>
+    DateTime.tryParse((m['wonAt'] ?? '').toString());
+
+({int total, int won}) _dealCountsInRange(
+  List<Map<String, dynamic>> deals, {
+  required DateTime rangeStartDay,
+  DateTime? rangeEndExclusiveDay,
+}) {
+  var total = 0, won = 0;
+  for (final m in deals) {
+    // "total" (created in this window) still uses createdAt.
+    final createdDay = _dealFilterDate(m);
+    if (_dealDayInRange(createdDay,
+        rangeStartDay: rangeStartDay,
+        rangeEndExclusiveDay: rangeEndExclusiveDay)) {
+      total++;
+    }
+
+    // "won" now counts deals WON in this window, using wonAt when
+    // present — falls back to stage+createdAt for older deals that
+    // predate the backend populating wonAt.
+    final wonDay = _dealWonDate(m);
+    if (wonDay != null) {
+      if (_dealDayInRange(wonDay,
           rangeStartDay: rangeStartDay,
           rangeEndExclusiveDay: rangeEndExclusiveDay)) {
-        continue;
+        won++;
       }
-      total++;
-      if (_isWonDealStage(m['stage']?.toString())) won++;
+    } else if (_isWonDealStage(m['stage']?.toString()) &&
+        _dealDayInRange(createdDay,
+            rangeStartDay: rangeStartDay,
+            rangeEndExclusiveDay: rangeEndExclusiveDay)) {
+      won++;
     }
-    return (total: total, won: won);
   }
+  return (total: total, won: won);
+}
 
   double _percentChangeInt(int current, int previous) {
     if (previous == 0) return current > 0 ? 100.0 : 0.0;
     return ((current - previous) / previous) * 100.0;
   }
+  ({DateTime start, DateTime? endExclusive})? _periodWindow(
+  String range, {
+  int? month,
+  int? year,
+}) {
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  switch (range) {
+    case 'all':
+      return null; // no bound — everything matches
+    case 'today':
+      return (start: today, endExclusive: today.add(const Duration(days: 1)));
+    case 'last7':
+      return (start: today.subtract(const Duration(days: 6)), endExclusive: null);
+    case 'year':
+      final y = year ?? now.year;
+      return (start: DateTime(y, 1, 1), endExclusive: DateTime(y + 1, 1, 1));
+    case 'month':
+      final m = month ?? now.month;
+      final y = year ?? now.year;
+      final start = DateTime(y, m, 1);
+      final endEx = m == 12 ? DateTime(y + 1, 1, 1) : DateTime(y, m + 1, 1);
+      return (start: start, endExclusive: endEx);
+    default:
+      return null;
+  }
+}
 
+bool _dateInWindow(DateTime? d, ({DateTime start, DateTime? endExclusive})? window) {
+  if (window == null) return true; // 'all' — everything passes
+  if (d == null) return false;
+  final day = DateTime(d.year, d.month, d.day);
+  if (day.isBefore(window.start)) return false;
+  if (window.endExclusive != null && !day.isBefore(window.endExclusive!)) return false;
+  return true;
+}
+
+//===================
   ({int totalDeals, int dealsWon, double dealsChange}) _dealMetricsForPeriod(
     List<Map<String, dynamic>> scopedDeals, {
     required String range,
@@ -609,10 +656,32 @@ class DashboardCubit extends Cubit<DashboardState> {
     }
 
     final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
+final today = DateTime(now.year, now.month, now.day);
 
-    if (range == 'today') {
-      final cur = _dealCountsInRange(
+if (range == 'all') {
+  final total = scopedDeals.length;
+  final won = _totalWonDealsCount(scopedDeals);
+  return (totalDeals: total, dealsWon: won, dealsChange: 0);
+}
+
+if (range == 'year') {
+  final y = year ?? now.year;
+  final curStart = DateTime(y, 1, 1);
+  final curEndEx = DateTime(y + 1, 1, 1);
+  final cur = _dealCountsInRange(scopedDeals,
+      rangeStartDay: curStart, rangeEndExclusiveDay: curEndEx);
+  final prevStart = DateTime(y - 1, 1, 1);
+  final prevEndEx = DateTime(y, 1, 1);
+  final prev = _dealCountsInRange(scopedDeals,
+      rangeStartDay: prevStart, rangeEndExclusiveDay: prevEndEx);
+  return (
+    totalDeals: cur.total,
+    dealsWon: cur.won,
+    dealsChange: _percentChangeInt(cur.won, prev.won),
+  );
+}
+
+if (range == 'today') {      final cur = _dealCountsInRange(
         scopedDeals,
         rangeStartDay: today,
         rangeEndExclusiveDay: today.add(const Duration(days: 1)),
@@ -764,11 +833,16 @@ class DashboardCubit extends Cubit<DashboardState> {
   // LEADS
   // ════════════════════════════════════════════════════════════
 
-  Future<List<Lead>> _fetchLeads(String path) async {
-    final res = await _dio.get(path);
-    debugPrint('[Leads] $path  ${res.statusCode}');
-    return _parseLeadList(res.data);
-  }
+  Future<({List<Lead> leads, int? total})> _fetchLeads(String path) async {
+  final res = await _dio.get(
+    path,
+    queryParameters: {'page': 1, 'limit': 100000}, // fetch the full set, not the default page
+  );
+  debugPrint('[Leads] $path  ${res.statusCode}');
+  final leads = _parseLeadList(res.data);
+  final total = _extractLeadsTotalCount(res.data);
+  return (leads: leads, total: total);
+}
 
   Future<List<Lead>> _safeLeads(String path) async {
     try {
@@ -1002,7 +1076,21 @@ class DashboardCubit extends Cubit<DashboardState> {
 
     return false;
   }
-
+T? _findOwnLeaderboardEntry<T>(
+  List<T> entries, {
+  required String userId,
+  required String userName,
+}) {
+  final uname = userName.trim().toLowerCase();
+  for (final e in entries) {
+    final dynamic d = e;
+    final id = (d.id ?? d.userId ?? '').toString();
+    final name = (d.name ?? '').toString().trim().toLowerCase();
+    if (userId.isNotEmpty && id == userId) return e;
+    if (uname.isNotEmpty && name == uname) return e;
+  }
+  return null;
+}
   Future<List<PipelineStage>> _fetchPipelineApi({String? userId}) async {
     try {
       final query = <String, dynamic>{};
@@ -1240,6 +1328,10 @@ class DashboardCubit extends Cubit<DashboardState> {
     }
     return out;
   }
+  // deal helper
+
+  int _totalWonDealsCount(List<Map<String, dynamic>> deals) =>
+    deals.where((m) => _isWonDealStage(m['stage']?.toString())).length;
 
   // ════════════════════════════════════════════════════════════
   // ERROR HELPER
@@ -1268,7 +1360,17 @@ class _RevenueResult {
     required this.total,
   });
 }
-
+// ===========================
+// Leads total count extractor
+// ==========================
+int? _extractLeadsTotalCount(dynamic raw) {
+  if (raw is! Map) return null;
+  for (final k in ['totalLeads', 'total', 'totalCount', 'totalRecords', 'count']) {
+    final v = raw[k];
+    if (v is num) return v.toInt();
+  }
+  return null;
+}
 // ════════════════════════════════════════════════════════════
 // copyWith extension on DashboardSummary
 // ════════════════════════════════════════════════════════════

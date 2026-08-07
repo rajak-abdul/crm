@@ -5,12 +5,14 @@ class DealOption {
   final double value;
   final String currency;
   final String requirement;
+  final String country;
   const DealOption(
     this.id,
     this.name,
     this.value,
     this.currency, {
     this.requirement = '',
+    this.country = '',
   });
 
   /// Identity-based [==] breaks [DropdownButton]: after a refresh, `deals` are

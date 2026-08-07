@@ -9,6 +9,9 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileOutputStream
+import android.content.Intent
+import android.net.Uri
+
 
 class MainActivity : FlutterActivity() {
     private val downloadsChannel = "crm/downloads"
@@ -59,6 +62,17 @@ class MainActivity : FlutterActivity() {
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
+
+val openIntent = Intent(Intent.ACTION_VIEW).apply {
+    setDataAndType(uri, mimeType)
+    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+}
+
+val chooser = Intent.createChooser(openIntent, "Open with")
+chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+startActivity(chooser)
+
             return uri.toString()
         }
 

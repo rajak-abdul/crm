@@ -5,12 +5,14 @@
 // ║  Deals fetched from GET /api/deals/getAll                    ║
 // ╚══════════════════════════════════════════════════════════════╝
 
+import 'package:crm_app/screen/currency/currency_service.dart';
 import 'package:crm_app/screen/invoice/cubit/invoice_cubit.dart';
 import 'package:crm_app/screen/invoice/modal/invoice_model.dart';
 import 'package:crm_app/screen/invoice/ui/dealOption.dart';
 import 'package:crm_app/screen/invoice/ui/invoice_details_screen.dart';
 import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
 import 'package:crm_app/screen/leads/ui/lead_screen.dart';
+import 'package:crm_app/services/invoice_excel_exporter.dart';
 import 'package:crm_app/shareWidgets/missed_followup.dart';
 import 'package:crm_app/shareWidgets/share_widgets.dart'
     show showApiSnack, LoadingState, ErrorState;
@@ -79,26 +81,44 @@ class InvoiceLoaded extends InvoiceState {
 // SCREEN
 // ══════════════════════════════════════════════════════════════
 class InvoiceScreen extends StatelessWidget {
-  const InvoiceScreen({super.key});
+    final String? initialStatusFilter;
+  const InvoiceScreen({super.key,this.initialStatusFilter});
   @override
   Widget build(BuildContext context) => BlocProvider(
         create: (_) => InvoiceCubit()..load(),
-        child: const _InvoiceView(),
+        child: _InvoiceView(initialStatusFilter: initialStatusFilter),
       );
 }
 
 class _InvoiceView extends StatefulWidget {
-  const _InvoiceView();
+  final String? initialStatusFilter;
+
+  const _InvoiceView({this.initialStatusFilter});
+
   @override
   State<_InvoiceView> createState() => _InvoiceViewState();
 }
 
 class _InvoiceViewState extends State<_InvoiceView> {
-  final _searchCtrl = TextEditingController();
-  String _q = '';
-  String _statusFilter = 'All Status';
-  DateTime? _selectedDate;
-  static const _statuses = ['All Status', 'Paid', 'Unpaid'];
+final _searchCtrl = TextEditingController();
+String _q = '';
+late String _statusFilter;
+DateTime? _selectedDate;
+
+@override
+void initState() {
+  super.initState();
+  _statusFilter = widget.initialStatusFilter ?? 'All Status';
+}
+
+  static const _statuses = [
+    'All Status',
+    'Paid',
+    'Partially Paid',
+    'Unpaid',
+  ];
+  String _userFilter = 'All Users';
+List<String> _users = ['All Users'];
   bool _missedPopupShown = false;
 
   @override
@@ -128,6 +148,8 @@ class _InvoiceViewState extends State<_InvoiceView> {
           inv.dealName.toLowerCase().contains(q);
       final matchStatus =
           _statusFilter == 'All Status' || inv.status == _statusFilter;
+          final matchUser = _userFilter == 'All Users' ||
+    inv.assignTo == _userFilter;
       bool matchDate = true;
       if (_selectedDate != null) {
         final d = _parseInvoiceDate(inv.issueDate);
@@ -140,7 +162,7 @@ class _InvoiceViewState extends State<_InvoiceView> {
           matchDate = false;
         }
       }
-      return matchQ && matchStatus && matchDate;
+      return matchQ && matchStatus && matchDate && matchUser ;
     }).toList();
   }
 
@@ -148,27 +170,23 @@ class _InvoiceViewState extends State<_InvoiceView> {
         context: context,
         isScrollControlled: true,
         backgroundColor: Colors.transparent,
-        builder: (_) => BlocProvider.value(
+        builder: (sheetContext) => BlocProvider.value(
           value: context.read<InvoiceCubit>(),
-          child: _InvoiceFormModal(
+          child: InvoiceFormModal(
             salesUsers: s.salesUsers,
             deals: s.deals,
             onSave: (data) async {
-              final err =
-                  await context.read<InvoiceCubit>().createInvoice(data);
+  final err = await context.read<InvoiceCubit>().createInvoice(data);
 
-              if (!mounted) return;
+  if (!mounted) return;
 
-              if (err != null) {
-                // show error inside modal
-                showApiSnack(context, err, isError: true);
-                return;
-              }
+  if (err != null) {
+    throw Exception(err);
+  }
 
-              Navigator.pop(context);
-
-              showApiSnack(context, 'Invoice created successfully');
-            },
+  Navigator.pop(sheetContext);
+  showApiSnack(context, 'Invoice created successfully');
+},
           ),
         ),
       );
@@ -177,61 +195,59 @@ class _InvoiceViewState extends State<_InvoiceView> {
         context: context,
         isScrollControlled: true,
         backgroundColor: Colors.transparent,
-        builder: (_) => BlocProvider.value(
+        builder: (sheetContext) => BlocProvider.value(
           value: context.read<InvoiceCubit>(),
-          child: _InvoiceFormModal(
+          child: InvoiceFormModal(
             existing: inv,
             salesUsers: s.salesUsers,
             deals: s.deals,
             onSave: (data) async {
-              final err = await context.read<InvoiceCubit>().updateInvoice(
-                    inv.id,
-                    data,
-                  );
+  final err = await context.read<InvoiceCubit>().updateInvoice(
+    inv.id,
+    data,
+  );
 
-              if (!mounted) return;
+  if (!mounted) return;
 
-              if (err != null) {
-                // show error inside modal
-                showApiSnack(context, err, isError: true);
-                return;
-              }
+  if (err != null) {
+    throw Exception(err);
+  }
 
-              Navigator.pop(context);
-
-              showApiSnack(context, 'Invoice updated');
-            },
+  Navigator.pop(sheetContext);
+  showApiSnack(context, 'Invoice updated');
+},
           ),
         ),
       );
-Future<void> _checkMissedFollowups() async {
-  if (_missedPopupShown) return;
+  Future<void> _checkMissedFollowups() async {
+    if (_missedPopupShown) return;
 
-  final leads = await LeadCubit().getAllLeads();
+    final leads = await LeadCubit().getAllLeads();
 
-  if (!mounted || leads.isEmpty) return;
+    if (!mounted || leads.isEmpty) return;
 
-  _missedPopupShown = true;
+    _missedPopupShown = true;
 
-  showDialog(
-    context: context,
-    builder: (_) => MissedFollowupDialog(
-      missedLeads: leads,
-      onViewLead: (lead) {
-        Navigator.pop(context);
+    showDialog(
+      context: context,
+      builder: (_) => MissedFollowupDialog(
+        missedLeads: leads,
+        onViewLead: (lead) {
+          Navigator.pop(context);
 
-        showModalBottomSheet(
-          context: context,
-          isScrollControlled: true,
-          backgroundColor: Colors.transparent,
-          builder: (_) => LeadDetailSheet(
-            lead: lead,
-          ),
-        );
-      },
-    ),
-  );
-}
+          showModalBottomSheet(
+            context: context,
+            isScrollControlled: true,
+            backgroundColor: Colors.transparent,
+            builder: (_) => LeadDetailSheet(
+              lead: lead,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
@@ -274,12 +290,19 @@ Future<void> _checkMissedFollowups() async {
             );
           }
           if (state is InvoiceLoaded) {
+            _users = [
+  'All Users',
+  ...{
+    for (final i in state.invoices)
+      i.assignTo.trim(),
+  }
+];
             final filtered = _filtered(state.invoices);
-              if (!PermissionHelper.can('users_roles')) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _checkMissedFollowups();
-      });
-    }
+            if (!PermissionHelper.can('users_roles')) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                _checkMissedFollowups();
+              });
+            }
             return Column(
               children: [
                 _SummaryCarousel(
@@ -288,163 +311,344 @@ Future<void> _checkMissedFollowups() async {
                       filtered.where((e) => e.status == 'Unpaid').toList(),
                   recentInvoices: filtered,
                 ),
-
-                // Date filter
-                Container(
-                  color: AppColors.surface,
-                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
-                  child: GestureDetector(
-                    onTap: _pickDate,
-                    child: Container(
-                      height: 40,
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      decoration: BoxDecoration(
-                        color: (_selectedDate != null)
-                            ? AppColors.primaryLight
-                            : AppColors.background,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: (_selectedDate != null)
-                              ? AppColors.primary
-                              : AppColors.border,
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.calendar_month_outlined,
-                            size: 16,
-                            color: (_selectedDate != null)
-                                ? AppColors.primary
-                                : AppColors.textSecondary,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              _selectedDate != null
-                                  ? DateFormat(
-                                      'dd MMM yyyy',
-                                    ).format(_selectedDate!)
-                                  : 'Filter by date',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: (_selectedDate != null)
-                                    ? AppColors.primary
-                                    : AppColors.textSecondary,
-                                fontWeight: (_selectedDate != null)
-                                    ? FontWeight.w600
-                                    : FontWeight.w400,
-                              ),
-                            ),
-                          ),
-                          if (_selectedDate != null)
-                            GestureDetector(
-                              onTap: () => setState(() => _selectedDate = null),
-                              child: const Icon(
-                                Icons.close,
-                                size: 15,
-                                color: AppColors.primary,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-
-                Container(
-                  color: AppColors.surface,
-                  padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: _FDrop(
-                          value: _statusFilter,
-                          items: _statuses,
-                          icon: Icons.info_outline,
-                          onChanged: (v) => setState(() => _statusFilter = v),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
+                
                 // Search
                 Container(
-                  color: AppColors.surface,
-                  padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+  color: AppColors.surface,
+  padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+  child: Row(
+    children: [
+      Expanded(
+        child: SizedBox(
+          height: 40,
+          child: TextField(
+            controller: _searchCtrl,
+            onChanged: (v) => setState(() => _q = v),
+            decoration: InputDecoration(
+              hintText: 'Search invoice # or deal name...',
+              prefixIcon: const Icon(
+                Icons.search,
+                size: 17,
+                color: AppColors.textSecondary,
+              ),
+              suffixIcon: _q.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear, size: 15),
+                      onPressed: () {
+                        _searchCtrl.clear();
+                        setState(() => _q = '');
+                      },
+                    )
+                  : null,
+              contentPadding: EdgeInsets.zero,
+              filled: true,
+              fillColor: AppColors.background,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(
+                  color: AppColors.border,
+                ),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(
+                  color: AppColors.border,
+                ),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(
+                  color: AppColors.primary,
+                  width: 1.5,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+
+      const SizedBox(width: 10),
+
+      SizedBox(
+        width: 40,
+        height: 40,
+        child: OutlinedButton(
+          style: OutlinedButton.styleFrom(
+            padding: EdgeInsets.zero,
+            side: const BorderSide(color: AppColors.border),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+            backgroundColor: AppColors.background,
+          ),
+          onPressed: () {
+            showModalBottomSheet(
+            backgroundColor: AppColors.surface,
+  context: context,
+  shape: const RoundedRectangleBorder(
+    borderRadius: BorderRadius.vertical(
+      top: Radius.circular(20),
+    ),
+  ),
+  builder: (_) {
+    String tempUser = _userFilter;
+    String tempStatus = _statusFilter;
+    DateTime? tempDate = _selectedDate;
+
+    return StatefulBuilder(
+      builder: (context, setModalState) {
+        return Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Center(
+                child: Text(
+                  'Filter Invoices',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              const Text(
+  'Assigned To',
+  style: TextStyle(
+    fontWeight: FontWeight.w600,
+  ),
+),
+
+const SizedBox(height: 8),
+
+DropdownButtonFormField<String>(
+  value: tempUser,
+  decoration: const InputDecoration(
+    border: OutlineInputBorder(),
+  ),
+  items: _users
+      .map(
+        (e) => DropdownMenuItem(
+          value: e,
+          child: Text(e),
+        ),
+      )
+      .toList(),
+  onChanged: (v) {
+    setModalState(() {
+      tempUser = v!;
+    });
+  },
+),
+
+const SizedBox(height: 20),
+
+              const Text(
+                'Status',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+
+              
+
+              const SizedBox(height: 8),
+
+              DropdownButtonFormField<String>(
+                value: tempStatus,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                ),
+                items: _statuses
+                    .map(
+                      (e) => DropdownMenuItem(
+                        value: e,
+                        child: Text(e),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (v) {
+                  setModalState(() {
+                    tempStatus = v!;
+                  });
+                },
+              ),
+
+              const SizedBox(height: 20),
+
+              const Text(
+                'Issue Date',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+
+              const SizedBox(height: 8),
+
+              InkWell(
+                onTap: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: tempDate ?? DateTime.now(),
+                    firstDate: DateTime(2020),
+                    lastDate: DateTime(2035),
+                  );
+
+                  if (picked != null) {
+                    setModalState(() {
+                      tempDate = picked;
+                    });
+                  }
+                },
+                child: Container(
+                  height: 50,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: AppColors.border),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                   child: Row(
                     children: [
+                      const Icon(Icons.calendar_month_outlined),
+                      const SizedBox(width: 10),
                       Expanded(
-                        child: SizedBox(
-                          height: 40,
-                          child: TextField(
-                            controller: _searchCtrl,
-                            onChanged: (v) => setState(() => _q = v),
-                            decoration: InputDecoration(
-                              hintText: 'Search invoice # or deal name…',
-                              prefixIcon: const Icon(
-                                Icons.search,
-                                size: 17,
-                                color: AppColors.textSecondary,
-                              ),
-                              suffixIcon: _q.isNotEmpty
-                                  ? IconButton(
-                                      icon: const Icon(Icons.clear, size: 15),
-                                      onPressed: () {
-                                        _searchCtrl.clear();
-                                        setState(() => _q = '');
-                                      },
-                                    )
-                                  : null,
-                              contentPadding: EdgeInsets.zero,
-                              filled: true,
-                              fillColor: AppColors.background,
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(10),
-                                borderSide: const BorderSide(
-                                  color: AppColors.border,
-                                ),
-                              ),
-                              enabledBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(10),
-                                borderSide: const BorderSide(
-                                  color: AppColors.border,
-                                ),
-                              ),
-                              focusedBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(10),
-                                borderSide: const BorderSide(
-                                  color: AppColors.primary,
-                                  width: 1.5,
-                                ),
-                              ),
-                            ),
-                          ),
+                        child: Text(
+                          tempDate == null
+                              ? "Select Date"
+                              : DateFormat('dd MMM yyyy')
+                                  .format(tempDate!),
                         ),
                       ),
-                      const SizedBox(width: 10),
-                      if (PermissionHelper.can('users_roles'))
-                        SizedBox(
-                          height: 40,
-                          child: ElevatedButton.icon(
-                            onPressed: () => _openCreate(state),
-                            icon: const Icon(Icons.add, size: 16),
-                            label: const Text(
-                              'Create',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                              ),
-                              minimumSize: Size.zero,
-                            ),
-                          ),
+                      if (tempDate != null)
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 18),
+                          onPressed: () {
+                            setModalState(() {
+                              tempDate = null;
+                            });
+                          },
                         ),
                     ],
                   ),
                 ),
+              ),
+
+              const SizedBox(height: 24),
+
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () {
+                        setState(() {
+                            _userFilter = 'All Users';
+                          _userFilter = 'All Users';
+                          _statusFilter = 'All Status';
+                          _selectedDate = null;
+                        });
+
+                        Navigator.pop(context);
+                      },
+                      child: const Text('Clear'),
+                    ),
+                  ),
+
+                  const SizedBox(width: 12),
+
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () {
+                        setState(() {
+                          _statusFilter = tempStatus;
+                          _selectedDate = tempDate;
+                          _userFilter = tempUser;
+                        });
+
+                        Navigator.pop(context);
+                      },
+                      child: const Text('Apply'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  },
+);
+          },
+          child: const Icon(
+            Icons.filter_alt_outlined,
+            size: 20,
+            color: AppColors.primary,
+          ),
+        ),
+      ),
+      const SizedBox(width: 8),
+
+// More Menu
+SizedBox(
+  width: 40,
+  height: 40,
+  child: PopupMenuButton<String>(
+
+    color: AppColors.surface,
+    padding: EdgeInsets.zero,
+    tooltip: 'More',
+    icon: const Icon(
+      Icons.more_vert,
+      color: AppColors.primary,
+      size: 20,
+    ),
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(12),
+    ),
+    onSelected: (value) async {
+      if (value == 'export') {
+        try {
+          await InvoiceExcelExporter.export(filtered);
+
+          if (!mounted) return;
+
+          showApiSnack(
+            context,
+            'Invoices exported successfully',
+          );
+        } catch (e) {
+          if (!mounted) return;
+
+          showApiSnack(
+            context,
+            e.toString(),
+            isError: true,
+          );
+        }
+      }
+    },
+    itemBuilder: (context) => const [
+      PopupMenuItem<String>(
+          padding: EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+        value: 'export',
+        child: Row(
+          children: [
+            Icon(Icons.table_view_outlined),
+            SizedBox(width: 5),
+            Text('Export'),
+          ],
+        ),
+      ),
+    ],
+  ),
+),
+    ],
+  ),
+),
                 Container(height: 1, color: AppColors.divider),
 
                 // Count row
@@ -466,6 +670,7 @@ Future<void> _checkMissedFollowups() async {
                       const Spacer(),
                       if (_q.isNotEmpty ||
                           _statusFilter != 'All Status' ||
+                          _userFilter != 'All Users' ||
                           _selectedDate != null)
                         GestureDetector(
                           onTap: () => setState(() {
@@ -519,7 +724,8 @@ Future<void> _checkMissedFollowups() async {
                           itemBuilder: (_, i) => _InvoiceCard(
                             invoice: filtered[i],
                             onEdit: () => _openEdit(filtered[i], state),
-                            onDelete: () => _confirmDelete(ctx, filtered[i].id),
+                            onDelete: () =>
+                                _confirmDelete(ctx, filtered[i].id),
                             onDownload: () => _downloadPdf(ctx, filtered[i]),
                             onSendEmail: () => _sendEmail(ctx, filtered[i]),
                           ),
@@ -531,6 +737,23 @@ Future<void> _checkMissedFollowups() async {
           return const SizedBox.shrink();
         },
       ),
+      floatingActionButton: BlocBuilder<InvoiceCubit, InvoiceState>(
+  builder: (context, state) {
+    if (!PermissionHelper.can('users_roles') ||
+        state is! InvoiceLoaded) {
+      return const SizedBox.shrink();
+    }
+
+    return FloatingActionButton(
+      heroTag: 'create_invoice',
+      backgroundColor: AppColors.primary,
+      foregroundColor: Colors.white,
+      tooltip: 'Create Invoice',
+      onPressed: () => _openCreate(state),
+      child: const Icon(Icons.add),
+    );
+  },
+),
     );
   }
 
@@ -538,7 +761,8 @@ Future<void> _checkMissedFollowups() async {
     final ok = await showDialog<bool>(
       context: ctx,
       builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Delete Invoice'),
         content: const Text('This invoice will be permanently removed.'),
         actions: [
@@ -626,27 +850,43 @@ class _SummaryCarouselState extends State<_SummaryCarousel> {
     int totalCount = widget.invoices.length;
     int paidCount = 0;
     int unpaidCount = 0;
+    int partialCount = 0;
+
     double totalValue = 0;
     double paidValue = 0;
     double unpaidValue = 0;
+    double partialValue = 0;
 
     for (final inv in widget.invoices) {
       final inrValue = inv.totalInInr;
       totalValue += inrValue;
-      if (inv.status == 'Paid') {
-        paidCount++;
-        paidValue += inrValue;
-      } else {
-        unpaidCount++;
-        unpaidValue += inrValue;
+
+      switch (inv.status) {
+        case 'Paid':
+          paidCount++;
+          paidValue += inrValue;
+          break;
+
+        case 'Partially Paid':
+          partialCount++;
+          partialValue += inv.amountPaid;
+          break;
+
+        case 'Unpaid':
+        default:
+          unpaidCount++;
+          unpaidValue += inrValue;
+          break;
       }
     }
     return {
       'totalCount': totalCount,
       'paidCount': paidCount,
+      'partialCount': partialCount,
       'unpaidCount': unpaidCount,
       'totalValue': totalValue,
       'paidValue': paidValue,
+      'partialValue': partialValue,
       'unpaidValue': unpaidValue,
     };
   }
@@ -654,6 +894,11 @@ class _SummaryCarouselState extends State<_SummaryCarousel> {
   @override
   Widget build(BuildContext context) {
     final s = _summary;
+    final pendingValue = widget.pendingInvoices.fold<double>(
+      0,
+      (sum, e) => sum + e.balanceDue,
+    );
+
     final slides = [
       {
         'title': 'Total Invoices',
@@ -672,6 +917,12 @@ class _SummaryCarouselState extends State<_SummaryCarousel> {
         'count': s['unpaidCount'] as int,
         'value': s['unpaidValue'] as double,
         'colors': [const Color(0xFFD97706), const Color(0xFFF59E0B)],
+      },
+      {
+        'title': 'Partially Paid',
+        'count': s['partialCount'] as int,
+        'value': s['partialValue'] as double,
+        'colors': [const Color(0xFF7C3AED), const Color(0xFFA855F7)],
       },
     ];
     return Column(
@@ -866,18 +1117,65 @@ class _InvoiceCardState extends State<_InvoiceCard> {
   Color get _statusColor => switch (widget.invoice.status) {
         'Paid' => AppColors.success,
         'Unpaid' => AppColors.warning,
+        'Partially Paid' => AppColors.accent,
         _ => AppColors.textSecondary,
       };
+String _fmtAmountPaid(Invoice inv) {
+  final sym = switch (inv.currency.toUpperCase()) {
+    'USD' => '\$',
+    'EUR' => '€',
+    'GBP' => '£',
+    'JPY' || 'CNY' => '¥',
+    'AED' => 'د.إ ',
+    'SAR' => '﷼ ',
+    _ => '₹',
+  };
 
+  return NumberFormat.currency(
+    locale: 'en_IN',
+    symbol: sym,
+    decimalDigits: 2,
+  ).format(inv.amountPaid);
+}
   IconData get _statusIcon => switch (widget.invoice.status) {
         'Paid' => Icons.check_circle_outline,
         'Unpaid' => Icons.access_time_outlined,
+        'Partially Paid' => Icons.hourglass_bottom_outlined,
         _ => Icons.receipt_outlined,
       };
 
   @override
   Widget build(BuildContext context) {
     final inv = widget.invoice;
+    final subtotal = CurrencyService.convert(
+  inv.price,
+  inv.currency,
+);
+
+final tax = CurrencyService.convert(
+  inv.taxValue,
+  inv.currency,
+);
+
+final discount = CurrencyService.convert(
+  inv.discountValue,
+  inv.currency,
+);
+
+final total = CurrencyService.convert(
+  inv.total,
+  inv.currency,
+);
+
+final paid = CurrencyService.convert(
+  inv.amountPaid,
+  inv.currency,
+);
+
+final due = CurrencyService.convert(
+  inv.balanceDue,
+  inv.currency,
+);
     return GestureDetector(
       onTap: () {
         showModalBottomSheet(
@@ -968,6 +1266,57 @@ class _InvoiceCardState extends State<_InvoiceCard> {
                           color: AppColors.textSecondary,
                         ),
                       ),
+//                       if (inv.status == 'Partially Paid') ...[
+//   const SizedBox(height: 2),
+//   Text(
+//     'Paid: ${_fmtAmountPaid(inv)}',
+//     style: const TextStyle(
+//       fontSize: 11,
+//       fontWeight: FontWeight.w700,
+//       color: AppColors.success,
+//     ),
+//   ),
+// ],
+                      if (inv.status == 'Paid') ...[
+  const SizedBox(height: 2),
+  Text(
+    'Paid: ${_fmtAmountPaid(inv)}',
+    style: const TextStyle(
+      fontSize: 11,
+      fontWeight: FontWeight.w700,
+      color: AppColors.success,
+    ),
+  ),
+] else if (inv.status == 'Partially Paid') ...[
+  const SizedBox(height: 2),
+  Text(
+    'Paid: ${_fmtAmountPaid(inv)}',
+    style: const TextStyle(
+      fontSize: 11,
+      fontWeight: FontWeight.w700,
+      color: AppColors.success,
+    ),
+  ),
+  const SizedBox(height: 2),
+  Text(
+    'Due: ${_fmtBalance(inv)}',
+    style: const TextStyle(
+      fontSize: 11,
+      fontWeight: FontWeight.w700,
+      color: AppColors.danger,
+    ),
+  ),
+] else if (inv.balanceDue > 0) ...[
+  const SizedBox(height: 2),
+  Text(
+    'Due: ${_fmtBalance(inv)}',
+    style: const TextStyle(
+      fontSize: 11,
+      fontWeight: FontWeight.w700,
+      color: AppColors.danger,
+    ),
+  ),
+],
                       const SizedBox(height: 3),
                       _StatusBadge(
                         status: inv.status,
@@ -1055,26 +1404,28 @@ class _InvoiceCardState extends State<_InvoiceCard> {
                       ),
                       child: Row(
                         children: [
-                          Expanded(
-                            child: TextButton.icon(
-                              onPressed: widget.onEdit,
-                              icon: const Icon(Icons.edit_outlined, size: 15),
-                              label: const Text(
-                                'Edit',
-                                style: TextStyle(fontSize: 13),
-                              ),
-                              style: TextButton.styleFrom(
-                                foregroundColor: AppColors.primary,
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 12),
-                              ),
-                            ),
-                          ),
-                          Container(
-                            width: 1,
-                            height: 36,
-                            color: AppColors.divider,
-                          ),
+                          if (widget.invoice.status != 'Paid') ...[
+  Expanded(
+    child: TextButton.icon(
+      onPressed: widget.onEdit,
+      icon: const Icon(Icons.edit_outlined, size: 15),
+      label: const Text(
+        'Edit',
+        style: TextStyle(fontSize: 13),
+      ),
+      style: TextButton.styleFrom(
+        foregroundColor: AppColors.primary,
+        padding: const EdgeInsets.symmetric(vertical: 12),
+      ),
+    ),
+  ),
+  Container(
+    width: 1,
+    height: 36,
+    color: AppColors.divider,
+  ),
+],
+                          
                           Expanded(
                             child: TextButton.icon(
                               onPressed: widget.onDownload,
@@ -1175,6 +1526,23 @@ class _InvoiceCardState extends State<_InvoiceCard> {
       decimalDigits: 2,
     ).format(inv.totalInInr);
   }
+
+  String _fmtBalance(Invoice inv) {
+    final sym = switch (inv.currency.toUpperCase()) {
+      'USD' => '\$',
+      'EUR' => '€',
+      'GBP' => '£',
+      'JPY' || 'CNY' => '¥',
+      'AED' => 'د.إ ',
+      'SAR' => '﷼ ',
+      _ => '₹',
+    };
+    return NumberFormat.currency(
+      locale: 'en_IN',
+      symbol: sym,
+      decimalDigits: 2,
+    ).format(inv.balanceDue);
+  }
 }
 
 class _StatusBadge extends StatelessWidget {
@@ -1248,28 +1616,57 @@ class _MetaChip extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════
+// CUSTOM FIELD ROW STATE — one row in the Custom Fields section.
+// API shape is {label, type, value} with type as lowercase
+// "text"/"number"/"date".
+// ══════════════════════════════════════════════════════════════
+class _CustomFieldRow {
+  final TextEditingController nameCtrl = TextEditingController();
+  final TextEditingController valueCtrl = TextEditingController();
+  String type; // Title-case for the dropdown: 'Text' | 'Number' | 'Date'
+  _CustomFieldRow({this.type = 'Text'});
+
+  void dispose() {
+    nameCtrl.dispose();
+    valueCtrl.dispose();
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
 // CREATE / EDIT INVOICE MODAL
 // ══════════════════════════════════════════════════════════════
-class _InvoiceFormModal extends StatefulWidget {
+class InvoiceFormModal extends StatefulWidget {
   final Invoice? existing;
   final List<SalesUser> salesUsers; // ← was List<String>
   final List<DealOption> deals;
-  final void Function(Map<String, dynamic>) onSave;
-  const _InvoiceFormModal({
+  final Future<void>  Function(Map<String, dynamic>) onSave;
+  const InvoiceFormModal({
     this.existing,
     required this.salesUsers,
     required this.deals,
     required this.onSave,
   });
   @override
-  State<_InvoiceFormModal> createState() => _InvoiceFormModalState();
+  State<InvoiceFormModal> createState() => InvoiceFormModalState();
 }
 
-class _InvoiceFormModalState extends State<_InvoiceFormModal> {
+class InvoiceFormModalState extends State<InvoiceFormModal> {
+  String? _apiError;
   final _priceCtrl = TextEditingController();
   final _taxValCtrl = TextEditingController();
   final _disValCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
+  final _amountPaidCtrl = TextEditingController();
+
+  // Billing details
+  final _billingAddressCtrl = TextEditingController();
+  final _clientTaxIdCtrl = TextEditingController();
+  final _poNumberCtrl = TextEditingController();
+  final _clientStateCtrl = TextEditingController();
+  final _countryCtrl = TextEditingController();
+
+  // Custom fields
+  final List<_CustomFieldRow> _customFields = [];
 
   SalesUser? _selectedUser; // ← replaces _assignTo + _assignToId
   String _issueDate = '';
@@ -1287,7 +1684,7 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
   String? _dealError;
   String? _priceError;
   //
-  static const _statuses = ['Paid', 'Unpaid'];
+  static const _statuses = ['Paid', 'Partially Paid', 'Unpaid'];
   static const _taxTypes = ['Zero Tax', 'Percentage', 'Fixed Amount'];
   static const _discountTypes = ['No Discount', 'Fixed Amount', 'Percentage'];
   static const _currencies = [
@@ -1306,6 +1703,7 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
     'ZAR',
     'SAR',
   ];
+  static const _customFieldTypes = ['Text', 'Number', 'Date'];
 
   bool get _isEdit => widget.existing != null;
 
@@ -1322,7 +1720,20 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
 
     return _currency;
   }
+  String _statusForApi(String status) {
+  switch (status) {
+    case 'Paid':
+      return 'paid';
+    case 'Partially Paid':
+      return 'partially_paid';
+    case 'Unpaid':
+      return 'unpaid';
+    default:
+      return status;
+  }
+}
 
+  
   @override
   void initState() {
     super.initState();
@@ -1341,7 +1752,12 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
       }
       _issueDate = e.issueDate;
       _dueDate = e.dueDate;
-      _status = e.status;
+      _status = switch (e.status) {
+  'paid' => 'Paid',
+  'unpaid' => 'Unpaid',
+  'partially_paid' => 'Partially Paid',
+  _ => e.status,
+};
       _taxType = e.taxType;
       _discountType = e.discountType;
       _currency = _sanitizeCurrency(e.currency);
@@ -1350,10 +1766,35 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
       _disValCtrl.text =
           e.discountValue == 0 ? '' : e.discountValue.toStringAsFixed(2);
       _notesCtrl.text = e.notes;
+      _amountPaidCtrl.text =
+          e.amountPaid == 0 ? '' : e.amountPaid.toStringAsFixed(2);
       if (e.dealId.isNotEmpty) {
         try {
           _selectedDeal = widget.deals.firstWhere((d) => d.id == e.dealId);
         } catch (_) {}
+      }
+
+      // Billing details
+      _billingAddressCtrl.text = e.billingAddress;
+      _clientTaxIdCtrl.text = e.clientTaxId;
+      _poNumberCtrl.text = e.poNumber;
+      _clientStateCtrl.text = e.clientState;
+      _countryCtrl.text = e.dealCountry;
+
+      // Custom fields — API shape is {label, type, value}, type lowercase
+      for (final raw in e.customFields) {
+        if (raw is Map) {
+          final rawType = (raw['type']?.toString() ?? 'text').toLowerCase();
+          final row = _CustomFieldRow(
+            type: _customFieldTypes.firstWhere(
+              (t) => t.toLowerCase() == rawType,
+              orElse: () => 'Text',
+            ),
+          );
+          row.nameCtrl.text = raw['label']?.toString() ?? '';
+          row.valueCtrl.text = raw['value']?.toString() ?? '';
+          _customFields.add(row);
+        }
       }
     }
   }
@@ -1371,7 +1812,7 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
   }
 
   @override
-  void didUpdateWidget(covariant _InvoiceFormModal oldWidget) {
+  void didUpdateWidget(covariant InvoiceFormModal oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (_selectedDeal == null) return;
     final resolved = _dealForDropdown;
@@ -1394,6 +1835,15 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
     _taxValCtrl.dispose();
     _disValCtrl.dispose();
     _notesCtrl.dispose();
+    _amountPaidCtrl.dispose();
+    _billingAddressCtrl.dispose();
+    _clientTaxIdCtrl.dispose();
+    _poNumberCtrl.dispose();
+    _clientStateCtrl.dispose();
+    _countryCtrl.dispose();
+    for (final f in _customFields) {
+      f.dispose();
+    }
     super.dispose();
   }
 
@@ -1423,36 +1873,33 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
     return v.toStringAsFixed(2);
   }
 
-  void _save() {
-    setState(() {
-      _assignToError = _selectedUser == null ? 'Assign To is required' : null;
+  Future<void> _save() async {
+  setState(() {
+    _apiError = null;
 
-      _issueDateError = _issueDate.isEmpty ? 'Issue Date is required' : null;
+    _assignToError = _selectedUser == null ? 'Assign To is required' : null;
+    _issueDateError = _issueDate.isEmpty ? 'Issue Date is required' : null;
+    _dueDateError = _dueDate.isEmpty ? 'Due Date is required' : null;
+    _dealError = _selectedDeal == null ? 'Select a Deal' : null;
+    _priceError =
+        _priceCtrl.text.trim().isEmpty ? 'Price is required' : null;
+  });
 
-      _dueDateError = _dueDate.isEmpty ? 'Due Date is required' : null;
+  if (_assignToError != null ||
+      _issueDateError != null ||
+      _dueDateError != null ||
+      _dealError != null ||
+      _priceError != null) {
+    return;
+  }
 
-      _dealError = _selectedDeal == null ? 'Select a Deal' : null;
-
-      _priceError = _priceCtrl.text.trim().isEmpty ? 'Price is required' : null;
-    });
-
-    if (_assignToError != null ||
-        _issueDateError != null ||
-        _dueDateError != null ||
-        _dealError != null ||
-        _priceError != null) {
-      return;
-    }
-
-    print("FINAL PRICE => $_price");
-    print("FINAL CURRENCY => $_currency");
-    print("SELECTED DEAL => ${_selectedDeal?.name}");
-    widget.onSave({
-      'assignTo': _selectedUser!.name, // display name (for local DB / UI)
-      'assignToId': _selectedUser!.id, // ← _id sent to API
+  try {
+    await widget.onSave({
+      'assignTo': _selectedUser!.name,
+      'assignToId': _selectedUser!.id,
       'issueDate': _issueDate,
       'dueDate': _dueDate,
-      'status': _status,
+      'status': _statusForApi(_status),
       'taxType': _taxType,
       'taxValue': _taxVal,
       'discountType': _discountType,
@@ -1460,13 +1907,30 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
       'dealId': _selectedDeal!.id,
       'dealName': _selectedDeal!.name,
       'dealRequirement': _selectedDeal!.requirement,
-      // Use the Price field (user may override deal value after selection).
       'price': double.tryParse(_priceCtrl.text.trim()) ?? 0,
       'notes': _notesCtrl.text.trim(),
+      'amountPaid': double.tryParse(_amountPaidCtrl.text.trim()) ?? 0,
       'currency': _currency,
+      'billingAddress': _billingAddressCtrl.text.trim(),
+      'clientTaxId': _clientTaxIdCtrl.text.trim(),
+      'poNumber': _poNumberCtrl.text.trim(),
+      'clientState': _clientStateCtrl.text.trim(),
+      'dealCountry': _countryCtrl.text.trim(),
+      'customFields': _customFields
+          .where((f) => f.nameCtrl.text.trim().isNotEmpty)
+          .map((f) => {
+                'label': f.nameCtrl.text.trim(),
+                'type': f.type.toLowerCase(),
+                'value': f.valueCtrl.text.trim(),
+              })
+          .toList(),
+    });
+  } catch (e) {
+    setState(() {
+      _apiError = e.toString().replaceFirst('Exception: ', '');
     });
   }
-
+}
   void _snack(String msg) {
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
 
@@ -1517,8 +1981,6 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
   @override
   Widget build(BuildContext context) {
     // ── Build name-only list for the dropdown display ──
-    final selectedUserId = _selectedUser?.id;
-
     final dropdownUsers = widget.salesUsers;
     return DraggableScrollableSheet(
       initialChildSize: 0.97,
@@ -1542,7 +2004,8 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
             ),
             Container(
               color: AppColors.surface,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
               child: Row(
                 children: [
                   Container(
@@ -1601,6 +2064,34 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
                 controller: ctrl,
                 padding: const EdgeInsets.all(16),
                 children: [
+                      if (_apiError != null)
+      Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.dangerLight,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.danger),
+        ),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.error_outline,
+              color: AppColors.danger,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _apiError!,
+                style: const TextStyle(
+                  color: AppColors.danger,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
                   const _SecHeader(
                     title: 'Basic Information',
                     icon: Icons.info_outline,
@@ -1749,38 +2240,43 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
                     icon: Icons.info_outline,
                     onChanged: (v) => setState(() => _status = v),
                   ),
+                  const SizedBox(height: 14),
+
+                  const _FieldLabel('Amount Received'),
+                  const SizedBox(height: 6),
+                  _tfNum(_amountPaidCtrl, '0.00'),
                   const SizedBox(height: 22),
 
-                  // Row(children: [
-                  //   const Expanded(
-                  //       child: Column(
-                  //           crossAxisAlignment: CrossAxisAlignment.start,
-                  //           children: [
-                  //         const _FieldLabel('Tax Type'),
-                  //         const SizedBox(height: 6),
-                  //         _FullDrop(
-                  //             value: _taxType,
-                  //             items: _taxTypes,
-                  //             icon: Icons.percent_outlined,
-                  //             onChanged: (v) => setState(() {
-                  //                   _taxType = v;
-                  //                   _taxValCtrl.clear();
-                  //                 })),
-                  //       ])),
-                  //   if (_taxType != 'Zero Tax') ...[
-                  //     const SizedBox(width: 12),
-                  //     Expanded(
-                  //         child: Column(
-                  //             crossAxisAlignment: CrossAxisAlignment.start,
-                  //             children: [
-                  //           _FieldLabel(_taxType == 'Percentage'
-                  //               ? 'Tax %'
-                  //               : 'Tax Amount'),
-                  //           const SizedBox(height: 6),
-                  //           _tfNum(_taxValCtrl, '0'),
-                  //         ])),
-                  //   ],
-                  // ]),
+                  Row(children: [
+                    Expanded(
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                          const _FieldLabel('Tax Type'),
+                          const SizedBox(height: 6),
+                          _FullDrop(
+                              value: _taxType,
+                              items: _taxTypes,
+                              icon: Icons.percent_outlined,
+                              onChanged: (v) => setState(() {
+                                    _taxType = v;
+                                    _taxValCtrl.clear();
+                                  })),
+                        ])),
+                    if (_taxType != 'Zero Tax') ...[
+                      const SizedBox(width: 12),
+                      Expanded(
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                            _FieldLabel(_taxType == 'Percentage'
+                                ? 'Tax %'
+                                : 'Tax Amount'),
+                            const SizedBox(height: 6),
+                            _tfNum(_taxValCtrl, '0'),
+                          ])),
+                    ],
+                  ]),
                   const SizedBox(height: 14),
 
                   Row(
@@ -1822,6 +2318,171 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
                       ],
                     ],
                   ),
+                  const SizedBox(height: 22),
+
+                  const _SecHeader(
+                    title: 'Billing Details',
+                    icon: Icons.description_outlined,
+                  ),
+                  const SizedBox(height: 14),
+
+                  const _FieldLabel('Billing Address'),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: _billingAddressCtrl,
+                    maxLines: 3,
+                    style: const TextStyle(fontSize: 14),
+                    decoration: InputDecoration(
+                      hintText: "Defaults to the deal's address",
+                      contentPadding: const EdgeInsets.all(14),
+                      filled: true,
+                      fillColor: AppColors.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(
+                          color: AppColors.primary,
+                          width: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+
+                  const _FieldLabel('Client Tax ID'),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: _clientTaxIdCtrl,
+                    style: const TextStyle(fontSize: 14),
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: InputDecoration(
+                      hintText: 'e.g. GSTIN, VAT No.',
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 13,
+                      ),
+                      filled: true,
+                      fillColor: AppColors.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(
+                          color: AppColors.primary,
+                          width: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+
+                  const _FieldLabel('PO Number'),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: _poNumberCtrl,
+                    style: const TextStyle(fontSize: 14),
+                    decoration: InputDecoration(
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 13,
+                      ),
+                      filled: true,
+                      fillColor: AppColors.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(
+                          color: AppColors.primary,
+                          width: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+
+                  const _FieldLabel('Client State (GST)'),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: _clientStateCtrl,
+                    style: const TextStyle(fontSize: 14),
+                    decoration: InputDecoration(
+                      hintText: "Defaults to the deal's state",
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 13,
+                      ),
+                      filled: true,
+                      fillColor: AppColors.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(
+                          color: AppColors.primary,
+                          width: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+
+                  const _FieldLabel('Country'),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: _countryCtrl,
+                    style: const TextStyle(fontSize: 14),
+                    decoration: InputDecoration(
+                      hintText: "Defaults to the deal's country",
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 13,
+                      ),
+                      filled: true,
+                      fillColor: AppColors.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(
+                          color: AppColors.primary,
+                          width: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+
                   const SizedBox(height: 22),
 
                   const _SecHeader(
@@ -1907,6 +2568,9 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
 
                             _priceCtrl.text = d.value.toStringAsFixed(2);
                             _currency = _sanitizeCurrency(d.currency);
+                            if (_countryCtrl.text.trim().isEmpty) {
+                              _countryCtrl.text = d.country;
+                            }
 
                             print("PRICE CTRL => ${_priceCtrl.text}");
                           }
@@ -2038,6 +2702,148 @@ class _InvoiceFormModalState extends State<_InvoiceFormModal> {
                     ),
                   ),
                   const SizedBox(height: 22),
+
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const _SecHeader(
+                        title: 'Custom Fields',
+                        icon: Icons.dashboard_customize_outlined,
+                      ),
+                      TextButton.icon(
+                        onPressed: () =>
+                            setState(() => _customFields.add(_CustomFieldRow())),
+                        icon: const Icon(Icons.add, size: 15),
+                        label: const Text(
+                          'Add field',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  for (var i = 0; i < _customFields.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            flex: 3,
+                            child: TextField(
+                              controller: _customFields[i].nameCtrl,
+                              style: const TextStyle(fontSize: 13),
+                              decoration: InputDecoration(
+                                hintText: 'Field name',
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 11,
+                                ),
+                                filled: true,
+                                fillColor: AppColors.surface,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                  borderSide:
+                                      const BorderSide(color: AppColors.border),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                  borderSide:
+                                      const BorderSide(color: AppColors.border),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                  borderSide:
+                                      const BorderSide(color: AppColors.primary),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: 2,
+                            child: Container(
+                              height: 40,
+                              padding: const EdgeInsets.symmetric(horizontal: 10),
+                              decoration: BoxDecoration(
+                                color: AppColors.surface,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: AppColors.border),
+                              ),
+                              child: DropdownButtonHideUnderline(
+                                child: DropdownButton<String>(
+                                  value: _customFields[i].type,
+                                  isExpanded: true,
+                                  isDense: true,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                  items: _customFieldTypes
+                                      .map((t) => DropdownMenuItem(
+                                            value: t,
+                                            child: Text(t),
+                                          ))
+                                      .toList(),
+                                  onChanged: (v) => setState(() {
+                                    if (v != null) _customFields[i].type = v;
+                                  }),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: 3,
+                            child: TextField(
+                              controller: _customFields[i].valueCtrl,
+                              style: const TextStyle(fontSize: 13),
+                              keyboardType: _customFields[i].type == 'Number'
+                                  ? TextInputType.number
+                                  : TextInputType.text,
+                              decoration: InputDecoration(
+                                hintText: 'Value',
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 11,
+                                ),
+                                filled: true,
+                                fillColor: AppColors.surface,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                  borderSide:
+                                      const BorderSide(color: AppColors.border),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                  borderSide:
+                                      const BorderSide(color: AppColors.border),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                  borderSide:
+                                      const BorderSide(color: AppColors.primary),
+                                ),
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => setState(() {
+                              _customFields[i].dispose();
+                              _customFields.removeAt(i);
+                            }),
+                            icon: const Icon(
+                              Icons.delete_outline,
+                              size: 18,
+                              color: AppColors.danger,
+                            ),
+                            padding: EdgeInsets.zero,
+                            constraints:
+                                const BoxConstraints(minWidth: 32, minHeight: 32),
+                          ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 10),
 
                   const _FieldLabel('Notes'),
                   const SizedBox(height: 6),

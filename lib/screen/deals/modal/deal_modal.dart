@@ -1,3 +1,40 @@
+import 'package:flutter/material.dart';
+
+// ===============================
+// Invoice Tab
+// ===============================
+class DealInvoice {
+  final String id;
+  final String invoiceNumber;
+  final String status;
+  final String total;
+  final String currency;
+  final DateTime issueDate;
+  final DateTime dueDate;
+
+  DealInvoice({
+    required this.id,
+    required this.invoiceNumber,
+    required this.status,
+    required this.total,
+    required this.currency,
+    required this.issueDate,
+    required this.dueDate,
+  });
+
+  factory DealInvoice.fromJson(Map<String, dynamic> json) {
+    return DealInvoice(
+      id: json['_id'],
+      invoiceNumber: json['invoicenumber'] ?? '',
+      status: json['status'] ?? '',
+      total: json['total'].toString(),
+      currency: json['currency'] ?? '',
+      issueDate: DateTime.parse(json['issueDate']),
+      dueDate: DateTime.parse(json['dueDate']),
+    );
+  }
+}
+
 // ══════════════════════════════════════════════════════════════
 // ATTACHMENT MODEL
 // ══════════════════════════════════════════════════════════════
@@ -6,12 +43,14 @@ class Attachment {
   final String path;
   final String type;
   final int size;
+  final DateTime? uploadedAt;
 
   const Attachment({
     required this.name,
     required this.path,
     required this.type,
     required this.size,
+    this.uploadedAt,
   });
 
   factory Attachment.fromJson(Map<String, dynamic> j) => Attachment(
@@ -19,7 +58,83 @@ class Attachment {
         path: j['path']?.toString() ?? '',
         type: j['type']?.toString() ?? '',
         size: (j['size'] as num?)?.toInt() ?? 0,
+        uploadedAt: j['uploadedAt'] != null
+            ? DateTime.tryParse(j['uploadedAt'].toString())
+            : null,
       );
+}
+
+// Deal Activity Item
+class DealActivityItem {
+  final String type; // "followup" | "stage_change" | etc.
+  final String description;
+  final String performedByName;
+  final DateTime timestamp;
+
+  const DealActivityItem({
+    required this.type,
+    required this.description,
+    required this.performedByName,
+    required this.timestamp,
+  });
+
+  factory DealActivityItem.fromJson(Map<String, dynamic> j) {
+    final performedBy = j['performedBy'];
+    return DealActivityItem(
+      type: (j['type'] ?? '').toString(),
+      description: (j['description'] ?? '').toString(),
+      performedByName: performedBy is Map
+          ? (performedBy['name'] ?? '').toString()
+          : '',
+      timestamp: DateTime.tryParse(j['timestamp']?.toString() ?? '') ??
+          DateTime.now(),
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// FOLLOW-UP HISTORY MODEL
+// ══════════════════════════════════════════════════════════════
+class FollowUpHistoryItem {
+  final String id;
+  final DateTime? date; // when the action happened
+  final DateTime? followUpDate; // scheduled datetime
+  final String action; // e.g. "Created", "Completed"
+  final String comment;
+  final String changedByName; // who logged this follow-up
+  final String? outcome;
+  final String? notes;
+
+  const FollowUpHistoryItem({
+    this.id = '',
+    this.date,
+    this.followUpDate,
+    required this.action,
+    required this.comment,
+    this.changedByName = '',
+    this.outcome,
+    this.notes,
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+// STAGE HISTORY MODEL
+// ══════════════════════════════════════════════════════════════
+class StageHistoryItem {
+  final String id;
+  final String stage;
+  final DateTime? movedAt;
+  // API sends movedBy as a bare user-id string here, not an expanded
+  // object like followUpHistory's changedBy — so we only have the id
+  // to work with, not a name, unless the backend later expands it.
+  final String movedById;
+
+  const StageHistoryItem({
+    this.id = '',
+    required this.stage,
+    this.movedAt,
+    this.movedById = '',
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -50,6 +165,30 @@ class Deal {
   final List<FollowUpHistoryItem> followUpHistory;
   final List<Attachment> attachments;
 
+  // ── new fields ──────────────────────────────────────────────
+  final String alternativeNumber;
+  final String alternativeEmail;
+  final String companySize;
+  final String requirement;
+  final String lossReason;
+  final String lossNotes;
+  final DateTime? stageLostAt;
+  final List<StageHistoryItem> stageHistory;
+
+  // ── rejection fields ────────────────────────────────────────
+  final String rejectionReason;
+  final String rejectedByName;
+  final DateTime? rejectedAt;
+
+  // ── conversion / won fields ─────────────────────────────────
+  final String leadId;
+  final DateTime? convertedAt;
+  final String convertedByName;
+  final DateTime? wonAt;
+  final String wonByName;
+  final DateTime? leadCreatedAt;
+  final double discountGiven;
+
   const Deal({
     required this.id,
     required this.name,
@@ -74,7 +213,36 @@ class Deal {
     this.followUpComment,
     this.followUpHistory = const [],
     this.attachments = const [],
+    this.alternativeNumber = '',
+    this.alternativeEmail = '',
+    this.companySize = '',
+    this.requirement = '',
+    this.lossReason = '',
+    this.lossNotes = '',
+    this.stageLostAt,
+    this.stageHistory = const [],
+    this.rejectionReason = '',
+    this.rejectedByName = '',
+    this.rejectedAt,
+    this.leadId = '',
+    this.convertedAt,
+    this.convertedByName = '',
+    this.wonAt,
+    this.wonByName = '',
+    this.leadCreatedAt,
+    this.discountGiven = 0,
   });
+
+  /// True when this deal was rejected — [Deal.stage] will be the raw
+  /// API "Rejected" value, which is intentionally NOT one of
+  /// [DealConstants.stages] (see [DealConstants.canonicalStage]).
+  bool get isRejected => stage.trim().toLowerCase() == 'rejected';
+
+  /// True when the deal has actually been marked won (server sent
+  /// wonAt), as distinct from merely sitting in the "Closed Won"
+  /// stage bucket — use this when precision on the won timestamp
+  /// matters (e.g. period-filtered "Deals Won" reporting).
+  bool get isWon => wonAt != null;
 
   static String _s(dynamic v, [String fb = '']) =>
       v == null ? fb : v.toString();
@@ -85,24 +253,34 @@ class Deal {
     return '';
   }
 
-  factory Deal.fromJson(Map<String, dynamic> j) {
-    // assignTo
-    String assignTo = '';
-    final raw = j['assignTo'] ?? j['assignedTo'];
+  static String _fullName(dynamic raw) {
     if (raw is Map) {
-      assignTo = '${_s(raw['firstName'])} ${_s(raw['lastName'])}';
-    } else if (raw != null) {
-      assignTo = _s(raw);
+      return '${_s(raw['firstName'])} ${_s(raw['lastName'])}'.trim();
     }
-    assignTo = assignTo.trim();
+    return raw != null ? _s(raw).trim() : '';
+  }
 
-    // value — strip non-numeric chars before parsing
+  factory Deal.fromJson(Map<String, dynamic> j) {
+    // assignTo — API uses "assignedTo" on some payloads (e.g. the
+    // deals list) and "assignTo" on others; check both.
+    final assignTo = _fullName(j['assignTo'] ?? j['assignedTo']);
+
+    // value — prefer the numeric preferredCurrencyValue when present,
+    // since `value` on the API can be a formatted string like
+    // "10,000 INR"; fall back to stripping non-numeric chars from
+    // whichever value/dealValue/amount field is available.
     double val = 0;
-    final rv = j['value'] ?? j['dealValue'] ?? j['amount'];
-    if (rv != null) {
-      val =
-          double.tryParse(rv.toString().replaceAll(RegExp(r'[^\d.\-]'), '')) ??
-              0;
+    if (j['preferredCurrencyValue'] != null) {
+      val = (j['preferredCurrencyValue'] as num?)?.toDouble() ??
+          double.tryParse(j['preferredCurrencyValue'].toString()) ??
+          0;
+    } else {
+      final rv = j['value'] ?? j['dealValue'] ?? j['amount'];
+      if (rv != null) {
+        val = double.tryParse(
+                rv.toString().replaceAll(RegExp(r'[^\d.\-]'), '')) ??
+            0;
+      }
     }
 
     // currency — API sends bare "INR"; map to display string "₹ INR"
@@ -136,13 +314,51 @@ class Deal {
         if (h is! Map) continue;
         final m = Map<String, dynamic>.from(h);
         followUpHistory.add(FollowUpHistoryItem(
+          id: _s(m['_id']),
           date: DateTime.tryParse(m['date']?.toString() ?? ''),
           followUpDate: DateTime.tryParse(m['followUpDate']?.toString() ?? ''),
           action: (m['action'] ?? m['status'] ?? '').toString(),
           comment: (m['followUpComment'] ?? m['comment'] ?? '').toString(),
+          changedByName: (() {
+            final cb = m['changedBy'];
+            debugPrint('changedBy raw type=${cb.runtimeType} value=$cb');
+            if (cb is Map) {
+              final fn = (cb['firstName'] ?? '').toString().trim();
+              final ln = (cb['lastName'] ?? '').toString().trim();
+              final combined = [fn, ln].where((s) => s.isNotEmpty).join(' ');
+              if (combined.isNotEmpty) return combined;
+            }
+            return '';
+          })(),
+          outcome: (m["outcome"] ?? '').toString(),
+          notes: (m["notes"] ?? '').toString(),
         ));
       }
     }
+
+    // stageHistory — timeline of stage moves.
+    final List<StageHistoryItem> stageHistory = [];
+    final rawStageHistory = j['stageHistory'];
+    if (rawStageHistory is List) {
+      for (final h in rawStageHistory) {
+        if (h is! Map) continue;
+        final m = Map<String, dynamic>.from(h);
+        stageHistory.add(StageHistoryItem(
+          id: _s(m['_id']),
+          stage: _s(m['stage']),
+          movedAt: DateTime.tryParse(m['movedAt']?.toString() ?? ''),
+          // movedBy is a bare id string in this response, not an object
+          movedById: m['movedBy'] is Map
+              ? _s((m['movedBy'] as Map)['_id'])
+              : _s(m['movedBy']),
+        ));
+      }
+    }
+
+    // discountGiven — API sends a plain number.
+    final discountGiven = (j['discountGiven'] is num)
+        ? (j['discountGiven'] as num).toDouble()
+        : double.tryParse(_s(j['discountGiven'], '0')) ?? 0;
 
     return Deal(
       id: _s(j['_id'] ?? j['id']),
@@ -174,6 +390,36 @@ class Deal {
       followUpComment: j['followUpComment']?.toString(),
       followUpHistory: followUpHistory,
       attachments: attachments,
+      alternativeNumber: _s(j['alternativeNumber']),
+      alternativeEmail: _s(j['alternativeEmail']),
+      companySize: _s(j['companySize']),
+      requirement: _s(j['requirement']),
+      lossReason: _s(j['lossReason']),
+      lossNotes: _s(j['lossNotes']),
+      // API sends both stageLostAt and lostDate — prefer stageLostAt,
+      // fall back to lostDate if only that one is populated.
+      stageLostAt: j['stageLostAt'] != null
+          ? DateTime.tryParse(j['stageLostAt'].toString())
+          : (j['lostDate'] != null
+              ? DateTime.tryParse(j['lostDate'].toString())
+              : null),
+      stageHistory: stageHistory,
+      rejectionReason: _s(j['rejectionReason']),
+      rejectedByName: _fullName(j['rejectedBy']),
+      rejectedAt: j['rejectedAt'] != null
+          ? DateTime.tryParse(j['rejectedAt'].toString())
+          : null,
+      leadId: _s(j['leadId']),
+      convertedAt: j['convertedAt'] != null
+          ? DateTime.tryParse(j['convertedAt'].toString())
+          : null,
+      convertedByName: _fullName(j['convertedBy']),
+      wonAt: j['wonAt'] != null ? DateTime.tryParse(j['wonAt'].toString()) : null,
+      wonByName: _fullName(j['wonBy']),
+      leadCreatedAt: j['leadCreatedAt'] != null
+          ? DateTime.tryParse(j['leadCreatedAt'].toString())
+          : null,
+      discountGiven: discountGiven,
     );
   }
 
@@ -181,6 +427,7 @@ class Deal {
     String? stage,
     List<Attachment>? attachments,
     List<FollowUpHistoryItem>? followUpHistory,
+    List<StageHistoryItem>? stageHistory,
   }) =>
       Deal(
         id: id,
@@ -206,6 +453,24 @@ class Deal {
         followUpComment: followUpComment,
         followUpHistory: followUpHistory ?? this.followUpHistory,
         attachments: attachments ?? this.attachments,
+        alternativeNumber: alternativeNumber,
+        alternativeEmail: alternativeEmail,
+        companySize: companySize,
+        requirement: requirement,
+        lossReason: lossReason,
+        lossNotes: lossNotes,
+        stageLostAt: stageLostAt,
+        stageHistory: stageHistory ?? this.stageHistory,
+        rejectionReason: rejectionReason,
+        rejectedByName: rejectedByName,
+        rejectedAt: rejectedAt,
+        leadId: leadId,
+        convertedAt: convertedAt,
+        convertedByName: convertedByName,
+        wonAt: wonAt,
+        wonByName: wonByName,
+        leadCreatedAt: leadCreatedAt,
+        discountGiven: discountGiven,
       );
 
   Map<String, dynamic> toPayload() => {
@@ -223,21 +488,11 @@ class Deal {
         'currency': currency,
         'countryCode': countryCode,
         'value': value,
+        'alternativeNumber': alternativeNumber,
+        'alternativeEmail': alternativeEmail,
+        'companySize': companySize,
+        'requirement': requirement,
       };
-}
-
-class FollowUpHistoryItem {
-  final DateTime? date; // when the action happened
-  final DateTime? followUpDate; // scheduled datetime
-  final String action; // e.g. "Scheduled", "Completed"
-  final String comment;
-
-  const FollowUpHistoryItem({
-    this.date,
-    this.followUpDate,
-    required this.action,
-    required this.comment,
-  });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -252,11 +507,22 @@ class DealConstants {
     'Closed Lost',
   ];
 
+  /// Stage used by rejected deals. Kept out of [stages] deliberately —
+  /// rejected deals live in their own screen/tab (`/deals/rejected`),
+  /// not as a Kanban column — but exposed here so callers can check
+  /// against it explicitly instead of hardcoding the string.
+  static const rejectedStage = 'Rejected';
+
   /// Maps legacy/API stages to a column in [stages].
+  /// Returns [rejectedStage] as-is for rejected deals — callers that
+  /// render the Kanban board should route those to the rejected-deals
+  /// screen instead of trying to place them in a column.
   static String canonicalStage(String raw) {
     final t = raw.trim();
     if (t.isEmpty) return stages.first;
     final k = t.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '');
+
+    if (k == 'rejected') return rejectedStage;
 
     // Keep real "Invoice Sent" stages separate.
     if (k.contains('invoice') && k.contains('sent')) {

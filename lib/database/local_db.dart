@@ -38,7 +38,16 @@ class LocalDb {
       // v6 → + invoices.inrAmount, invoices.exchangeRate, invoices.isLocal
       // v7 → + leaderboard_cache, leaderboard_stats
       // v8 → + dashboard_cache, dashboard_pipeline
-      version: 12,
+      // v13 → + leads: alternatePhoneNumber, alternateEmail, sourceId, city,
+      //        state, pincode, numberOfEmployees, latitude, longitude, trash,
+      //        trashedAt, taskAdminActivityDismissed,
+      //        targetAdminActivityDismissed, emailSentAt, notesUpdatedBy,
+      //        notesUpdatedAt, instagramUsername, linkedinLeadId,
+      //        linkedinCampaignId, linkedinCampaignName, linkedinFormId,
+      //        linkedinFormName, customFields, assignmentHistory,
+      //        notesHistory, followUpNotesHistory, meta, createdBy,
+      //        lastUpdatedBy, lastUpdatedAt
+      version: 13,
       onCreate: (db, _) async {
         await _createLeadsTable(db);
         await _createUsersTable(db);
@@ -134,9 +143,51 @@ class LocalDb {
                 'ALTER TABLE users ADD COLUMN createdAt TEXT DEFAULT ""');
           } catch (_) {}
         }
+        if (oldVersion < 13) {
+          for (final ddl in _leadsV13Columns) {
+            try {
+              await db.execute('ALTER TABLE leads ADD COLUMN $ddl');
+            } catch (_) {}
+          }
+        }
       },
     );
   }
+
+  // Columns added in schema v13 — declared once and reused for both the
+  // fresh CREATE TABLE and the ALTER TABLE upgrade path so they can't drift.
+  static const List<String> _leadsV13Columns = [
+    'alternatePhoneNumber TEXT DEFAULT \'\'',
+    'alternateEmail TEXT DEFAULT \'\'',
+    'sourceId TEXT',
+    'city TEXT DEFAULT \'\'',
+    'state TEXT DEFAULT \'\'',
+    'pincode TEXT DEFAULT \'\'',
+    'numberOfEmployees INTEGER',
+    'latitude REAL',
+    'longitude REAL',
+    'trash INTEGER DEFAULT 0',
+    'trashedAt TEXT',
+    'taskAdminActivityDismissed INTEGER DEFAULT 0',
+    'targetAdminActivityDismissed INTEGER DEFAULT 0',
+    'emailSentAt TEXT',
+    'notesUpdatedBy TEXT',
+    'notesUpdatedAt TEXT',
+    'instagramUsername TEXT',
+    'linkedinLeadId TEXT',
+    'linkedinCampaignId TEXT',
+    'linkedinCampaignName TEXT',
+    'linkedinFormId TEXT',
+    'linkedinFormName TEXT',
+    'customFields TEXT DEFAULT \'[]\'',
+    'assignmentHistory TEXT DEFAULT \'[]\'',
+    'notesHistory TEXT DEFAULT \'[]\'',
+    'followUpNotesHistory TEXT DEFAULT \'[]\'',
+    'meta TEXT',
+    'createdBy TEXT',
+    'lastUpdatedBy TEXT',
+    'lastUpdatedAt TEXT',
+  ];
 
   // ── Table creators ────────────────────────────────────────────
   static Future<void> _createLeadsTable(Database db) => db.execute('''
@@ -161,7 +212,8 @@ class LocalDb {
       createdAt      TEXT,
       updatedAt      TEXT,
       lastReminderAt TEXT,
-      isLocal        INTEGER DEFAULT 1
+      isLocal        INTEGER DEFAULT 1,
+      ${_leadsV13Columns.join(',\n      ')}
     )
   ''');
 
@@ -413,6 +465,43 @@ class LocalDb {
       'updatedAt': lead.updatedAt?.toIso8601String(),
       'lastReminderAt': lead.lastReminderAt?.toIso8601String(),
       'isLocal': 0,
+      'alternatePhoneNumber': lead.alternatePhoneNumber,
+      'alternateEmail': lead.alternateEmail,
+      'sourceId': lead.sourceId,
+      'city': lead.city,
+      'state': lead.state,
+      'pincode': lead.pincode,
+      'numberOfEmployees': lead.numberOfEmployees,
+      'latitude': lead.latitude,
+      'longitude': lead.longitude,
+      'trash': lead.trash ? 1 : 0,
+      'trashedAt': lead.trashedAt?.toIso8601String(),
+      'taskAdminActivityDismissed': lead.taskAdminActivityDismissed ? 1 : 0,
+      'targetAdminActivityDismissed':
+          lead.targetAdminActivityDismissed ? 1 : 0,
+      'emailSentAt': lead.emailSentAt?.toIso8601String(),
+      'notesUpdatedBy': lead.notesUpdatedBy != null
+          ? jsonEncode(lead.notesUpdatedBy!.toJson())
+          : null,
+      'notesUpdatedAt': lead.notesUpdatedAt?.toIso8601String(),
+      'instagramUsername': lead.instagramUsername,
+      'linkedinLeadId': lead.linkedinLeadId,
+      'linkedinCampaignId': lead.linkedinCampaignId,
+      'linkedinCampaignName': lead.linkedinCampaignName,
+      'linkedinFormId': lead.linkedinFormId,
+      'linkedinFormName': lead.linkedinFormName,
+      'customFields':
+          jsonEncode(lead.customFields.map((c) => c.toJson()).toList()),
+      'assignmentHistory': jsonEncode(lead.assignmentHistory),
+      'notesHistory': jsonEncode(lead.notesHistory),
+      'followUpNotesHistory': jsonEncode(lead.followUpNotesHistory),
+      'meta': lead.meta != null ? jsonEncode(lead.meta!.toJson()) : null,
+      'createdBy':
+          lead.createdBy != null ? jsonEncode(lead.createdBy!.toJson()) : null,
+      'lastUpdatedBy': lead.lastUpdatedBy != null
+          ? jsonEncode(lead.lastUpdatedBy!.toJson())
+          : null,
+      'lastUpdatedAt': lead.lastUpdatedAt?.toIso8601String(),
     };
     if ((row['id'] as String).isEmpty) return;
     await db.insert('leads', row, conflictAlgorithm: ConflictAlgorithm.replace);

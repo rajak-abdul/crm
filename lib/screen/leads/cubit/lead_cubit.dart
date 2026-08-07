@@ -24,6 +24,35 @@ abstract class CallState extends Equatable {
   List<Object?> get props => [];
 }
 
+class LeadLoaded extends LeadState {
+  final List<Lead> leads;
+  final List<AppUser> salesUsers;
+  final int currentPage;
+  final int? totalCount; // null when the API doesn't return a total — see debugPrint below
+  const LeadLoaded({
+    required this.leads,
+    this.salesUsers = const [],
+    this.currentPage = 1,
+    this.totalCount,
+  });
+  @override
+  List<Object?> get props => [leads, salesUsers, currentPage, totalCount];
+}
+
+// ============================================
+class LeadActionSuccess extends LeadLoaded {
+  final String message;
+  const LeadActionSuccess({
+    required super.leads,
+    super.salesUsers,
+    super.currentPage,
+    super.totalCount,
+    required this.message,
+  });
+  @override
+  List<Object?> get props => [leads, salesUsers, currentPage, totalCount, message];
+}
+// ============================================
 class CallInitial extends CallState {}
 
 class CallLoading extends CallState {}
@@ -49,21 +78,21 @@ class LeadInitial extends LeadState {}
 
 class LeadLoading extends LeadState {}
 
-class LeadLoaded extends LeadState {
-  final List<Lead> leads;
-  final List<AppUser> salesUsers;
-  const LeadLoaded({required this.leads, this.salesUsers = const []});
-  @override
-  List<Object?> get props => [leads, salesUsers];
-}
+// class LeadLoaded extends LeadState {
+//   final List<Lead> leads;
+//   final List<AppUser> salesUsers;
+//   const LeadLoaded({required this.leads, this.salesUsers = const []});
+//   @override
+//   List<Object?> get props => [leads, salesUsers];
+// }
 
-class LeadActionSuccess extends LeadLoaded {
-  final String message;
-  const LeadActionSuccess(
-      {required super.leads, super.salesUsers, required this.message});
-  @override
-  List<Object?> get props => [leads, salesUsers, message];
-}
+// class LeadActionSuccess extends LeadLoaded {
+//   final String message;
+//   const LeadActionSuccess(
+//       {required super.leads, super.salesUsers, required this.message});
+//   @override
+//   List<Object?> get props => [leads, salesUsers, message];
+// }
 
 class LeadError extends LeadState {
   final String message;
@@ -163,6 +192,9 @@ class LeadCubit extends Cubit<LeadState> {
   List<AppUser> _salesUsers = [];
   String? _cachedToken;
   String? _cachedTenantSlug;
+  List<Map<String, dynamic>> _extractLeadList(dynamic data) {
+  return _parseListIsolate(data);
+}
 
   LeadCubit() : super(LeadInitial()) {
     _dio = Dio(BaseOptions(
@@ -215,7 +247,7 @@ class LeadCubit extends Cubit<LeadState> {
   // Missed Follow-ups, both together) should show the same combined,
   // un-deduped list of normal + rejected leads.
   Future<void> fetchAllLeads(
-      {int page = 1, int limit = 50, String? status}) async {
+      {int page = 1, int limit = 10, String? status}) async {
     if (isClosed) return;
     emit(LeadLoading());
     try {
@@ -239,6 +271,8 @@ class LeadCubit extends Cubit<LeadState> {
 
       final leadsRaw = results[0].data;
       final usersRaw = results[1].data;
+      final totalCount = _extractTotalCount(leadsRaw); // ADD
+      debugPrint('=== LEADS META === totalCount=$totalCount rawKeys=${leadsRaw is Map ? leadsRaw.keys.toList() : "not a map"}'); // ADD — check console once to confirm the real key name
 
 // ✅ PARSE DATA (no de-dup — duplicates from the API are intentionally kept)
       final apiLeads = await compute(_parseListIsolate, leadsRaw)
@@ -295,7 +329,10 @@ class LeadCubit extends Cubit<LeadState> {
           .toList();
 
       if (isClosed) return;
-      emit(LeadLoaded(leads: filteredLeads, salesUsers: _salesUsers));
+      emit(LeadLoaded(leads: filteredLeads, 
+      salesUsers: _salesUsers,
+       currentPage: page,
+       totalCount: totalCount,));
     } on DioException catch (e) {
       if (_isOfflineDio(e)) {
         try {
@@ -603,7 +640,11 @@ class LeadCubit extends Cubit<LeadState> {
   // /api base used by every other call in this cubit, so we build
   // an absolute URL for this one request instead of a relative path.
   // Response shape: { "message": "...", "lead": { ...full lead... } }
-  Future<String?> addFollowUpNote(String id, String note) async {
+  Future<String?> addFollowUpNote(
+  String id,
+  String note, {
+  PlatformFile? audioFile,
+}) async {
     final trimmed = note.trim();
     if (trimmed.isEmpty) return 'Note cannot be empty';
 
@@ -614,10 +655,26 @@ class LeadCubit extends Cubit<LeadState> {
         return 'Missing tenant slug — please log in again';
       }
 
-      final res = await _dio.post(
-        '$_domain/$tenantSlug/api/leads/$id/followup-notes',
-        data: {'note': trimmed},
-      );
+      dynamic payload;
+
+if (audioFile != null && audioFile.path != null) {
+  payload = FormData.fromMap({
+    'note': trimmed,
+    'audio': await MultipartFile.fromFile(
+      audioFile.path!,
+      filename: audioFile.name,
+    ),
+  });
+} else {
+  payload = {
+    'note': trimmed,
+  };
+}
+
+final res = await _dio.post(
+  '$_domain/$tenantSlug/api/leads/$id/followup-notes',
+  data: payload,
+);
 
       final updated = _extractLead(res.data);
       if (updated == null) {
@@ -767,6 +824,7 @@ Future<String?> rejectLead(String id, String reason) async {
       return 'Failed to convert lead: $e';
     }
   }
+
 //============================
 //get All Leads for pop-up
 //=============================
@@ -780,6 +838,7 @@ Future<String?> rejectLead(String id, String reason) async {
 
   return parsed.map((e) => Lead.fromJson(e)).toList();
 }
+
 //===================================
 // fetch Reject lead
 //===================================
@@ -881,43 +940,99 @@ Future<String?> exportLeads({
 }) async {
   try {
     final prefs = await SharedPreferences.getInstance();
-
-    final token = prefs.getString("token") ?? "";
     final slug = prefs.getString("tenant_slug") ?? "";
 
-    final query = {
+    // 1. Fetch the actual lead data as JSON (same endpoint, but
+    //    parsed properly — not saved raw)
+    final query = <String, dynamic>{
       "page": "1",
       "limit": "100000",
     };
-
     if (startDate != null) {
-      query["startDate"] =
-          DateFormat("yyyy-MM-dd").format(startDate);
+      query["startDate"] = DateFormat("yyyy-MM-dd").format(startDate);
     }
-
     if (endDate != null) {
-      query["endDate"] =
-          DateFormat("yyyy-MM-dd").format(endDate);
+      query["endDate"] = DateFormat("yyyy-MM-dd").format(endDate);
     }
 
-    final response = await Dio().get<List<int>>(
-      "https://crm-backend-api.techzarinfo.cloud/$slug/api/leads/getAllLead",
+    await _initToken();
+    final res = await _dio.get(
+      '$_domain/$slug/api/leads/getAllLead',
       queryParameters: query,
-      options: Options(
-        responseType: ResponseType.bytes,
-        headers: {
-          "Authorization": "Bearer $token",
-        },
-      ),
     );
-    debugPrint(response.statusCode.toString());
-debugPrint(response.headers.toString());
-debugPrint(response.data.runtimeType.toString());
-    final bytes = response.data!;
 
+    final leads = await compute(_parseListIsolate, res.data)
+        .then((list) => list.map((e) => Lead.fromJson(e)).toList());
+
+    // 2. Build a real xlsx workbook from the parsed leads
+    final workbook = xls.Excel.createExcel();
+    const sheetName = 'Leads';
+    final sheet = workbook[sheetName];
+    if (workbook.sheets.containsKey('Sheet1') && sheetName != 'Sheet1') {
+      workbook.delete('Sheet1');
+    }
+
+    const headers = [
+      'Lead Name',
+      'Company Name',
+      'Phone Number',
+      'Email',
+      'Address',
+      'Country',
+      'Client Type',
+      'Industry',
+      'Source',
+      'Requirement',
+      'Status',
+      'Assigned To',
+      'Follow-up Date',
+      'Notes',
+    ];
+    sheet.appendRow(headers.map((h) => xls.TextCellValue(h)).toList());
+
+    for (final l in leads) {
+      sheet.appendRow([
+        xls.TextCellValue(l.name),
+        xls.TextCellValue(l.companyName),
+        xls.TextCellValue(l.phone),
+        xls.TextCellValue(l.email),
+        xls.TextCellValue(l.address),
+        xls.TextCellValue(l.country),
+        xls.TextCellValue(l.clientType),
+        xls.TextCellValue(l.industry),
+        xls.TextCellValue(l.source),
+        xls.TextCellValue(l.requirement),
+        xls.TextCellValue(l.status),
+        xls.TextCellValue(l.assignTo),
+        l.followUpDate != null
+    ? xls.DateCellValue(
+        year: l.followUpDate!.year,
+        month: l.followUpDate!.month,
+        day: l.followUpDate!.day,
+      )
+    : xls.TextCellValue(''),
+      ]);
+    }
+sheet.setColumnWidth(0, 20); // Lead Name
+sheet.setColumnWidth(1, 20); // Company Name
+sheet.setColumnWidth(2, 18); // Phone Number
+sheet.setColumnWidth(3, 30); // Email
+sheet.setColumnWidth(4, 30); // Address
+sheet.setColumnWidth(5, 10); // Country
+sheet.setColumnWidth(6, 10); // Client Type
+sheet.setColumnWidth(7, 10); // Industry
+sheet.setColumnWidth(8, 10); // Source
+sheet.setColumnWidth(9, 30); // Requirement
+sheet.setColumnWidth(10, 10); // Status
+sheet.setColumnWidth(11, 10); // Assigned To
+sheet.setColumnWidth(12, 20); // Follow-up Date
+sheet.setColumnWidth(13, 30); // Notes
+    final bytes = workbook.save();
+    if (bytes == null) return 'Failed to generate export file';
+
+    // 3. Save the real xlsx bytes — same helper downloadLeadTemplate uses
     final savedPath = await _saveXlsxToDownloads('Leads.xlsx', bytes);
-
-debugPrint("Save Path: $savedPath");
+    debugPrint("Save Path: $savedPath");
 
     return null;
   } catch (e) {
@@ -925,9 +1040,144 @@ debugPrint("Save Path: $savedPath");
   }
 }
 
-// ===============
+// =========================
+// Export Followups Template
+// =========================
+Future<void> exportFollowUps({
+  DateTime? startDate,
+  DateTime? endDate,
+}) async {
+  final previousState = state;
+  final previousLeads =
+      previousState is LeadLoaded ? previousState.leads : <Lead>[];
+
+  emit(LeadLoading());
+
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('token') ?? '';
+    final slug = prefs.getString('tenant_slug') ?? '';
+
+    final dio = Dio(
+      BaseOptions(
+        baseUrl: '$_domain/$slug/api',
+        headers: {
+          'Authorization': 'Bearer $token',
+        },
+      ),
+    );
+
+    final query = <String, dynamic>{
+      'page': '1',
+      'limit': '100000',
+    };
+
+    if (startDate != null) {
+      query['startDate'] =
+          DateFormat('yyyy-MM-dd').format(startDate);
+    }
+
+    if (endDate != null) {
+      query['endDate'] =
+          DateFormat('yyyy-MM-dd').format(endDate);
+    }
+
+    final res = await dio.get(
+      '/leads/getAllLead',
+      queryParameters: query,
+    );
+
+    final rawList = _extractLeadList(res.data);
+
+    final leads =
+        rawList.map((e) => Lead.fromJson(e)).toList();
+
+    if (leads.isEmpty) {
+      emit(const LeadError('No leads to export'));
+      return;
+    }
+
+    final bytes = _buildFollowUpsWorkbook(leads);
+
+    await _saveXlsxToDownloads(
+      'FollowUps.xlsx',
+      bytes,
+    );
+
+    emit(
+      LeadActionSuccess(
+        leads: previousLeads,
+        salesUsers: _salesUsers,
+        message: 'Follow-ups exported',
+      ),
+    );
+  } catch (e) {
+    emit(LeadError(e.toString()));
+  }
+}
+Uint8List _buildFollowUpsWorkbook(List<Lead> leads) {
+  final workbook = xls.Excel.createExcel();
+  const sheetName = 'Follow-ups';
+  final sheet = workbook[sheetName];
+  if (workbook.sheets.containsKey('Sheet1') && sheetName != 'Sheet1') {
+    workbook.delete('Sheet1');
+  }
+
+  const headers = [
+    'Lead',
+    'Company',
+    'Assign To',
+    'Follow-up Date',
+    'Follow-up Note',
+  ];
+  sheet.appendRow(headers.map((h) => xls.TextCellValue(h)).toList());
+
+  for (final l in leads) {
+    if (l.followUpNotes.isEmpty) {
+      // Lead with no logged notes yet — still show it, blank note columns
+      sheet.appendRow([
+        xls.TextCellValue(l.name),
+        xls.TextCellValue(l.companyName),
+        xls.TextCellValue(l.assignTo),
+        xls.TextCellValue(''),
+        xls.TextCellValue(''),
+      ]);
+      continue;
+    }
+
+    for (final note in l.followUpNotes) {
+      sheet.appendRow([
+        xls.TextCellValue(l.name),
+        xls.TextCellValue(l.companyName),
+        xls.TextCellValue(l.assignTo),
+        note.createdAt != null
+    ? xls.DateCellValue(
+        year: note.createdAt!.year,
+        month: note.createdAt!.month,
+        day: note.createdAt!.day,
+      )
+    : xls.TextCellValue(''),
+        xls.TextCellValue(note.note),
+      ]);
+    }
+  }
+
+   // Set column widths
+  sheet.setColumnWidth(0, 30); // Lead
+  sheet.setColumnWidth(1, 35); // Company
+  sheet.setColumnWidth(2, 28); // Assign To
+  sheet.setColumnWidth(3, 56); // Follow-up Date
+  sheet.setColumnWidth(4, 40); // Follow-up Note
+
+  final bytes = workbook.save();
+  if (bytes == null) throw Exception('Failed to generate workbook');
+  return Uint8List.fromList(bytes);
+}
+
+
+// =========================
 // Download Import Template
-// ================
+// =========================
 Future<String?> downloadLeadTemplate() async {
   try {
     final workbook = xls.Excel.createExcel();
@@ -967,9 +1217,9 @@ Future<String?> downloadLeadTemplate() async {
   }
 }
 
-// ===============
+// ========================
 // Import Leads from Excel
-// ================
+// ========================
 Future<LeadImportResult> importLeadsFromFile(PlatformFile file) async {
   await _initToken();
 
@@ -1101,44 +1351,100 @@ Future<String> _saveXlsxToDownloads(String fileName, List<int> bytes) async {
   /// • With attachments → returns [FormData] where each file is
   ///   added as a separate 'attachments' entry (key-value pair).
   ///   This matches the POST /leads/create multipart expectation.
+  // ===========================================
+  // this are payload for create and update lead
+  // ===========================================
   dynamic _buildPayload(
-    Lead lead, {
-    List<MultipartFile> attachments = const [],
-    List<String>? retainedAttachmentPaths,
-  }) {
-    // Plain field map — uses the exact field names the API expects
-    final map = <String, dynamic>{
-      'leadName': lead.name,
-      'phoneNumber': lead.phone,
-      'email': lead.email,
-      'companyName': lead.companyName,
-      'address': lead.address,
-      'country': lead.country,
-      'industry': lead.industry,
-      'source': lead.source,
-      if (lead.clientType.isNotEmpty) 'clientType': lead.clientType,
-      'requirement': lead.requirement,
-      'status': lead.status,
-      'notes': lead.notes,
-      if (lead.assignTo.isNotEmpty) 'assignTo': lead.assignTo,
-      if (lead.followUpDate != null)
-        'followUpDate': DateFormat('yyyy-MM-dd').format(lead.followUpDate!),
-      if (retainedAttachmentPaths != null)
-        'retainedAttachmentPaths': retainedAttachmentPaths,
-    };
+  Lead lead, {
+  List<MultipartFile> attachments = const [],
+  List<String>? retainedAttachmentPaths,
+}) {
+  final map = <String, dynamic>{
+    // Basic Information
+    'leadName': lead.name,
+    'phoneNumber': lead.phone,
+    'alternatePhoneNumber': lead.alternatePhoneNumber,
+    'email': lead.email,
+    'alternateEmail': lead.alternateEmail,
 
-    // If no files → plain JSON body
-    if (attachments.isEmpty) return map;
+    // Source & Company
+    'source': lead.source,
+    if (lead.sourceId != null) 'sourceId': lead.sourceId,
 
-    // With files → multipart/form-data
-    // Each attachment is a separate MapEntry with the SAME key 'attachments'
-    // so the server receives:  attachments: file1, attachments: file2, ...
-    final fd = FormData.fromMap(map);
-    for (final file in attachments) {
-      fd.files.add(MapEntry('attachments', file));
-    }
-    return fd;
+    'companyName': lead.companyName,
+    'industry': lead.industry,
+    'requirement': lead.requirement,
+
+    if (lead.clientType.isNotEmpty)
+      'clientType': lead.clientType,
+
+    if (lead.numberOfEmployees != null)
+      'NumberOfEmployees': lead.numberOfEmployees,
+
+    // Lead Details
+    'status': lead.status,
+    'notes': lead.notes,
+
+    if (lead.assignedToId != null &&
+        lead.assignedToId!.isNotEmpty)
+      'assignTo': lead.assignedToId,
+
+    if (lead.followUpDate != null)
+      'followUpDate':
+          DateFormat('yyyy-MM-dd').format(lead.followUpDate!),
+
+    // Address
+    'address': lead.address,
+    'city': lead.city,
+    'state': lead.state,
+    'pincode': lead.pincode,
+    'country': lead.country,
+
+    if (lead.latitude != null)
+      'latitude': lead.latitude,
+
+    if (lead.longitude != null)
+      'longitude': lead.longitude,
+
+    // Existing Attachments
+    'existingAttachments': retainedAttachmentPaths ?? [],
+
+    // Custom Fields
+    'customFields': lead.customFields
+        .map(
+          (field) => {
+            if (field.id != null) '_id': field.id,
+            'cardTitle': field.cardTitle,
+            'name': field.name,
+            'type': field.type,
+            'options': field.options,
+            'value': field.value,
+          },
+        )
+        .toList(),
+  };
+
+  // No attachments → JSON
+  if (attachments.isEmpty) {
+    return map;
   }
+
+  // Attachments → Multipart
+  final formData = FormData.fromMap(map);
+
+  for (final file in attachments) {
+    formData.files.add(
+      MapEntry(
+        'attachments',
+        file,
+      ),
+    );
+  }
+
+  return formData;
+}
+
+// 
 
   Lead? _extractLead(dynamic d) {
     try {
@@ -1159,6 +1465,23 @@ Future<String> _saveXlsxToDownloads(String fileName, List<int> bytes) async {
       return null;
     }
   }
+  // Leads exracts the count
+  int? _extractTotalCount(dynamic raw) {
+    if (raw is! Map) return null;
+    for (final k in ['totalLeads', 'total', 'totalCount', 'totalRecords', 'count', 'totalItems']) {
+      final v = raw[k];
+      if (v is num) return v.toInt();
+    }
+    final nested = raw['pagination'] ?? raw['meta'];
+    if (nested is Map) {
+      for (final k in ['totalLeads', 'total', 'totalCount', 'totalRecords', 'count', 'totalItems']) {
+        final v = nested[k];
+        if (v is num) return v.toInt();
+      }
+    }
+    return null;
+  }
+  //
 
   String _dioMsg(DioException e) {
     debugPrint(

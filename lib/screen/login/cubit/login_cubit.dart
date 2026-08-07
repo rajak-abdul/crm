@@ -112,10 +112,29 @@ debugPrint("Device Label: $deviceLabel");
         token = body['token'] as String?;
       }
 
-      if (token == null || token.isEmpty) {
-        emit(const LoginError('Login failed: no token in response'));
-        return;
-      }
+      // Handle backend business errors first
+if (body is Map && body['success'] == false) {
+  emit(
+    LoginError(
+      body['message']?.toString() ?? 'Login failed',
+    ),
+  );
+  return;
+}
+
+// Extract token only after confirming success
+if (body is Map) {
+  token = body['token'] as String?;
+}
+
+if (token == null || token.isEmpty) {
+  emit(
+    const LoginError(
+      'Login failed: no token received from server.',
+    ),
+  );
+  return;
+}
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('token', token);

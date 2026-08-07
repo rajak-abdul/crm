@@ -12,7 +12,8 @@ import 'package:crm_app/screen/dashboard/cubit/notification_cubit.dart';
 import 'package:crm_app/screen/dashboard/ui/dashboard_followup_page.ui.dart';
 import 'package:crm_app/screen/dashboard/ui/dashboard_today_followup_ui.dart';
 import 'package:crm_app/screen/leads/ui/lead_screen.dart';
-import 'package:crm_app/utils/permission_helper.dart';
+import 'package:crm_app/screen/users/user_cubit.dart';
+import 'package:crm_app/shareWidgets/crm_header.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -24,7 +25,6 @@ import 'package:crm_app/shareWidgets/share_widgets.dart'
 import 'package:crm_app/screen/deals/ui/deal_screen.dart' show DealsScreen;
 import 'package:crm_app/screen/profile/ui/profile_screen.dart'
     show ProfileScreen;
-import 'package:geolocator/geolocator.dart';
 import '../../invoice/ui/invoice_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
@@ -40,6 +40,24 @@ bool _isSessionExpiredMessage(String msg) {
       m.contains('jwt expired') ||
       m.contains('token expired') ||
       m.contains('authentication failed');
+}
+
+String? _resolveProfileImageUrl(String? rawInput) {
+  final raw = rawInput?.trim() ?? '';
+  if (raw.isEmpty) return null;
+  var path = raw.replaceAll('\\', '/');
+  if (path.startsWith('http://') || path.startsWith('https://')) return path;
+  if (!path.contains('/')) path = '/uploads/users/$path';
+  if (!path.startsWith('/')) path = '/$path';
+  return 'https://crm-backend-api.techzarinfo.cloud/$path';
+}
+
+String _initialsOf(String name) {
+  final parts =
+      name.trim().split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
+  if (parts.isEmpty) return '?';
+  if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
+  return (parts.first[0] + parts[1][0]).toUpperCase();
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -311,6 +329,7 @@ class DashboardScreen extends StatelessWidget {
         providers: [
           BlocProvider(create: (_) => DashboardCubit()..loadDashboard()),
           BlocProvider(create: (_) => NotificationCubit()),
+          BlocProvider(create: (_) => UserCubit()..loadUser()),
         ],
         child: const _DashboardShell(),
       );
@@ -363,10 +382,23 @@ class _DashboardShellState extends State<_DashboardShell>
     });
   }
 
-  Future<void> _loadAuthToken() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (mounted) setState(() => _authToken = prefs.getString('token') ?? '');
-  }
+  String _userName = 'User';
+String? _profileImage;
+
+Future<void> _loadAuthToken() async {
+  final prefs = await SharedPreferences.getInstance();
+  if (!mounted) return;
+  final name = (prefs.getString('user_name') ?? '').trim();
+  final rawImage = (prefs.getString('profile_image') ??
+          prefs.getString('profileImage') ??
+          '')
+      .trim();
+  setState(() {
+    _authToken = prefs.getString('token') ?? '';
+    if (name.isNotEmpty) _userName = name;
+    _profileImage = _resolveProfileImageUrl(rawImage);
+  });
+}
 
   Future<void> _loadNotifications() async {
     final prefs = await SharedPreferences.getInstance();
@@ -418,7 +450,11 @@ class _DashboardShellState extends State<_DashboardShell>
 
       if (route == '/leads') {
         Navigator.of(context, rootNavigator: true)
-            .push(_slide(const LeadsScreen()));
+    .push(_slide(
+      const LeadsScreen(
+        showBackButton: true,
+      ),
+    ));
       } else if (route == '/deals') {
         Navigator.of(context, rootNavigator: true)
             .push(_slide(DealsScreen(initialTab: tab)));
@@ -539,11 +575,13 @@ class _DashboardShellState extends State<_DashboardShell>
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(t * 22),
                 child: _MainContent(
-                  isOffline: _isOffline,
-                  onMenuTap: _toggle,
-                  isDrawerOpen: _isOpen,
-                  onNotifTap: _openNotificationsSheet,
-                ),
+  isOffline: _isOffline,
+  onMenuTap: _toggle,
+  isDrawerOpen: _isOpen,
+  onNotifTap: _openNotificationsSheet,
+  userName: _userName,
+  profileImage: _profileImage,
+),
               ),
             ),
             if (_isOpen)
@@ -739,59 +777,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
         child: SafeArea(
             child:
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
-            child: Row(children: [
-              GestureDetector(
-                  onTap: widget.onProfileTap,
-                  child: Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF2563EB), Color(0xFF0EA5E9)],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.circular(22),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(22),
-                      child: CircleAvatar(
-                        radius: 30,
-                        backgroundImage: _drawerImage != null
-                            ? NetworkImage(_drawerImage!)
-                            : null,
-                        child: _drawerImage == null
-                            ? const Icon(Icons.person)
-                            : null,
-                      ),
-                    ),
-                  )),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(_drawerName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w800)),
-                      Text(  
-                        _drawerEmail,
-                        // _userRole.isNotEmpty ? _userRole : 'CRM User',
-
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              color: Color(0xFF64748B), fontSize: 11)),
-                    ]),
-              ),
-            ]),
-          ),
+          
           const Padding(
             padding: EdgeInsets.fromLTRB(22, 0, 22, 8),
             child: Text('MENU',
@@ -1053,13 +1039,73 @@ class _MainContent extends StatelessWidget {
   final VoidCallback onNotifTap;
   final bool isDrawerOpen;
   final bool isOffline;
+  final String userName;
+  final String? profileImage;
   const _MainContent({
     required this.isOffline,
     required this.onMenuTap,
     required this.onNotifTap,
     required this.isDrawerOpen,
+    required this.userName,
+    this.profileImage,
   });
+Route _slide(Widget page) => PageRouteBuilder(
+      pageBuilder: (_, __, ___) => page,
+      transitionsBuilder: (_, a, __, child) => SlideTransition(
+          position: Tween(begin: const Offset(1, 0), end: Offset.zero)
+              .animate(CurvedAnimation(parent: a, curve: Curves.easeOutCubic)),
+          child: child),
+    );
 
+Future<bool> _canNavigate(BuildContext context) async {
+  final result = await Connectivity().checkConnectivity();
+  if (result == ConnectivityResult.none) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("You are offline. Only Dashboard is available."),
+      ),
+    );
+    return false;
+  }
+  return true;
+} 
+Widget _buildHeroCard(BuildContext context, DashboardLoaded s) {
+  final sm = s.summary;
+  final totalLeads = sm.totalLeads;
+  final pendingInvoiceCount =
+      s.invoices.where((inv) => inv.status == 'unpaid').length;
+  return _HeroOverviewCard(
+    s: s,
+    totalLeads: totalLeads,
+    paidRev: sm.paidRevenue,
+    pendingInvoiceCount: pendingInvoiceCount,
+    onTodayFollowUpsTap: () async {
+      if (!await _canNavigate(context)) return;
+      Navigator.of(context, rootNavigator: true).push(
+        _slide(FollowUpsScreen(items: s.todaysFollowUps)),
+      );
+    },
+    onTotalLeadsTap: () async {
+      if (!await _canNavigate(context)) return;
+      Navigator.of(context, rootNavigator: true).push(
+        _slide(const LeadsScreen(showBackButton: true)),
+      );
+    },
+    onDealsWonTap: () async {
+  if (!await _canNavigate(context)) return;
+  Navigator.of(context, rootNavigator: true).push(
+    _slide(const DealsScreen( initialStageFilter: 'Closed Won')),
+  );
+},
+onPendingInvoicesTap: () async {
+  if (!await _canNavigate(context)) return;
+  Navigator.of(context, rootNavigator: true).push(
+    _slide(const InvoiceScreen(initialStatusFilter: 'Unpaid')),
+  );
+},
+
+  );
+}
   @override
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: AppColors.background,
@@ -1093,176 +1139,48 @@ class _MainContent extends StatelessWidget {
                   : const AlwaysScrollableScrollPhysics(),
               slivers: [
                 // ── App Bar ──────────────────────────────────
-                SliverAppBar(
-                  toolbarHeight: 100,
-                  pinned: false,
-                  automaticallyImplyLeading: false,
-                  floating: false,
-                  snap: false,
-                  backgroundColor: AppColors.primary,
-                  flexibleSpace: FlexibleSpaceBar(
-                    background: Container(
-                      decoration: const BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Color(0xFF1D4ED8),
-                            Color(0xFF2563EB),
-                            Color(0xFF0EA5E9)
-                          ],
-                        ),
-                      ),
-                      child: SafeArea(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-                          child: Column(
-                              mainAxisAlignment: MainAxisAlignment.end,
-                              children: [
-                                Row(children: [
-                                  GestureDetector(
-                                    onTap: onMenuTap,
-                                    child: Container(
-                                      padding: const EdgeInsets.all(9),
-                                      decoration: BoxDecoration(
-                                          color: Colors.white.withOpacity(0.2),
-                                          borderRadius:
-                                              BorderRadius.circular(12)),
-                                      child: AnimatedSwitcher(
-                                        duration:
-                                            const Duration(milliseconds: 200),
-                                        transitionBuilder: (child, anim) =>
-                                            RotationTransition(
-                                                turns: anim,
-                                                child: FadeTransition(
-                                                    opacity: anim,
-                                                    child: child)),
-                                        child: Icon(
-                                          isDrawerOpen
-                                              ? Icons.close_rounded
-                                              : Icons.menu_rounded,
-                                          key: ValueKey(isDrawerOpen),
-                                          color: Colors.white,
-                                          size: 22,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 14),
-
-                                  const Spacer(),
-
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 6,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(20),
-                                      color: isOffline
-                                          ? Colors.red.withOpacity(0.12)
-                                          : Colors.green.withOpacity(0.12),
-                                      border: Border.all(
-                                        color: isOffline
-                                            ? Colors.red
-                                            : Colors.green,
-                                      ),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          Icons.circle,
-                                          size: 10,
-                                          color: isOffline
-                                              ? Colors.red
-                                              : Colors.green,
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          isOffline ? "Offline" : "Online",
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w600,
-                                            color: isOffline
-                                                ? Colors.red
-                                                : Colors.green,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const Spacer(),
-                                  // ── Notification Bell ───────
-                                  BlocBuilder<NotificationCubit,
-                                      NotificationState>(
-                                    builder: (ctx, ns) {
-                                      final unread = ns is NotificationLoaded
-                                          ? ns.unreadCount
-                                          : 0;
-                                      return GestureDetector(
-                                        onTap: onNotifTap,
-                                        child: Stack(
-                                            clipBehavior: Clip.none,
-                                            children: [
-                                              Container(
-                                                padding:
-                                                    const EdgeInsets.all(10),
-                                                decoration: BoxDecoration(
-                                                    color: Colors.white
-                                                        .withOpacity(0.2),
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                            12)),
-                                                child: const Icon(
-                                                  Icons.notifications_outlined,
-                                                  color: Colors.white,
-                                                  size: 22,
-                                                ),
-                                              ),
-                                              if (unread > 0)
-                                                Positioned(
-                                                  top: -4,
-                                                  right: -4,
-                                                  child: Container(
-                                                    padding: const EdgeInsets
-                                                        .symmetric(
-                                                        horizontal: 5,
-                                                        vertical: 2),
-                                                    decoration: BoxDecoration(
-                                                      color: AppColors.danger,
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                              10),
-                                                      border: Border.all(
-                                                          color: Colors.white,
-                                                          width: 1.5),
-                                                    ),
-                                                    child: Text(
-                                                      unread > 99
-                                                          ? '99+'
-                                                          : '$unread',
-                                                      style: const TextStyle(
-                                                        color: Colors.white,
-                                                        fontSize: 9,
-                                                        fontWeight:
-                                                            FontWeight.w800,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ),
-                                            ]),
-                                      );
-                                    },
-                                  ),
-                                ])
-                              ]),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-
+               SliverToBoxAdapter(
+  child: _CurvedHeaderHero(
+    header: BlocBuilder<NotificationCubit, NotificationState>(
+      builder: (ctx, ns) {
+        final unread = ns is NotificationLoaded ? ns.unreadCount : 0;
+        return CrmHeader(
+  userName: userName,
+  profileImage: profileImage,
+  isOffline: isOffline,
+  isDrawerOpen: isDrawerOpen,
+  onMenuTap: onMenuTap,
+  onNotifTap: onNotifTap,
+  onAvatarTap: () async {
+    final result = await Connectivity().checkConnectivity();
+    if (result == ConnectivityResult.none) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("You are offline. Profile is not available."),
+        ),
+      );
+      return;
+    }
+    Navigator.of(context, rootNavigator: true).push(
+      PageRouteBuilder(
+        pageBuilder: (_, __, ___) => const ProfileScreen(),
+        transitionsBuilder: (_, a, __, child) => SlideTransition(
+          position: Tween(begin: const Offset(1, 0), end: Offset.zero)
+              .animate(CurvedAnimation(parent: a, curve: Curves.easeOutCubic)),
+          child: child,
+        ),
+      ),
+    );
+  },
+  unreadCount: unread,
+);
+      },
+    ),
+    heroCard: state is DashboardLoaded
+        ? _buildHeroCard(context, state)
+        : const SizedBox(height: 160), // placeholder while loading/error
+  ),
+),
                 if (state is DashboardLoading)
                   const SliverFillRemaining(
                       child: LoadingState(message: 'Loading dashboard...'))
@@ -1276,7 +1194,7 @@ class _MainContent extends StatelessWidget {
                   SliverToBoxAdapter(
                       child: _DashboardBody(
                     s: state,
-                    isOffline: isOffline,
+                    isOffline: isOffline, showHero: false
                   ))
                 else
                   const SliverFillRemaining(
@@ -1297,10 +1215,12 @@ class _MainContent extends StatelessWidget {
 class _DashboardBody extends StatelessWidget {
   final DashboardLoaded s;
   final bool isOffline;
+  final bool showHero;
 
   const _DashboardBody({
     required this.s,
     required this.isOffline,
+    this.showHero = true,
   });
 
   // INR formatter
@@ -1343,7 +1263,7 @@ class _DashboardBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final sm = s.summary;
-    final totalLeads = sm.totalLeads > 0 ? sm.totalLeads : s.allLeads.length;
+    final totalLeads = sm.totalLeads;
 
     // Revenue values
     final paidRev = sm.paidRevenue; // card 3 shows this as "Total Revenue"
@@ -1371,83 +1291,17 @@ class _DashboardBody extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // ── Period Filter Row ─────────────────────────────────
-        _PeriodFilter(
-          selectedRange: s.filterRange,
-          selectedMonth: s.filterMonth,
-          selectedYear: s.filterYear,
-          onChanged: (range, month, year) {
-            context
-                .read<DashboardCubit>()
-                .filterByPeriod(range: range, month: month, year: year);
-          },
-        ),
-
-        // ── Section: Overview ─────────────────────────────────
-        GridView.count(
-          crossAxisCount: 2,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          crossAxisSpacing: 12,
-          mainAxisSpacing: 12,
-          childAspectRatio: 1.35,
-          children: [
-            // Card 1: Total Leads
-            _StatCard(
-              label: 'Total Leads',
-              value: '$totalLeads',
-              icon: Icons.people_alt_outlined,
-              color: AppColors.primary,
-              bg: AppColors.primaryLight,
-              trend: _pct(sm.leadsChange),
-              up: sm.leadsChange >= 0,
-            ),
-            // Card 2: Deals Won
-            _StatCard(
-              label: 'Deals Won',
-              value: '${sm.dealsWon}',
-              icon: Icons.emoji_events_outlined,
-              color: AppColors.success,
-              bg: AppColors.successLight,
-              trend: _pct(sm.dealsChange),
-              up: sm.dealsChange >= 0,
-            ),
-            // Card 3: Total Revenue (paid invoices value in INR)
-            _StatCard(
-              label: 'Total Revenue',
-              value: paidRev > 0 ? _inr(paidRev) : '—',
-              icon: Icons.account_balance_wallet_outlined,
-              color: AppColors.purple,
-              bg: AppColors.purpleLight,
-              trend: paidPct,
-              up: paidRev > 0,
-            ),
-            // Card 4: Pending Leads — replaces old "Total Revenue" card
-            _StatCard(
-              label: 'Pending Invoices',
-              value: '$pendingInvoiceCount',
-              icon: Icons.receipt_long_outlined,
-              color: AppColors.warning,
-              bg: AppColors.warningLight,
-              trend: pendingInvoiceCount > 0
-                  ? '$pendingInvoiceCount unpaid'
-                  : 'All paid',
-              up: pendingInvoiceCount == 0,
-            ),
-          ],
-        ),
-        const SizedBox(height: 20),
-        // ── Today's Follow-ups ────────────────────────────────
-        TodaysFollowUpsCard(
-  items: s.todaysFollowUps,
-  onViewAll: () async {
-    if (!await _canNavigate(context)) return;
-    Navigator.of(context, rootNavigator: true).push(
-      _slide(FollowUpsScreen(items: s.todaysFollowUps)),
-    );
-  },
-),
-        // ── Recent Leads ──────────────────────────────────────
+        // ── Section: Overview (hero card) ──────────────────────
+        if (showHero) ...[
+  _HeroOverviewCard(
+    s: s,
+    totalLeads: totalLeads,
+    paidRev: paidRev,
+    pendingInvoiceCount: pendingInvoiceCount,
+  ),
+  const SizedBox(height: 20),
+],
+                // ── Recent Leads ──────────────────────────────────────
         const _SectionTitle('Recent Leads'),
         const SizedBox(height: 12),
         s.recentLeads.isEmpty
@@ -1460,58 +1314,7 @@ class _DashboardBody extends StatelessWidget {
                     .toList()),
 
         const SizedBox(height: 20),
-        // ── Revenue Breakdown bar ─────────────────────────────
-        if (totalRev > 0) ...[
-          const SizedBox(height: 16),
-          _RevenueBreakdown(
-            paid: paidRev,
-            unpaid: unpaidRev,
-            total: totalRev,
-          ),
-        ],
-
-        const SizedBox(height: 20),
-
-        // ── Quick Actions ─────────────────────────────────────
-        const _SectionTitle('Quick Actions'),
-        const SizedBox(height: 12),
-        Row(children: [
-          _QuickCard(
-              icon: Icons.people_outline,
-              label: 'Leads',
-              color: AppColors.success,
-              onTap: () async {
-                if (!await _canNavigate(context)) return;
-
-                Navigator.of(context, rootNavigator: true)
-                    .push(_slide(const LeadsScreen()));
-              }),
-          const SizedBox(width: 12),
-          _QuickCard(
-              icon: Icons.handshake_outlined,
-              label: 'All Deals',
-              color: const Color(0xFF6366F1),
-              onTap: () async {
-                if (!await _canNavigate(context)) return;
-
-                Navigator.of(context, rootNavigator: true)
-                    .push(_slide(const DealsScreen(initialTab: 0)));
-              }),
-          const SizedBox(width: 12),
-          _QuickCard(
-              icon: Icons.receipt_long_outlined,
-              label: 'Invoices',
-              color: AppColors.warning,
-              onTap: () async {
-                if (!await _canNavigate(context)) return;
-
-                Navigator.of(context, rootNavigator: true)
-                    .push(_slide(const InvoiceScreen()));
-              }),
-        ]),
-
-        const SizedBox(height: 20),
-   
+        
         // ── Deal Pipeline ─────────────────────────────────────
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           const _SectionTitle('Deal Pipeline'),
@@ -1542,7 +1345,395 @@ class _DashboardBody extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════
-// PERIOD FILTER  — Last 7 days / Month
+// HERO OVERVIEW CARD  — big revenue number + range pill + side stats
+// ══════════════════════════════════════════════════════════════
+class _HeroOverviewCard extends StatelessWidget {
+  final DashboardLoaded s;
+  final int totalLeads;
+  final double paidRev;
+  final int pendingInvoiceCount;
+  final VoidCallback? onTodayFollowUpsTap;
+  final VoidCallback? onTotalLeadsTap;
+  final VoidCallback? onDealsWonTap;
+  final VoidCallback? onPendingInvoicesTap;
+
+  const _HeroOverviewCard({
+    required this.s,
+    required this.totalLeads,
+    required this.paidRev,
+    required this.pendingInvoiceCount,
+    this.onTodayFollowUpsTap,
+    this.onTotalLeadsTap,
+    this.onDealsWonTap,
+    this.onPendingInvoicesTap,
+  });
+
+  static const _months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+
+  static String _inr(double v) => NumberFormat.currency(
+      locale: 'en_IN', symbol: '₹', decimalDigits: 0)
+      .format(v);
+
+  String _rangeLabel() {
+  if (s.filterRange == 'all') return 'All';
+  if (s.filterRange == 'today') return 'Today';
+  if (s.filterRange == 'last7') return 'Last 7 days';
+  if (s.filterRange == 'year' && s.filterYear != null) return '${s.filterYear}';
+  if (s.filterMonth != null && s.filterYear != null) {
+    return '${_months[s.filterMonth! - 1]} ${s.filterYear}';
+  }
+  return 'Last 7 days';
+}
+
+  void _showRangeSheet(BuildContext context) {
+  final cubit = context.read<DashboardCubit>();
+  String tempRange = s.filterRange;
+  int tempMonth = s.filterMonth ?? DateTime.now().month;
+  int tempYear = s.filterYear ?? DateTime.now().year;
+
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: AppColors.surface,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (_) => StatefulBuilder(
+      builder: (context, setSheetState) {
+        Widget option(String label, String value) {
+          final active = tempRange == value;
+          return GestureDetector(
+            onTap: () => setSheetState(() => tempRange = value),
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: active ? AppColors.primaryLight : AppColors.background,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: active ? AppColors.primary : AppColors.border),
+              ),
+              child: Row(children: [
+                Icon(
+                  active
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_off,
+                  size: 18,
+                  color: active ? AppColors.primary : AppColors.textSecondary,
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                    color: active ? AppColors.primary : AppColors.textPrimary,
+                  ),
+                ),
+              ]),
+            ),
+          );
+        }
+
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 20,
+            right: 20,
+            top: 20,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+          ),
+          child: SingleChildScrollView (
+          
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Filter by Period',
+                  style:
+                      TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              option('All', 'all'),
+              option('Today', 'today'),
+              option('Last 7 days', 'last7'),
+              option('This Month', 'month'),
+              if (tempRange == 'month') ...[
+                const SizedBox(height: 8),
+                Row(children: [
+                  Expanded(
+                    child: DropdownButtonFormField<int>(
+                      value: tempMonth,
+                      decoration: const InputDecoration(
+                          labelText: 'Month',
+                          border: OutlineInputBorder()),
+                      items: List.generate(
+                          12,
+                          (i) => DropdownMenuItem(
+                              value: i + 1, child: Text(_months[i]))),
+                      onChanged: (v) =>
+                          setSheetState(() => tempMonth = v ?? tempMonth),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: DropdownButtonFormField<int>(
+                      value: tempYear,
+                      decoration: const InputDecoration(
+                          labelText: 'Year', border: OutlineInputBorder()),
+                      items: List.generate(
+                              6, (i) => DateTime.now().year - i)
+                          .map((y) =>
+                              DropdownMenuItem(value: y, child: Text('$y')))
+                          .toList(),
+                      onChanged: (v) =>
+                          setSheetState(() => tempYear = v ?? tempYear),
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 8),
+              ],
+              option('This Year', 'year'),
+              if (tempRange == 'year') ...[
+                const SizedBox(height: 8),
+                DropdownButtonFormField<int>(
+                  value: tempYear,
+                  decoration: const InputDecoration(
+                      labelText: 'Year', border: OutlineInputBorder()),
+                  items: List.generate(6, (i) => DateTime.now().year - i)
+                      .map((y) =>
+                          DropdownMenuItem(value: y, child: Text('$y')))
+                      .toList(),
+                  onChanged: (v) =>
+                      setSheetState(() => tempYear = v ?? tempYear),
+                ),
+              ],
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    if (tempRange == 'month') {
+                      cubit.filterByPeriod(
+                          range: 'month', month: tempMonth, year: tempYear);
+                    } else if (tempRange == 'year') {
+                      cubit.filterByPeriod(range: 'year', year: tempYear);
+                    } else {
+                      cubit.filterByPeriod(range: tempRange);
+                    }
+                  },
+                  child: const Text('Apply'),
+                ),
+              ),
+            ],
+          ),
+          )
+        );
+      },
+    ),
+  );
+}
+  @override
+  Widget build(BuildContext context) {
+    final todaysFollowUps = s.todaysFollowUps.length;
+    final dealsWon = s.summary.dealsWon;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 14,
+              offset: const Offset(0, 6)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Revenue + range pill ──
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      paidRev > 0 ? _inr(paidRev) : '₹0',
+                      style: const TextStyle(
+                          fontSize: 30,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.primary),
+                    ),
+                    const SizedBox(height: 2),
+                    const Text('Total Revenue (INR)',
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                            color: AppColors.textSecondary)),
+                  ],
+                ),
+              ),
+              Builder(builder: (btnCtx) {
+                return GestureDetector(
+                  onTap: () => _showRangeSheet(btnCtx),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: AppColors.primaryLight,
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Text(_rangeLabel(),
+                          style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.primary)),
+                      const SizedBox(width: 4),
+                      const Icon(Icons.keyboard_arrow_down_rounded,
+                          size: 16, color: AppColors.primary),
+                    ]),
+                  ),
+                );
+              }),
+            ],
+          ),
+
+          const SizedBox(height: 22),
+
+         // ── Side stats row ──
+Row(
+  crossAxisAlignment: CrossAxisAlignment.start,
+  children: [
+    // Left: Today's follow-ups (emphasised, red) — tappable
+    Expanded(
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onTodayFollowUpsTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Icon(Icons.inventory_2_outlined,
+                    size: 26, color: AppColors.danger),
+                const SizedBox(height: 8),
+                Text('$todaysFollowUps',
+                    style: const TextStyle(
+                        fontSize: 30,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.danger)),
+                const SizedBox(height: 4),
+                const Text('Today Follow-ups',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.danger)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
+    const SizedBox(width: 16),
+    // Right: Total Leads / Deals Won / Pending Invoices
+    Expanded(
+      flex: 2,
+      child: Column(
+        children: [
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: onTotalLeadsTap,
+              child: _HeroStatRow(
+                  icon: Icons.description_outlined,
+                  iconColor: AppColors.purple,
+                  label: 'Total Leads',
+                  value: '$totalLeads'),
+            ),
+          ),
+          const SizedBox(height: 14),
+Material(
+  color: Colors.transparent,
+  child: InkWell(
+    borderRadius: BorderRadius.circular(10),
+    onTap: onDealsWonTap,
+    child: _HeroStatRow(
+        icon: Icons.emoji_events_outlined,
+        iconColor: AppColors.success,
+        label: 'Deals Won',
+        value: '$dealsWon'),
+  ),
+),
+const SizedBox(height: 14),
+          Material(
+  color: Colors.transparent,
+  child: InkWell(
+    borderRadius: BorderRadius.circular(10),
+    onTap: onPendingInvoicesTap,
+    child: _HeroStatRow(
+        icon: Icons.description_outlined,
+        iconColor: AppColors.warning,
+        label: 'Pending Invoices',
+        value: '$pendingInvoiceCount'),
+  ),
+),
+        ],
+      ),
+    ),
+  ],
+),
+        ],
+      ),
+    );
+  }
+}
+
+class _HeroStatRow extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String label;
+  final String value;
+  const _HeroStatRow({
+    required this.icon,
+    required this.iconColor,
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) => Row(children: [
+        Icon(icon, size: 20, color: iconColor),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(label,
+              style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.textSecondary)),
+        ),
+        Text(value,
+            style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: AppColors.textPrimary)),
+      ]);
+}
+
+// ══════════════════════════════════════════════════════════════
+// PERIOD FILTER  — Last 7 days / Month  (used from _HeroOverviewCard's
+// range pill for last7/today; kept here for month/year fine-tuning if
+// wired into a screen that still wants a dedicated row)
 // ══════════════════════════════════════════════════════════════
 class _PeriodFilter extends StatelessWidget {
   final String selectedRange;
@@ -1844,78 +2035,6 @@ class _AmtBox extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════
-// STAT CARD
-// ══════════════════════════════════════════════════════════════
-class _StatCard extends StatelessWidget {
-  final String label, value, trend;
-  final IconData icon;
-  final Color color, bg;
-  final bool up;
-  const _StatCard(
-      {required this.label,
-      required this.value,
-      required this.icon,
-      required this.color,
-      required this.bg,
-      required this.trend,
-      required this.up});
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                  color: Colors.black.withOpacity(0.04),
-                  blurRadius: 10,
-                  offset: const Offset(0, 2))
-            ]),
-        child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                        color: bg, borderRadius: BorderRadius.circular(10)),
-                    child: Icon(icon, size: 18, color: color)),
-                Flexible(
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                    decoration: BoxDecoration(
-                        color:
-                            up ? AppColors.successLight : AppColors.dangerLight,
-                        borderRadius: BorderRadius.circular(20)),
-                    child: Text(trend,
-                        overflow: TextOverflow.ellipsis,
-                        maxLines: 1,
-                        style: TextStyle(
-                            fontSize: 9,
-                            fontWeight: FontWeight.w600,
-                            color: up ? AppColors.success : AppColors.danger)),
-                  ),
-                ),
-              ]),
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(value,
-                    style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textPrimary)),
-                Text(label,
-                    style: const TextStyle(
-                        fontSize: 11,
-                        color: AppColors.textSecondary,
-                        fontWeight: FontWeight.w500)),
-              ]),
-            ]),
-      );
-}
-
-// ══════════════════════════════════════════════════════════════
 // PIPELINE CARD
 // ══════════════════════════════════════════════════════════════
 class _PipelineCard extends StatelessWidget {
@@ -2013,7 +2132,7 @@ class _PipelineCard extends StatelessWidget {
         final color = _stageColor(stage.stage);
         final percent = stage.count / maxCount;
         return Padding(
-          padding: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.only(bottom: 14),
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
@@ -2052,12 +2171,12 @@ class _PipelineCard extends StatelessWidget {
                 ),
               ],
             ]),
-            const SizedBox(height: 6),
+            const SizedBox(height: 7),
             ClipRRect(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(10),
                 child: LinearProgressIndicator(
                     value: percent,
-                    minHeight: 7,
+                    minHeight: 10,
                     backgroundColor: AppColors.divider,
                     valueColor: AlwaysStoppedAnimation(color))),
           ]),
@@ -2413,4 +2532,59 @@ class _Pill extends StatelessWidget {
       child: Text(label,
           style: TextStyle(
               color: color, fontSize: 11, fontWeight: FontWeight.w700)));
+}
+class _CurvedHeaderHero extends StatelessWidget {
+  final Widget header;
+  final Widget heroCard;
+  final double curveHeight; // how far the blue extends past the header
+
+  const _CurvedHeaderHero({
+    required this.header,
+    required this.heroCard,
+    this.curveHeight = 180,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFF1D4ED8),
+                Color(0xFF2563EB),
+                Color(0xFF0EA5E9),
+              ],
+            ),
+            borderRadius: BorderRadius.only(
+              bottomLeft: Radius.circular(32),
+              bottomRight: Radius.circular(32),
+            ),
+          ),
+          child: SizedBox(
+            width: double.infinity,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Opacity(opacity: 0, child: header),
+                SizedBox(height: curveHeight),
+              ],
+            ),
+          ),
+        ),
+        Column(
+          children: [
+            header,
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: heroCard,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
 }

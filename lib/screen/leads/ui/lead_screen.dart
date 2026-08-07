@@ -10,10 +10,11 @@
 // ╚══════════════════════════════════════════════════════════════
 import 'dart:io';
 import 'package:crm_app/modals/modals.dart'
-    show AppConstants, Lead, AppUser, Attachment;
+    show AppConstants, Lead, AppUser, Attachment, CustomField;
 import 'package:crm_app/screen/deals/modal/deal_modal.dart' show DealConstants;
 import 'package:crm_app/screen/leads/cubit/call_cubit.dart';
 import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
+import 'package:crm_app/screen/leads/ui/lead.dart';
 import 'package:crm_app/screen/leads/ui/reject_lead_screen.dart';
 import 'package:crm_app/shareWidgets/missed_followup.dart';
 import 'package:crm_app/shareWidgets/missed_followup_helper.dart';
@@ -37,6 +38,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:open_file/open_file.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:phone_numbers_parser/phone_numbers_parser.dart';
@@ -148,7 +152,13 @@ String _mimeStringForAttachmentExt(String ext) {
 // ══════════════════════════════════════════════════════════════
 class LeadsScreen extends StatelessWidget {
   final String? selectedLeadId;
-  const LeadsScreen({super.key,this.selectedLeadId,});
+  final bool showBackButton;
+
+  const LeadsScreen({
+  super.key,
+  this.selectedLeadId,    
+  this.showBackButton = false,
+});
   @override
   Widget build(BuildContext context) => MultiBlocProvider(
     
@@ -160,16 +170,22 @@ class LeadsScreen extends StatelessWidget {
             create: (_) => CallCubit(),
           ),
         ],
-        child: const _LeadsView(),
+        child: _LeadsView(
+          selectedLeadId: selectedLeadId,
+          showBackButton: showBackButton,
+        ),
       );
 }
 
 class _LeadsView extends StatefulWidget {
     final String? selectedLeadId;
+    final bool showBackButton;
     
 const _LeadsView({
     super.key,
     this.selectedLeadId,
+    required this.showBackButton,
+
   });
  @override
   State<_LeadsView> createState() => _LeadsViewState();
@@ -397,18 +413,32 @@ debugPrint(
   }).toList();
 }
 
-  List<Lead> _paginate(List<Lead> filtered) {
-    final start = (_currentPage - 1) * _kPageSize;
-    if (start >= filtered.length) return [];
-    final end = (start + _kPageSize).clamp(0, filtered.length);
-    return filtered.sublist(start, end);
+  // List<Lead> _paginate(List<Lead> filtered) {
+  //   final start = (_currentPage - 1) * _kPageSize;
+  //   if (start >= filtered.length) return [];
+  //   final end = (start + _kPageSize).clamp(0, filtered.length);
+  //   return filtered.sublist(start, end);
+  // }
+
+  int _totalPages(LeadState state) {
+    if (state is! LeadLoaded) return 1;
+    if (state.totalCount != null) {
+      return (state.totalCount! / _kPageSize).ceil().clamp(1, 99999);
+    }
+   
+    return state.leads.length < _kPageSize ? _currentPage : _currentPage + 1;
   }
 
-  int _totalPages(int filteredCount) =>
-      (filteredCount / _kPageSize).ceil().clamp(1, 99999);
+  Future<void> _goToPage(int page) async {
+    setState(() => _currentPage = page);
+    await context.read<LeadCubit>().fetchAllLeads(page: page, limit: _kPageSize);
+  }
 
   void _resetPage() {
-    if (_currentPage != 1) setState(() => _currentPage = 1);
+    if (_currentPage != 1) {
+      setState(() => _currentPage = 1);
+      context.read<LeadCubit>().fetchAllLeads(page: 1, limit: _kPageSize);
+    }
   }
 
   @override
@@ -427,9 +457,9 @@ debugPrint(
         }
       },
       builder: (context, state) {
-        final allFiltered =
-            state is LeadLoaded ? _filter(state.leads) : <Lead>[];
-            if (state is LeadLoaded && widget.selectedLeadId != null) {
+        final allFiltered = state is LeadLoaded ? _filter(state.leads) : <Lead>[];
+
+      if (state is LeadLoaded && widget.selectedLeadId != null) {
     final lead = state.leads.firstWhere(
       (e) => e.id == widget.selectedLeadId,
     );
@@ -438,9 +468,9 @@ debugPrint(
       openDetail(context, lead);
     });
   }
-        final leads = _paginate(allFiltered);
-        final allCount = state is LeadLoaded ? state.leads.length : 0;
-        final totalPages = _totalPages(allFiltered.length);
+        final leads = allFiltered; // CHANGED — no more _paginate(); server already gave us one page
+        final allCount = state is LeadLoaded ? (state.totalCount ?? state.leads.length) : 0;
+        final totalPages = _totalPages(state);
 
         return Scaffold(
             key: _scaffoldKey,
@@ -674,13 +704,13 @@ Row(
 ),
           backgroundColor: AppColors.background,
           appBar: AppBar(
-            automaticallyImplyLeading: false,
-            leading: IconButton(
-    icon: const Icon(Icons.arrow_back),
-    onPressed: () {
-      Navigator.pop(context); // Closes the drawer
-    },
-  ),
+            automaticallyImplyLeading: widget.showBackButton,
+leading: widget.showBackButton
+    ? IconButton(
+        icon: const Icon(Icons.arrow_back),
+        onPressed: () => Navigator.pop(context),
+      )
+    : null,
             title: const Text('Leads'),
             backgroundColor: AppColors.surface,
             actions: [
@@ -776,7 +806,6 @@ Row(
         _scaffoldKey.currentState!.openDrawer();
       },
     ),
-if (PermissionHelper.can('users_roles'))
     PopupMenuButton<String>(
       color: AppColors.surface,
   onSelected: (value) async {
@@ -807,48 +836,76 @@ if (PermissionHelper.can('users_roles'))
     context.read<LeadCubit>(),
   );
   break;
+
+  case "export_followups":
+       showExportFollowUpsDialog(
+    context,
+    context.read<LeadCubit>(),
+  );
+      break;
     }
   },
   
   itemBuilder: (_) => [
-  const PopupMenuItem<String>(
-    value: 'edit',
-    child: Row(
-      children: [
-        Icon(Icons.edit_outlined, size: 18),
-        SizedBox(width: 12),
-        Text('Edit'),
-      ],
-    ),
-  ),
-  const PopupMenuDivider(),
-  const PopupMenuItem<String>(
-    value: 'followup',
-    child: Row(
-      children: [
-        Icon(Icons.event_available_outlined, size: 18, color: AppColors.primary),
-        SizedBox(width: 12),
-        Text('Add Follow-up', style: TextStyle(color: AppColors.primary)),
-      ],
-    ),
-  ),
-  
-  if (PermissionHelper.can('users_roles')) ...[
-    const PopupMenuDivider(),
     const PopupMenuItem<String>(
-      value: 'Reject',
+      value: 'import',
       child: Row(
         children: [
-          Icon(Icons.block, size: 18, color: AppColors.danger),
+          Icon(Icons.upload_file_outlined, size: 18, color: AppColors.primary),
           SizedBox(width: 12),
-          Text('Reject', style: TextStyle(color: AppColors.danger)),
+          Text('Import Leads'),
         ],
       ),
     ),
-  ],
-],
-),
+    const PopupMenuDivider(),
 
+    const PopupMenuItem<String>(
+    value: 'export_followups',
+    child: Row(children: [
+      Icon(Icons.event_note_outlined, size: 18, color: AppColors.primary),
+      SizedBox(width: 12),
+      Text('Export Follow-ups'),
+    ]),
+  ),
+  const PopupMenuDivider(),
+
+    const PopupMenuItem<String>(
+      value: 'export',
+      child: Row(
+        children: [
+          Icon(Icons.download_outlined, size: 18, color: AppColors.primary),
+          SizedBox(width: 12),
+          Text('Export Leads'),
+        ],
+      ),
+    ),
+        const PopupMenuDivider(),
+
+    const PopupMenuItem<String>(
+      value: 'template',
+      child: Row(
+        children: [
+          Icon(Icons.description_outlined, size: 18),
+          SizedBox(width: 12),
+          Text('Download Template'),
+        ],
+      ),
+    ),
+    if (PermissionHelper.can('users_roles')) ...[
+  const PopupMenuDivider(),
+  const PopupMenuItem<String>(
+    value: 'reject',
+    child: Row(
+      children: [
+        Icon(Icons.block, size: 18, color: AppColors.danger),
+        SizedBox(width: 12),
+        Text('Rejected Leads', style: TextStyle(color: AppColors.danger)),
+      ],
+    ),
+  ),
+],
+  ],
+),
   ],
 ),
                 const SizedBox(height: 10),
@@ -891,22 +948,17 @@ if (PermissionHelper.can('users_roles'))
             Expanded(
                 child: _buildList(context, state, leads, allFiltered.length)),
             if (state is LeadLoaded && allFiltered.isNotEmpty)
-              _PaginationBar(
-                page: _currentPage,
-                totalPages: totalPages,
-                totalItems: allFiltered.length,
-                pageSize: _kPageSize,
-                onPrev: _currentPage > 1
-                    ? () => setState(() => _currentPage--)
-                    : null,
-                onNext: _currentPage < totalPages
-                    ? () => setState(() => _currentPage++)
-                    : null,
-              ),
+  _PaginationBar(
+    page: _currentPage,
+    totalPages: totalPages,
+    totalItems: allCount,
+    pageSize: _kPageSize,
+    onPrev: _currentPage > 1 ? () => _goToPage(_currentPage - 1) : null,
+    onNext: _currentPage < totalPages ? () => _goToPage(_currentPage + 1) : null,
+  ),
           ]),
           
-          floatingActionButton: PermissionHelper.can('users_roles')
-    ? Padding(
+      floatingActionButton:Padding(
         padding: const EdgeInsets.only(bottom: 60), // Move FAB up
         child: FloatingActionButton(
           onPressed: () => _openCreate(context),
@@ -915,7 +967,7 @@ if (PermissionHelper.can('users_roles'))
           child: const Icon(Icons.add),
         ),
       )
-    : null,
+    
         );
       },
     );
@@ -1136,7 +1188,7 @@ Future<void> _pickAndImportLeads(BuildContext context) async {
     }
     return RefreshIndicator(
       color: AppColors.primary,
-      onRefresh: () => context.read<LeadCubit>().fetchAllLeads(),
+      onRefresh: () => context.read<LeadCubit>().fetchAllLeads(page: _currentPage, limit: _kPageSize), // CHANGED
       child: ListView.builder(
         padding: const EdgeInsets.symmetric(horizontal: 16),
         itemCount: leads.length,
@@ -1161,6 +1213,8 @@ Future<void> showAddFollowUpDialog(
   final notesController = TextEditingController();
   final leadCubit = context.read<LeadCubit>(); // capture before dialog opens
   bool saving = false;
+  PlatformFile? selectedAudio;
+bool uploadingAudio = false;
 
   await showDialog(
     context: context,
@@ -1221,6 +1275,93 @@ Future<void> showAddFollowUpDialog(
               "Notes *",
               style: TextStyle(fontWeight: FontWeight.w600),
             ),
+            const SizedBox(height: 18),
+
+const Text(
+  "Audio (Optional)",
+  style: TextStyle(
+    fontWeight: FontWeight.w600,
+  ),
+),
+
+const SizedBox(height: 8),
+
+Container(
+  padding: const EdgeInsets.symmetric(
+    horizontal: 12,
+    vertical: 10,
+  ),
+  
+  child: Row(
+  children: [
+    const Icon(
+      Icons.audiotrack,
+      color: AppColors.primary,
+    ),
+    const SizedBox(width: 10),
+
+    Expanded(
+      child: Text(
+        selectedAudio?.name ?? "No audio selected",
+        overflow: TextOverflow.ellipsis,
+      ),
+    ),
+
+    if (selectedAudio != null)
+      IconButton(
+        tooltip: "Remove audio",
+        icon: const Icon(
+          Icons.close,
+          color: Colors.red,
+          size: 20,
+        ),
+        onPressed: saving
+            ? null
+            : () {
+                setDialogState(() {
+                  selectedAudio = null;
+                });
+              },
+      ),
+
+    InkWell(
+      borderRadius: BorderRadius.circular(30),
+      onTap: saving
+          ? null
+          : () async {
+              final result = await FilePicker.platform.pickFiles(
+                type: FileType.custom,
+                allowedExtensions: [
+                  'mp3',
+                  'wav',
+                  'm4a',
+                  'aac',
+                ],
+                withData: true,
+              );
+
+              if (result != null) {
+                setDialogState(() {
+                  selectedAudio = result.files.single;
+                });
+              }
+            },
+      child: Container(
+        width: 42,
+        height: 42,
+        decoration: const BoxDecoration(
+          color: AppColors.primary,
+          shape: BoxShape.circle,
+        ),
+        child: const Icon(
+          Icons.upload_file,
+          color: Colors.white,
+        ),
+      ),
+    ),
+  ],
+)
+),
             const SizedBox(height: 8),
             TextField(
               controller: notesController,
@@ -1252,26 +1393,37 @@ Future<void> showAddFollowUpDialog(
           ),
           ElevatedButton.icon(
             onPressed: saving
-                ? null
-                : () async {
-                    final note = notesController.text.trim();
-                    if (note.isEmpty) return;
+    ? null
+    : () async {
+        final note = notesController.text.trim();
 
-                    setDialogState(() => saving = true);
+        if (note.isEmpty) {
+          showApiSnack(
+            context,
+            "Please enter follow-up notes",
+            isError: true,
+          );
+          return;
+        }
 
-                    final error =
-                        await leadCubit.addFollowUpNote(lead.id, note);
+        setDialogState(() => saving = true);
 
-                    if (!dialogCtx.mounted) return;
+        final error = await leadCubit.addFollowUpNote(
+          lead.id,
+          note,
+          audioFile: selectedAudio,
+        );
 
-                    if (error == null) {
-                      Navigator.pop(dialogCtx);
-                      showApiSnack(context, 'Follow-up note added');
-                    } else {
-                      setDialogState(() => saving = false);
-                      showApiSnack(context, error, isError: true);
-                    }
-                  },
+        if (!dialogCtx.mounted) return;
+
+        if (error == null) {
+          Navigator.pop(dialogCtx);
+          showApiSnack(context, "Follow-up note added");
+        } else {
+          setDialogState(() => saving = false);
+          showApiSnack(context, error, isError: true);
+        }
+      },
             icon: saving
                 ? const SizedBox(
                     width: 16,
@@ -1842,6 +1994,8 @@ final isMissedFollowup =
     lead.status.trim().toLowerCase() != "converted" &&
     lead.status.trim().toLowerCase() != "rejected";
 
+    final AudioPlayer _player = AudioPlayer();
+    
 if (isMissedFollowup) {
   showDialog(
     context: context,
@@ -1871,46 +2025,190 @@ if (isMissedFollowup) {
 }
 
   showDialog(
-    context: context,
-    builder: (_) => AlertDialog(
-      title: const Text("Follow-up Notes"),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: ListView.separated(
+  context: context,
+  builder: (_) {
+    final scrollController = ScrollController();
+
+ return WillPopScope(
+      onWillPop: () async {
+        await _player.stop();
+        await _player.dispose();
+        return true;
+      },   
+       child: AlertDialog(
+ backgroundColor: AppColors.surface,
+title: Text(
+  "Follow-up History — ${lead.name}",
+  style: const TextStyle(
+    fontSize: 15,
+    fontWeight: FontWeight.bold,
+  ),
+),      
+content: lead.followUpNotes.isEmpty
+    ? const Padding(
+        padding: EdgeInsets.symmetric(vertical: 30),
+        child: Text(
+          "No follow-up notes yet.",
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 13,
+            color: Colors.grey,
+          ),
+        ),
+      )
+    : ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.7,
+        ),
+        child: SizedBox(
+          width: double.maxFinite,
+      child: Scrollbar(
+                controller: scrollController,
+                thumbVisibility: true,
+                child: ListView.separated(
+         controller: scrollController,
           shrinkWrap: true,
           itemCount: lead.followUpNotes.length,
           separatorBuilder: (_, __) => const Divider(),
           itemBuilder: (_, index) {
-            final note = lead.followUpNotes[index];
+  final note = lead.followUpNotes[index];
 
-            return ListTile(
-              leading: CircleAvatar(
+  return Card(
+    color: AppColors.surface,
+    elevation: 0,
+    margin: const EdgeInsets.symmetric(vertical: 4),
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              CircleAvatar(
                 backgroundColor: Colors.blue.shade50,
                 child: const Icon(
                   Icons.notes,
                   color: Colors.blue,
                 ),
               ),
-              title: Text(note.note),
-              subtitle: Text(
-  note.createdAt == null
-      ? "-"
-      : DateFormat(
-          "dd MMM yyyy • hh:mm a",
-        ).format(note.createdAt!),
-),
-            );
-          },
-        ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  note.note,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+
+          Text(
+            note.createdAt == null
+                ? "-"
+                : DateFormat(
+                    "dd MMM yyyy • hh:mm a",
+                  ).format(note.createdAt!),
+            style: const TextStyle(
+              color: Colors.grey,
+              fontSize: 12,
+            ),
+          ),
+
+          if (note.audioPath != null &&
+              note.audioPath!.isNotEmpty) ...[
+            const SizedBox(height: 12),
+
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.audiotrack,
+                    color: AppColors.primary,
+                  ),
+                  const SizedBox(width: 10),
+
+                  Expanded(
+                    child: Text(
+                      note.audioName ?? "Audio",
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+
+                  StreamBuilder<PlayerState>(
+  stream: _player.playerStateStream,
+  builder: (context, snapshot) {
+    final playing = snapshot.data?.playing ?? false;
+
+    return IconButton(
+      icon: Icon(
+        playing
+            ? Icons.pause_circle_filled
+            : Icons.play_circle_fill,
+        color: AppColors.primary,
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text("Close"),
-        ),
-      ],
+      onPressed: () async {
+        if (playing) {
+          await _player.pause();
+        } else {
+          final prefs = await SharedPreferences.getInstance();
+          final token = prefs.getString('token') ?? '';
+          final tenantSlug = prefs.getString('tenant_slug') ?? '';
+
+          final previewUrl =
+              "https://crm-backend-api.techzarinfo.cloud/$tenantSlug/api/files/preview"
+              "?filePath=${Uri.encodeComponent(note.audioPath!)}";
+
+          await _player.setUrl(
+            previewUrl,
+            headers: {
+              "Authorization": "Bearer $token",
+            },
+          );
+
+          await _player.play();
+        }
+      },
+    );
+  },
+),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
     ),
   );
+},
+        ),
+      ),
+        ),
+),
+      actions: [
+        TextButton(
+  onPressed: () async {
+    await _player.stop();
+    await _player.dispose();
+    Navigator.pop(context);
+  },
+  child: const Text("Close"),
+),
+      ],
+       ),
+    );
+  },
+  ).then((_) async {
+  await _player.stop();
+  await _player.dispose();
+});
 }
 
   void _showStatusMenu(BuildContext ctx) {
@@ -2003,7 +2301,28 @@ class LeadDetailSheet extends StatefulWidget {
 }
 
 class LeadDetailSheetState extends State<LeadDetailSheet> {
-  Lead get lead => widget.lead;
+ late Lead _currentLead;           // ADD
+  Lead get lead => _currentLead;
+  final AudioPlayer _player = AudioPlayer();
+    final ScrollController _followUpsScrollController = ScrollController(); // ADD
+
+ @override
+  void initState() {               // ADD
+    super.initState();
+    _currentLead = widget.lead;
+  }
+
+
+  @override
+  void dispose() {
+    _player.stop();
+    _player.dispose();
+        _followUpsScrollController.dispose(); // ADD
+    super.dispose();
+  }
+
+
+
 
   ScaffoldMessengerState? _snackMessenger(BuildContext context) {
     final local = ScaffoldMessenger.maybeOf(context);
@@ -2039,183 +2358,237 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
     final clean = rawPath.startsWith('/') ? rawPath : '/$rawPath';
     return '$base$clean';
   }
-
+  
   Future<void> _previewFile(BuildContext context, String rawPath) async {
-    debugPrint('=== PREVIEW DEBUG === rawPath: "$rawPath"');
-    final url = _buildUrl(rawPath);
-    debugPrint('=== PREVIEW URL === "$url"');
-    final uri = Uri.parse(url);
-    try {
-      final launched =
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!launched && context.mounted) {
-        _showSnack(
-            context,
-            const SnackBar(
-              content: Text('No app found to open this file'),
-              backgroundColor: Colors.red,
-            ));
-      }
-    } catch (e) {
-      if (context.mounted) {
-        _showSnack(
-            context,
-            SnackBar(
-              content: Text('Could not open file: $e'),
-              backgroundColor: Colors.red,
-            ));
-      }
-    }
+  final prefs = await SharedPreferences.getInstance();
+  final token = prefs.getString('token') ?? '';
+  final tenantSlug = prefs.getString('tenant_slug') ?? '';
+
+  if (token.isEmpty || tenantSlug.isEmpty) {
+    if (!context.mounted) return;
+    _showSnack(
+      context,
+      const SnackBar(
+        content: Text('Login required'),
+        backgroundColor: Colors.red,
+      ),
+    );
+    return;
   }
 
+  final cleanPath = rawPath.startsWith('/') ? rawPath.substring(1) : rawPath;
+  final url = Uri.https(
+    'crm-backend-api.techzarinfo.cloud',
+    '/$tenantSlug/api/files/preview',
+    {'filePath': cleanPath},
+  ).toString();
+  debugPrint('Preview URL: $url');
+
+  try {
+    final response = await Dio().get<List<int>>(
+      url,
+      options: Options(
+        responseType: ResponseType.bytes,
+        headers: {'Authorization': 'Bearer $token'},
+        receiveTimeout: const Duration(seconds: 30),
+        connectTimeout: const Duration(seconds: 20),
+      ),
+    );
+
+    final data = response.data;
+    if (data == null || data.isEmpty) {
+      throw Exception('Empty file response from server');
+    }
+
+    final fileName = rawPath.split('/').last;
+    final tempDir = await getTemporaryDirectory();
+    final file = File('${tempDir.path}/$fileName');
+    await file.writeAsBytes(data, flush: true);
+
+    final result = await OpenFile.open(file.path);
+    if (result.type != ResultType.done && context.mounted) {
+      _showSnack(
+        context,
+        SnackBar(
+          content: Text('Could not open file: ${result.message}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  } on DioException catch (e) {
+    debugPrint('=== PREVIEW DIO ERROR === ${e.response?.statusCode} ${e.response?.data}');
+    if (!context.mounted) return;
+    final msg = (e.response?.data is Map)
+        ? (e.response!.data['message'] ?? e.message)
+        : e.message;
+    _showSnack(
+      context,
+      SnackBar(
+        content: Text('Preview failed: $msg'),
+        backgroundColor: Colors.red,
+      ),
+    );
+  } catch (e) {
+    debugPrint('=== PREVIEW ERROR === $e');
+    if (!context.mounted) return;
+    _showSnack(
+      context,
+      SnackBar(
+        content: Text('Could not open file: $e'),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+}
   // ══════════════════════════════════════════════════════════
   // DOWNLOAD — uses file_saver so Android scoped storage is
   // respected (no direct write to public /Download).
   // SnackBars: bottom sheets use ScaffoldMessenger + Scaffold (see _openDetail).
   // ══════════════════════════════════════════════════════════
   Future<void> _downloadFile(
-      BuildContext context, String rawPath, String fileName) async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('token');
-    if (token == null || token.isEmpty) {
-      if (!context.mounted) return;
-      _showSnack(
-        context,
-        const SnackBar(
-          content: Text('Login required'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-
-    final cleanPath = rawPath.startsWith('/') ? rawPath.substring(1) : rawPath;
-    final url = Uri.https(
-      'crm.techzarinfo.cloud',
-      '/api/files/download',
-      {'filePath': cleanPath},
-    ).toString();
-    debugPrint('=== DOWNLOAD URL === $url');
-
-    final lastDot = fileName.lastIndexOf('.');
-    final baseName = lastDot > 0 ? fileName.substring(0, lastDot) : fileName;
-    final extOnly = lastDot > 0 ? fileName.substring(lastDot + 1) : '';
-    final mime = _mimeTypeForAttachmentExt(extOnly);
-
+    BuildContext context, String rawPath, String fileName) async {
+  final prefs = await SharedPreferences.getInstance();
+  final token = prefs.getString('token');
+  final tenantSlug = prefs.getString('tenant_slug');
+  if (token == null || token.isEmpty || tenantSlug == null || tenantSlug.isEmpty) {
     if (!context.mounted) return;
     _showSnack(
       context,
       const SnackBar(
-        content: Row(children: [
-          SizedBox(
-            width: 16,
-            height: 16,
-            child:
-                CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-          ),
-          SizedBox(width: 12),
-          Text('Downloading…'),
-        ]),
-        duration: Duration(seconds: 60),
+        content: Text('Login required'),
+        backgroundColor: Colors.red,
       ),
     );
+    return;
+  }
 
-    try {
-      String savedPath;
-      if (Platform.isAndroid) {
-        final response = await Dio().get<List<int>>(
-          url,
-          options: Options(
-            responseType: ResponseType.bytes,
-            headers: {'Authorization': 'Bearer $token'},
-            receiveTimeout: const Duration(seconds: 60),
-            connectTimeout: const Duration(seconds: 30),
-          ),
-        );
-        final data = response.data;
-        if (data == null || data.isEmpty) {
-          throw Exception('Empty file response from server');
-        }
-        final path = await _downloadsChannel.invokeMethod<String>(
-          'saveToDownloads',
-          <String, dynamic>{
-            'fileName': fileName,
-            'bytes': Uint8List.fromList(data),
-            'mimeType': _mimeStringForAttachmentExt(extOnly),
-          },
-        );
-        savedPath = path ?? '';
-      } else {
-        savedPath = await FileSaver.instance.saveFile(
-          name: baseName,
-          link: LinkDetails(link: url, headers: {
-            'Authorization': 'Bearer $token',
-          }),
-          ext: extOnly,
-          mimeType: mime,
-        );
-      }
+  final cleanPath = rawPath.startsWith('/') ? rawPath.substring(1) : rawPath;
+  final url = Uri.https(
+    'crm-backend-api.techzarinfo.cloud',
+    '/$tenantSlug/api/files/download',
+    {'filePath': cleanPath},
+  ).toString();
+  debugPrint("Download URL: $url");
 
-      if (savedPath.isEmpty ||
-          savedPath.startsWith('Error While Saving') ||
-          savedPath.contains('Something went wrong')) {
-        throw Exception(savedPath);
-      }
+  final lastDot = fileName.lastIndexOf('.');
+  final baseName = lastDot > 0 ? fileName.substring(0, lastDot) : fileName;
+  final extOnly = lastDot > 0 ? fileName.substring(lastDot + 1) : '';
+  final mime = _mimeTypeForAttachmentExt(extOnly);
 
-      debugPrint('=== SAVE PATH === $savedPath');
+  if (!context.mounted) return;
+  _showSnack(
+    context,
+    const SnackBar(
+      content: Row(children: [
+        SizedBox(
+          width: 16,
+          height: 16,
+          child:
+              CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+        ),
+        SizedBox(width: 12),
+        Text('Downloading…'),
+      ]),
+      duration: Duration(seconds: 60),
+    ),
+  );
 
-      if (!context.mounted) return;
-      _hideSnack(context);
-      _showSnack(
-        context,
-        SnackBar(
-          content: Text(Platform.isAndroid
-              ? 'Saved to Downloads: $fileName'
-              : 'Saved: $fileName (Files app → On My iPhone → this app)'),
-          backgroundColor: Colors.green,
-          duration: const Duration(seconds: 4),
+  try {
+    String savedPath;
+    if (Platform.isAndroid) {
+      final response = await Dio().get<List<int>>(
+        url,
+        options: Options(
+          responseType: ResponseType.bytes,
+          headers: {'Authorization': 'Bearer $token'},
+          receiveTimeout: const Duration(seconds: 60),
+          connectTimeout: const Duration(seconds: 30),
         ),
       );
-    } on DioException catch (e) {
-      debugPrint('=== DIO ERROR === ${e.response?.statusCode} '
-          '${e.response?.data}');
-      if (!context.mounted) return;
-      _hideSnack(context);
-      final msg = (e.response?.data is Map)
-          ? (e.response!.data['message'] ?? e.message)
-          : e.message;
-      _showSnack(
-          context,
-          SnackBar(
-            content: Text('Download failed: $msg'),
-            backgroundColor: Colors.red,
-          ));
-    } on PlatformException catch (e) {
-      debugPrint('=== DOWNLOAD PLATFORM ERROR === ${e.code} ${e.message}');
-      if (!context.mounted) return;
-      _hideSnack(context);
-      _showSnack(
-          context,
-          SnackBar(
-            content: Text('Download failed: ${e.message ?? e.code}'),
-            backgroundColor: Colors.red,
-          ));
-    } catch (e) {
-      debugPrint('=== DOWNLOAD ERROR === $e');
-      if (!context.mounted) return;
-      _hideSnack(context);
-      _showSnack(
-          context,
-          SnackBar(
-            content: Text('Download error: $e'),
-            backgroundColor: Colors.red,
-          ));
+      final data = response.data;
+      if (data == null || data.isEmpty) {
+        throw Exception('Empty file response from server');
+      }
+      final path = await _downloadsChannel.invokeMethod<String>(
+        'saveToDownloads',
+        <String, dynamic>{
+          'fileName': fileName,
+          'bytes': Uint8List.fromList(data),
+          'mimeType': _mimeStringForAttachmentExt(extOnly),
+        },
+      );
+      savedPath = path ?? '';
+    } else {
+      savedPath = await FileSaver.instance.saveFile(
+        name: baseName,
+        link: LinkDetails(link: url, headers: {
+          'Authorization': 'Bearer $token',
+        }),
+        ext: extOnly,
+        mimeType: mime,
+      );
     }
+
+    if (savedPath.isEmpty ||
+        savedPath.startsWith('Error While Saving') ||
+        savedPath.contains('Something went wrong')) {
+      throw Exception(savedPath);
+    }
+
+    debugPrint('=== SAVE PATH === $savedPath');
+
+    if (!context.mounted) return;
+    _hideSnack(context);
+    _showSnack(
+      context,
+      SnackBar(
+        content: Text(Platform.isAndroid
+            ? 'Saved to Downloads: $fileName'
+            : 'Saved: $fileName (Files app → On My iPhone → this app)'),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  } on DioException catch (e) {
+    debugPrint('=== DIO ERROR === ${e.response?.statusCode} '
+        '${e.response?.data}');
+    if (!context.mounted) return;
+    _hideSnack(context);
+    final msg = (e.response?.data is Map)
+        ? (e.response!.data['message'] ?? e.message)
+        : e.message;
+    _showSnack(
+        context,
+        SnackBar(
+          content: Text('Download failed: $msg'),
+          backgroundColor: Colors.red,
+        ));
+  } on PlatformException catch (e) {
+    debugPrint('=== DOWNLOAD PLATFORM ERROR === ${e.code} ${e.message}');
+    if (!context.mounted) return;
+    _hideSnack(context);
+    _showSnack(
+        context,
+        SnackBar(
+          content: Text('Download failed: ${e.message ?? e.code}'),
+          backgroundColor: Colors.red,
+        ));
+  } catch (e) {
+    debugPrint('=== DOWNLOAD ERROR === $e');
+    if (!context.mounted) return;
+    _hideSnack(context);
+    _showSnack(
+        context,
+        SnackBar(
+          content: Text('Download error: $e'),
+          backgroundColor: Colors.red,
+        ));
   }
+}
 
   @override
   Widget build(BuildContext ctx) => DefaultTabController(
-        length: 2,
+        length: 3,
         child: DraggableScrollableSheet(
           initialChildSize: 0.75,
           maxChildSize: 0.95,
@@ -2274,7 +2647,7 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
                   labelColor: AppColors.primary,
                   unselectedLabelColor: AppColors.textSecondary,
                   indicatorColor: AppColors.primary,
-                  tabs: [Tab(text: 'Details'), Tab(text: 'Activity')],
+                  tabs: [Tab(text: 'Details'), Tab(text: 'Activity'), Tab(text: 'Follow-ups'),],
                 ),
               ),
               const Divider(height: 16, color: AppColors.divider),
@@ -2283,6 +2656,7 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
                   children: [
                     _buildDetailsTab(ctrl),
                     _buildActivityTab(ctrl),
+                    _buildFollowUpsTab(), // ADD
                   ],
                 ),
               ),
@@ -2290,7 +2664,364 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
           ),
         ),
       );
+Widget _buildFollowUpsTab() {
+  final today = DateTime.now();
+  final todayOnly = DateTime(today.year, today.month, today.day);
 
+  final followupDate = lead.followUpDate == null
+      ? null
+      : DateTime(
+          lead.followUpDate!.year,
+          lead.followUpDate!.month,
+          lead.followUpDate!.day,
+        );
+
+  final isMissedFollowup = followupDate != null &&
+      followupDate.isBefore(todayOnly) &&
+      lead.followUpNotes.isEmpty &&
+      lead.status.trim().toLowerCase() != "converted" &&
+      lead.status.trim().toLowerCase() != "rejected";
+
+  final status = lead.status.trim().toLowerCase();
+  final canAdd = status != 'converted' && status != 'rejected'; // ADD
+
+  Widget body; // ADD — holds whichever state below, wrapped later
+  if (isMissedFollowup) {
+    body = ListView(
+      padding: const EdgeInsets.all(20),
+      children: const [
+        SizedBox(height: 40),
+        Icon(Icons.warning_amber_rounded, color: Colors.red, size: 36),
+        SizedBox(height: 12),
+        Text(
+          "Missed Follow-up",
+          textAlign: TextAlign.center,
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+        ),
+        SizedBox(height: 6),
+        Text(
+          "No follow-up notes logged — this follow-up was missed.",
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.grey, fontSize: 13),
+        ),
+      ],
+    );
+  } else if (lead.followUpNotes.isEmpty) {
+    body = const Center(
+      child: Text(
+        "No follow-up notes yet.",
+        style: TextStyle(fontSize: 13, color: Colors.grey),
+      ),
+    );
+  } else {
+    body = Scrollbar(
+      controller: _followUpsScrollController,
+      thumbVisibility: true,
+      child: ListView.separated(
+        controller: _followUpsScrollController,
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+        itemCount: lead.followUpNotes.length,
+        separatorBuilder: (_, __) => const Divider(),
+        itemBuilder: (_, index) {
+          final note = lead.followUpNotes[index];
+          return Card(
+            color: AppColors.surface,
+            elevation: 0,
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      CircleAvatar(
+                        backgroundColor: Colors.blue.shade50,
+                        child: const Icon(Icons.notes, color: Colors.blue),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          note.note,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    note.createdAt == null
+                        ? "-"
+                        : DateFormat("dd MMM yyyy • hh:mm a")
+                            .format(note.createdAt!),
+                    style: const TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
+                  if (note.audioPath != null && note.audioPath!.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.audiotrack, color: AppColors.primary),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              note.audioName ?? "Audio",
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          StreamBuilder<PlayerState>(
+                            stream: _player.playerStateStream,
+                            builder: (context, snapshot) {
+                              final playing = snapshot.data?.playing ?? false;
+                              return IconButton(
+                                icon: Icon(
+                                  playing
+                                      ? Icons.pause_circle_filled
+                                      : Icons.play_circle_fill,
+                                  color: AppColors.primary,
+                                ),
+                                onPressed: () async {
+                                  if (playing) {
+                                    await _player.pause();
+                                  } else {
+                                    final prefs =
+                                        await SharedPreferences.getInstance();
+                                    final token = prefs.getString('token') ?? '';
+                                    final tenantSlug =
+                                        prefs.getString('tenant_slug') ?? '';
+
+                                    final previewUrl =
+                                        "https://crm-backend-api.techzarinfo.cloud/$tenantSlug/api/files/preview"
+                                        "?filePath=${Uri.encodeComponent(note.audioPath!)}";
+
+                                    await _player.setUrl(
+                                      previewUrl,
+                                      headers: {"Authorization": "Bearer $token"},
+                                    );
+                                    await _player.play();
+                                  }
+                                },
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  return Stack(
+  children: [
+    Positioned.fill(child: body),
+    if (canAdd)
+      Positioned(
+        right:20,
+        bottom: 16,
+        child: Material(
+          color: AppColors.primary,
+          shape: const CircleBorder(),
+          elevation: 4,
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: () => _openAddFollowUpDialog(context),
+            child: const SizedBox(
+              width: 40,
+              height: 40,
+              child: Icon(Icons.add, size: 30, color: Colors.white),
+            ),
+          ),
+        ),
+      ),
+  ],
+);
+}
+Future<void> _openAddFollowUpDialog(BuildContext context) async {
+  final notesController = TextEditingController();
+  final leadCubit = context.read<LeadCubit>();
+  bool saving = false;
+  PlatformFile? selectedAudio;
+
+  await showDialog(
+    context: context,
+    builder: (dialogCtx) => StatefulBuilder(
+      builder: (dialogCtx, setDialogState) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        backgroundColor: AppColors.surface,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+        titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+        contentPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.event_available_outlined,
+                  color: AppColors.primary, size: 20),
+            ),
+            const SizedBox(width: 10),
+            const Text("Add Follow-up",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Divider(),
+            const SizedBox(height: 10),
+            RichText(
+              text: TextSpan(
+                style: const TextStyle(color: Colors.black),
+                children: [
+                  const TextSpan(text: "Lead: ",
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  TextSpan(text: lead.name),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text("Notes *", style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 18),
+            const Text("Audio (Optional)",
+                style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  const Icon(Icons.audiotrack, color: AppColors.primary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      selectedAudio?.name ?? "No audio selected",
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (selectedAudio != null)
+                    IconButton(
+                      tooltip: "Remove audio",
+                      icon: const Icon(Icons.close, color: Colors.red, size: 20),
+                      onPressed: saving
+                          ? null
+                          : () => setDialogState(() => selectedAudio = null),
+                    ),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(30),
+                    onTap: saving
+                        ? null
+                        : () async {
+                            final result = await FilePicker.platform.pickFiles(
+                              type: FileType.custom,
+                              allowedExtensions: ['mp3', 'wav', 'm4a', 'aac'],
+                              withData: true,
+                            );
+                            if (result != null) {
+                              setDialogState(
+                                  () => selectedAudio = result.files.single);
+                            }
+                          },
+                    child: Container(
+                      width: 42,
+                      height: 42,
+                      decoration: const BoxDecoration(
+                          color: AppColors.primary, shape: BoxShape.circle),
+                      child: const Icon(Icons.upload_file, color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: notesController,
+              maxLines: 5,
+              enabled: !saving,
+              decoration: InputDecoration(
+                hintText: "Enter follow-up notes...",
+                filled: true,
+                fillColor: AppColors.background,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: AppColors.border),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: AppColors.primary),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: saving ? null : () => Navigator.pop(dialogCtx),
+            child: const Text("Cancel"),
+          ),
+          ElevatedButton.icon(
+            onPressed: saving
+                ? null
+                : () async {
+                    final note = notesController.text.trim();
+                    if (note.isEmpty) {
+                      showApiSnack(context, "Please enter follow-up notes",
+                          isError: true);
+                      return;
+                    }
+
+                    setDialogState(() => saving = true);
+
+                    final error = await leadCubit.addFollowUpNote(
+                      lead.id,
+                      note,
+                      audioFile: selectedAudio,
+                    );
+
+                    if (!dialogCtx.mounted) return;
+
+                    if (error == null) {
+                      Navigator.pop(dialogCtx);
+                      showApiSnack(context, "Follow-up note added");
+                      final updated = await leadCubit.fetchLeadById(lead.id);
+                      if (mounted && updated != null) {
+                        setState(() => _currentLead = updated);
+                      }
+                    } else {
+                      setDialogState(() => saving = false);
+                      showApiSnack(context, error, isError: true);
+                    }
+                  },
+            icon: saving
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white),
+                  )
+                : const SizedBox.shrink(),
+            label: Text(saving ? "Saving..." : "Save Follow-up"),
+          ),
+        ],
+      ),
+    ),
+  );
+}
   Widget _buildDetailsTab(ScrollController ctrl) => ListView(
           controller: ctrl,
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
@@ -2823,6 +3554,7 @@ String? _validatePhone(String value) {
 class _LeadFormModal extends StatefulWidget {
   final List<AppUser> salesUsers;
   final Lead? existingLead;
+  
   const _LeadFormModal({required this.salesUsers, this.existingLead});
   @override
   State<_LeadFormModal> createState() => _LeadFormModalState();
@@ -2859,10 +3591,15 @@ class _LeadFormModalState extends State<_LeadFormModal> {
   late final List<String> _sources;
 
   bool get _isEdit => widget.existingLead != null;
+   List<CustomField> _customFields = [];
 
   @override
   void initState() {
     super.initState();
+
+    _customFields = List<CustomField>.from(
+  widget.existingLead?.customFields ?? const [],
+);
 
     _countries = AppConstants.countries.toSet().toList()..sort();
     _industries = AppConstants.industries.toSet().toList()..sort();
@@ -3056,11 +3793,23 @@ class _LeadFormModalState extends State<_LeadFormModal> {
     if (!mounted) return;
 
     setState(() => _saving = false);
-showApiSnack(
-  context,
-  err ?? "Something went wrong",
-  isError: true,
-);    }
+
+if (err == null) {
+  showApiSnack(
+    context,
+    widget.existingLead == null
+        ? "Lead created successfully"
+        : "Lead updated successfully",
+  );
+
+  Navigator.pop(context);
+} else {
+  showApiSnack(
+    context,
+    err,
+    isError: true,
+  );
+}  }
 
   @override
   Widget build(BuildContext ctx) => DraggableScrollableSheet(
@@ -3229,8 +3978,11 @@ showApiSnack(
 
   Widget _basicStep() =>
       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const SectionHeader(
-            title: 'Basic Information', icon: Icons.person_outline),
+         SectionHeader(
+  title: "Basic Information",
+  icon: Icons.person_outline,
+  onAddField: () => _openCreateCustomField("Basic Information"),
+),
         CrmTextField(
             label: 'Lead Name',
             required: true,
@@ -3347,12 +4099,18 @@ showApiSnack(
             items: _countries,
             hint: 'Select Country',
             onChanged: (v) => setState(() => _country = v)),
+            ..._customFields
+    .where((e) => e.cardTitle == "Basic Information")
+    .map((e) => _buildCustomField(e)),
       ]);
 
   Widget _businessStep() =>
       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const SectionHeader(
-            title: 'Business Details', icon: Icons.business_outlined),
+         SectionHeader(
+  title: "Business Details",
+  icon: Icons.business_outlined,
+  onAddField: () => _openCreateCustomField("Business Details"),
+),
         CrmDropdown(
             label: 'Industry',
             value: _industry,
@@ -3379,12 +4137,18 @@ showApiSnack(
             hint: 'What is the lead looking for?',
             controller: _req,
             maxLines: 4),
+            ..._customFields
+    .where((e) => e.cardTitle == "Business Details")
+    .map((e) => _buildCustomField(e)),
       ]);
 
   Widget _manageStep() =>
       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const SectionHeader(
-            title: 'Lead Management', icon: Icons.tune_outlined),
+         SectionHeader(
+  title: "Lead Management",
+  icon: Icons.assignment_outlined,
+  onAddField: () => _openCreateCustomField("Lead Management"),
+),
         const Text('Status',
             style: TextStyle(
                 fontSize: 13,
@@ -3551,17 +4315,27 @@ showApiSnack(
             ]),
           ),
         ),
+        ..._customFields
+    .where((e) => e.cardTitle == "Lead Management")
+    .map((e) => _buildCustomField(e)),
       ]);
 
   Widget _notesStep() =>
       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const SectionHeader(
-            title: 'Additional Notes', icon: Icons.notes_outlined),
+         SectionHeader(
+  title: "Additional Information",
+  icon: Icons.notes_outlined,
+  onAddField: () => _openCreateCustomField("Additional Information"),
+),
         CrmTextField(
             label: 'Notes',
             hint: 'Context, observations...',
             controller: _notes,
             maxLines: 6),
+            ..._customFields
+    .where((e) => e.cardTitle == "Additional Information")
+    .map((e) => _buildCustomField(e))
+    .toList(),
         const SizedBox(height: 20),
         Container(
           padding: const EdgeInsets.all(16),
@@ -3769,7 +4543,133 @@ showApiSnack(
           ]),
         ),
       ]);
+      //
+      
+      
+      Future<void> _openCreateCustomField(String cardTitle) async {
+  final nameController = TextEditingController();
 
+  String fieldType = 'text';
+
+  final result = await showDialog<CustomField>(
+    context: context,
+    builder: (_) {
+      return AlertDialog(
+        title: const Text("Create Custom Field"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: "Field Name",
+              ),
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              value: fieldType,
+              items: const [
+                DropdownMenuItem(value: 'text', child: Text("Text")),
+                DropdownMenuItem(value: 'number', child: Text("Number")),
+                DropdownMenuItem(value: 'date', child: Text("Date")),
+                DropdownMenuItem(value: 'dropdown', child: Text("Dropdown")),
+              ],
+              onChanged: (v) {
+                fieldType = v!;
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Cancel"),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(
+                context,
+                CustomField(
+                  id: '',
+                  cardTitle: cardTitle,
+                  name: nameController.text.trim(),
+                  type: fieldType,
+                  options: const [],
+                  value: '',
+                ),
+              );
+            },
+            child: const Text("Create"),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (result != null) {
+    setState(() {
+      _customFields.add(result);
+    });
+  }
+}
+// ==================
+// this is for custom field
+// ==================
+Widget _buildCustomField(CustomField field) {
+  final controller = TextEditingController(text: field.value);
+
+  switch (field.type) {
+    case 'text':
+      return Padding(
+        padding: const EdgeInsets.only(top: 14),
+        child: CrmTextField(
+          label: field.name,
+          controller: controller,
+          onChanged: (v) => field.value = v,
+        ),
+      );
+
+    case 'number':
+      return Padding(
+        padding: const EdgeInsets.only(top: 14),
+        child: CrmTextField(
+          label: field.name,
+          controller: controller,
+          keyboardType: TextInputType.number,
+          onChanged: (v) => field.value = v,
+        ),
+      );
+
+    case 'date':
+      return Padding(
+        padding: const EdgeInsets.only(top: 14),
+        child: CrmTextField(
+          label: field.name,
+          controller: controller,
+          onChanged: (v) => field.value = v,
+        ),
+      );
+
+    case 'dropdown':
+      return Padding(
+        padding: const EdgeInsets.only(top: 14),
+        child: CrmDropdown(
+          label: field.name,
+          value: field.value.isEmpty ? null : field.value,
+          items: field.options,
+          hint: "Select ${field.name}",
+          onChanged: (v) {
+            setState(() {
+              field.value = v ?? '';
+            });
+          },
+        ),
+      );
+
+    default:
+      return const SizedBox.shrink();
+  }
+}
   Future<void> _pickFiles() async {
     final result = await FilePicker.platform.pickFiles(
       allowMultiple: true,

@@ -2,21 +2,17 @@
 // ║           lib/screen/deals/cubit/deals_cubit.dart            ║
 // ╚══════════════════════════════════════════════════════════════╝
 
+import 'package:crm_app/main.dart';
+import 'package:crm_app/screen/deals/cubit/deals_sheet_state.dart';
 import 'package:crm_app/screen/deals/modal/deal_modal.dart';
+import 'package:crm_app/screen/invoice/modal/invoice_model.dart';
 import 'package:dio/dio.dart'
-    show
-        Dio,
-        BaseOptions,
-        InterceptorsWrapper,
-        DioException,
-        DioExceptionType,
-        MultipartFile,
-        FormData,
-        Options;
+    show Dio, BaseOptions, InterceptorsWrapper, DioException, DioExceptionType, MultipartFile, FormData, Options, Response, ResponseType;
 import 'package:equatable/equatable.dart';
 import 'package:file_picker/file_picker.dart' show PlatformFile;
-import 'package:flutter/material.dart' show debugPrint;
+import 'package:flutter/material.dart' show debugPrint, ScaffoldMessenger, SnackBar, Text;
 import 'package:flutter_bloc/flutter_bloc.dart' show Cubit;
+import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart'
     show SharedPreferences;
 import 'package:crm_app/utils/permission_helper.dart';
@@ -54,12 +50,14 @@ class DealsLoaded extends DealsState {
   final List<Deal> pendingDeals;
   final List<Deal> lostDeals;
   final List<String> salesUsers;
+  
 
   const DealsLoaded({
     required this.allDeals,
     required this.pendingDeals,
     required this.lostDeals,
     required this.salesUsers,
+
   });
 
   DealsLoaded copyWithDeals(List<Deal> d) => DealsLoaded(
@@ -71,7 +69,26 @@ class DealsLoaded extends DealsState {
   @override
   List<Object?> get props => [allDeals, pendingDeals, lostDeals, salesUsers];
 }
+// ================
+// Rejected state 
+// ================
+// ── replace the existing RejectedDealsLoaded class ──────────────
+class RejectedDealsLoaded extends DealsState {
+  final List<Deal> deals;
+  final int currentPage;
+  final int totalPages;
+  final int totalDeals;
 
+  const RejectedDealsLoaded(
+    this.deals, {
+    this.currentPage = 1,
+    this.totalPages = 1,
+    this.totalDeals = 0,
+  });
+
+  @override
+  List<Object?> get props => [deals, currentPage, totalPages, totalDeals];
+}
 // ══════════════════════════════════════════════════════════════
 // CUBIT
 // ══════════════════════════════════════════════════════════════
@@ -80,6 +97,7 @@ class DealsCubit extends Cubit<DealsState> {
 
   late final Dio _dio;
   String? _cachedToken;
+  bool _handlingSessionExpiry = false;
 
   DealsCubit() : super(DealsInitial()) {
     // ── FIX: Do NOT set Content-Type globally. ─────────────────
@@ -107,14 +125,45 @@ class DealsCubit extends Cubit<DealsState> {
         handler.next(opt);
       },
       onError: (err, handler) {
-        if (err.response?.statusCode == 401) _cachedToken = null;
-        handler.next(err);
-      },
+  if (err.response?.statusCode == 401) {
+    _cachedToken = null;
+    _handleSessionExpired(); // CHANGED: only on actual 401
+  }
+  handler.next(err);
+},
     ));
 
     _initToken();
   }
+   Future<void> _handleSessionExpired() async {
+    if (_handlingSessionExpiry) return;
+    _handlingSessionExpiry = true;
 
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('token');
+      await prefs.remove('user_id');
+      await prefs.remove('permissions');
+      await prefs.remove('user_name');
+      await prefs.remove('email');
+      await prefs.remove('profileImage');
+      await prefs.remove('tenant_slug');
+      await LocalDb.instance.clearAll();
+      PermissionHelper.clear();
+
+      final ctx = navigatorKey.currentContext;
+      if (ctx != null && ctx.mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          const SnackBar(content: Text('Session expired. Please log in again.')),
+        );
+        navigatorKey.currentState?.pushNamedAndRemoveUntil('/login', (_) => false);
+      }
+    } catch (_) {
+    } finally {
+      _handlingSessionExpiry = false;
+    }
+  }
+  
   Future<void> _initToken() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -190,7 +239,7 @@ class DealsCubit extends Cubit<DealsState> {
               allDeals: cachedDeals,
               pendingDeals: cachedPending,
               lostDeals: cachedLost,
-              salesUsers: const [],
+              salesUsers: const [], 
             ));
           }
           return;
@@ -222,10 +271,11 @@ class DealsCubit extends Cubit<DealsState> {
 
     if (isClosed) return;
     emit(DealsLoaded(
+      
       allDeals: deals,
       pendingDeals: pending,
       lostDeals: lost,
-      salesUsers: users,
+      salesUsers: users, 
     ));
   }
 
@@ -255,6 +305,38 @@ class DealsCubit extends Cubit<DealsState> {
     return null;
   }
 }
+
+  // ── 🌐 GET /{tenantSlug}/api/deals/:id/activity ───────────
+  // ADD: unlike every other call in this cubit, this endpoint needs
+  // the tenant slug in the path (e.g. /kishore/api/...), which _base
+  // does not include. We build an absolute URL for just this call —
+  // Dio overrides baseUrl automatically when a full URL is passed,
+  // and the Authorization interceptor still fires for it.
+  Future<List<DealActivityItem>> getDealActivity(String dealId) async {
+    if (_cachedToken == null || _cachedToken!.isEmpty) {
+      await _initToken();
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final tenantSlug = prefs.getString('tenant_slug') ?? '';
+    if (tenantSlug.isEmpty) {
+      throw Exception('Missing tenant slug — please log in again');
+    }
+
+    final res = await _dio.get(
+      'https://crm-backend-api.techzarinfo.cloud/$tenantSlug/api/deals/$dealId/activity',
+    );
+
+    final data = res.data;
+    final List<dynamic> rawList = (data is Map && data['activity'] is List)
+        ? data['activity'] as List
+        : (data is List ? data : []);
+
+    return rawList
+        .whereType<Map>()
+        .map((e) => DealActivityItem.fromJson(Map<String, dynamic>.from(e)))
+        .toList();
+  }
 
   // ── CREATE ────────────────────────────────────────────────────
 
@@ -413,17 +495,134 @@ class DealsCubit extends Cubit<DealsState> {
       }
     }
   }
+  // -=======================
+  // Load Rejected Deals
+  // ========================
+
+  // ── replace loadRejectedDeals ────────────────────────────────────
+Future<void> loadRejectedDeals({
+  int page = 1,
+  int limit = 10,
+}) async {
+  if (isClosed) return;
+
+  emit(DealsLoading());
+
+  try {
+    final response = await _dio.get(
+      '/deals/rejected',
+      queryParameters: {
+        'page': page,
+        'limit': limit,
+      },
+    );
+
+    final data = response.data;
+    final rows = _toList(data);
+    final deals = _parseDeals(rows);
+
+    int totalDeals = deals.length;
+    int totalPages = 1;
+    int currentPage = page;
+    if (data is Map) {
+      totalDeals = (data['totalDeals'] as num?)?.toInt() ?? deals.length;
+      totalPages = (data['totalPages'] as num?)?.toInt() ?? 1;
+      currentPage = (data['currentPage'] as num?)?.toInt() ?? page;
+    }
+
+    if (!isClosed) {
+      emit(RejectedDealsLoaded(
+        deals,
+        currentPage: currentPage,
+        totalPages: totalPages,
+        totalDeals: totalDeals,
+      ));
+    }
+  } on DioException catch (e) {
+    if (!isClosed) {
+      emit(DealsError(_dioMsg(e, 'Failed to load rejected deals')));
+    }
+  }
+}
+
+// ── add: dedicated delete for the rejected list ──────────────────
+// deleteDeal() only updates state when it's DealsLoaded, so it can't
+// be reused here — this reloads the current rejected page instead.
+Future<bool> deleteRejectedDeal(
+  String id, {
+  required int page,
+  int limit = 10,
+}) async {
+  if (isClosed) return false;
+  try {
+    await _dio.delete('/deals/delete-deal/$id');
+    await loadRejectedDeals(page: page, limit: limit);
+    return true;
+  } on DioException catch (e) {
+    if (!isClosed) {
+      emit(DealsError(_dioMsg(e, 'Failed to delete rejected deal')));
+    }
+    return false;
+  }
+}
 
   // ── UPDATE ────────────────────────────────────────────────────
 
   /// PATCH /deals/update-deal/:id  (JSON — no files)
   /// NOTE: Does NOT emit DealsActionSuccess so deal_screen._save()
   /// can run follow-up + attachments before closing the modal.
-  Future<void> updateDeal(String id, Map<String, dynamic> payload) async {
+  Future<void> updateDeal(String id, Map<String, dynamic> payload,{
+  List<PlatformFile> attachments = const [],
+}) async {
     if (isClosed) return;
     final prev = state;
     try {
-      final res = await _dio.patch('/deals/update-deal/$id', data: payload);
+      final formData = FormData();
+
+// Add all normal fields
+payload.forEach((key, value) {
+  if (value == null) return;
+
+  if (value is List) {
+    for (final item in value) {
+      formData.fields.add(
+        MapEntry(key, item.toString()),
+      );
+    }
+  } else {
+    formData.fields.add(
+      MapEntry(key, value.toString()),
+    );
+  }
+});
+
+// Add attachments
+for (final file in attachments) {
+  MultipartFile? mf;
+  if (file.bytes != null) {
+    mf = MultipartFile.fromBytes(
+      file.bytes!,
+      filename: file.name,
+    );
+  } else if (file.path != null && file.path!.isNotEmpty) {
+    mf = await MultipartFile.fromFile(
+      file.path!,
+      filename: file.name,
+    );
+  }
+
+  if (mf != null) {
+    formData.files.add(
+      MapEntry('attachments', mf),
+    );
+  }
+}
+
+final res = await _dio.patch(
+  '/deals/update-deal/$id',
+  data: formData,
+);
+
       await LocalDb.instance.updateLocalDeal(id, payload);
       final body = res.data;
 
@@ -505,40 +704,62 @@ class DealsCubit extends Cubit<DealsState> {
 
   /// POST /deals/schedule-followup/:id
   Future<bool> scheduleFollowUp(
-    String dealId, {
-    required DateTime followUpDate,
-    required String comment,
-  }) async {
-    try {
-      await _dio.post(
-        '/deals/schedule-followup/$dealId',
-        data: {
-          'followUpDate': followUpDate.toUtc().toIso8601String(),
-          'followUpComment': comment.trim(),
-        },
-      );
-      debugPrint('[DealsCubit] follow-up scheduled for $dealId');
-      return true;
-    } catch (e) {
-      debugPrint('[DealsCubit] scheduleFollowUp error: $e');
-      return false;
+  String dealId, {
+  required DateTime followUpDate,
+  required String comment,
+  DateTime? previousFollowUpDate,
+  String previousNotes = '',
+  String previousOutcome = '',
+}) async {
+  try {
+    if (_cachedToken == null || _cachedToken!.isEmpty) {
+      await _initToken();
     }
-  }
 
+    debugPrint('Token being sent: $_cachedToken');
+    await _dio.post(
+      '/deals/schedule-followup/$dealId',
+      data: {
+        'dealId': dealId,
+        'followUpDate': followUpDate.toUtc().toIso8601String(),
+        'followUpComment': comment.trim(),
+        'previousFollowUpDate': previousFollowUpDate?.toUtc().toIso8601String(),
+        'previousNotes': previousNotes,
+        'previousOutcome': previousOutcome,
+      },
+    );
+    debugPrint('[DealsCubit] follow-up scheduled for $dealId');
+    return true;
+  } catch (e) {
+  if (e is DioException) {
+    debugPrint('[DealsCubit] scheduleFollowUp error: ${e.response?.statusCode} ${e.response?.data}');
+    debugPrint('[DealsCubit] request payload: ${e.requestOptions.data}');
+  } else {
+    debugPrint('[DealsCubit] scheduleFollowUp error: $e');
+  }
+  return false;
+}
+}
   /// POST /deals/:id/complete-followup
-  Future<void> completeFollowUp(String id) async {
-    if (isClosed) return;
-    try {
-      await _dio.post('/deals/$id/complete-followup');
-      await loadDeals();
-      if (!isClosed) emit(const DealsActionSuccess('Follow-up completed'));
-    } on DioException catch (e) {
-      if (!isClosed) {
-        emit(DealsError(_dioMsg(e, 'Failed to complete follow-up')));
-      }
-    }
+  Future<bool> completeFollowUp(
+  String dealId, {
+  required String outcome,
+  required String notes,
+}) async {
+  try {
+    await _initToken();
+    debugPrint('complete Headers: ${_dio.options.headers}');
+    await _dio.post(
+      '/deals/$dealId/complete-followup',
+      data: {'outcome': outcome, 'notes': notes},
+    );
+    debugPrint('[DealsCubit] follow-up completed for $dealId');
+    return true;
+  } catch (e) {
+    debugPrint('[DealsCubit] completeFollowUp error: $e');
+    return false;
   }
-
+}
   // ── ATTACHMENTS ───────────────────────────────────────────────
 
   /// POST /deals/:id/attachments  (multipart)
@@ -583,6 +804,73 @@ class DealsCubit extends Cubit<DealsState> {
     }
   }
 
+  // ── add inside DealsCubit, near createDeal/uploadAttachments ────
+
+/// POST /deals/bulk-import  (multipart — single Excel/CSV file)
+///
+/// Response shape (confirmed): { "success": true, "created": N,
+/// "failed": N, "errors": [...] }
+///
+/// Assumption: multipart field name is 'file' — verify against
+/// Postman/backend and adjust the MapEntry key below if different.
+Future<BulkImportResult?> bulkImportDeals(PlatformFile file) async {
+  if (isClosed) return null;
+
+  try {
+    MultipartFile mf;
+    if (file.bytes != null) {
+      mf = MultipartFile.fromBytes(file.bytes!, filename: file.name);
+    } else if (file.path != null && file.path!.isNotEmpty) {
+      mf = await MultipartFile.fromFile(file.path!, filename: file.name);
+    } else {
+      debugPrint('[DealsCubit] bulkImportDeals: file has no bytes or path');
+      return null;
+    }
+
+    final formData = FormData();
+    formData.files.add(MapEntry('file', mf));
+
+    debugPrint('[DealsCubit] bulkImportDeals → uploading ${file.name}');
+
+    final res = await _dio.post('/deals/bulk-import', data: formData);
+    final body = res.data;
+
+    if (body is! Map) {
+      debugPrint('[DealsCubit] bulkImportDeals: unexpected response shape');
+      return null;
+    }
+
+    final result = BulkImportResult.fromJson(Map<String, dynamic>.from(body));
+
+    debugPrint(
+        '[DealsCubit] bulkImportDeals → created=${result.created} failed=${result.failed}');
+
+    // Refresh deal lists so newly-imported deals show up immediately.
+    await loadDeals();
+
+    if (!isClosed) {
+      final msg = result.failed > 0
+          ? 'Imported ${result.created} deal(s), ${result.failed} failed'
+          : 'Imported ${result.created} deal(s) successfully';
+      emit(DealsActionSuccess(msg));
+    }
+
+    return result;
+  } on DioException catch (e) {
+    debugPrint(
+        '[DealsCubit] bulkImportDeals DioException: ${e.response?.statusCode} ${e.response?.data}');
+    if (!isClosed) {
+      emit(DealsError(_dioMsg(e, 'Failed to import deals')));
+    }
+    return null;
+  } catch (e) {
+    debugPrint('[DealsCubit] bulkImportDeals error: $e');
+    if (!isClosed) {
+      emit(const DealsError('Failed to import deals'));
+    }
+    return null;
+  }
+}
   // ── DELETE ────────────────────────────────────────────────────
 
   Future<void> deleteDeal(String id) async {
@@ -630,8 +918,106 @@ class DealsCubit extends Cubit<DealsState> {
       }
     }
   }
+  //=============================
+  // Add Deal Note
+  //=============================
+  Future<bool> addDealNote(
+  String dealId,
+  String text,
+) async {
+  try {
+    await _dio.post(
+      '/deals/$dealId/notes',
+      data: {
+        'text': text,
+      },
+    );
 
-  // ── Helpers ───────────────────────────────────────────────────
+    return true;
+  } on DioException catch (e) {
+    debugPrint(e.toString());
+    return false;
+  }
+}
+
+  // ================
+  //  Deals cubit
+  // ================
+Future<List<Map<String, dynamic>>> exportDeals({
+  DateTime? startDate,
+  DateTime? endDate,
+}) async {
+  if (_cachedToken == null || _cachedToken!.isEmpty) {
+    await _initToken();
+  }
+
+  final query = <String, dynamic>{};
+
+  if (startDate != null) {
+    query['startDate'] =
+        startDate.toIso8601String().split('T').first;
+  }
+
+  if (endDate != null) {
+    query['endDate'] =
+        endDate.toIso8601String().split('T').first;
+  }
+
+  try {
+    final response = await _dio.get(
+      '/deals/export',
+      queryParameters: query,
+    );
+
+    final body = response.data;
+
+    if (body is! Map) {
+      throw Exception("Invalid response received.");
+    }
+
+    if (body['success'] != true) {
+      throw Exception(body['message'] ?? "Export failed.");
+    }
+
+    final List<dynamic> rows = body['data'] ?? [];
+
+    return rows
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+  } on DioException catch (e) {
+    throw Exception(_dioMsg(e, "Failed to export deals"));
+  }
+}  
+// ===================
+// Invoice Tab
+// ===================
+Future<List<Invoice>> getDealInvoices(String dealId) async {
+  try {
+    final res = await _dio.get('/deals/$dealId/invoices');
+
+    if (res.data is! List) return [];
+
+    return (res.data as List)
+        .map(
+          (e) => Invoice.fromJson(
+            Map<String, dynamic>.from(e),
+          ),
+        )
+        .toList();
+  } on DioException catch (e) {
+    debugPrint(
+      '[DealsCubit] getDealInvoices: ${e.response?.statusCode} ${e.response?.data}',
+    );
+    return [];
+  } catch (e) {
+    debugPrint(
+      '[DealsCubit] getDealInvoices: $e',
+    );
+    return [];
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────
 
   Future<List<Map<String, dynamic>>> _safeGet(String path) async {
     try {

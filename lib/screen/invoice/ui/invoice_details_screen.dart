@@ -1,3 +1,4 @@
+import 'package:crm_app/screen/currency/currency_service.dart';
 import 'package:crm_app/screen/invoice/modal/invoice_model.dart' show Invoice;
 import 'package:crm_app/thems/app_themes.dart' show AppColors;
 import 'package:flutter/material.dart'
@@ -31,7 +32,8 @@ import 'package:flutter/material.dart'
         Column,
         DraggableScrollableSheet,
         CrossAxisAlignment,
-        Spacer;
+        Spacer,
+        Color;
 import 'package:intl/intl.dart';
 
 class InvoiceDetailsModal extends StatefulWidget {
@@ -48,6 +50,26 @@ class InvoiceDetailsModal extends StatefulWidget {
 class InvoiceDetailsModalState extends State<InvoiceDetailsModal>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  double convertFromInr(double amountInInr, double rate) {
+  return amountInInr * rate;
+}
+String formatCurrency(double amount, String currency) {
+  final symbol = switch (currency.toUpperCase()) {
+    'USD' => '\$',
+    'EUR' => '€',
+    'GBP' => '£',
+    'JPY' || 'CNY' => '¥',
+    'AED' => 'د.إ ',
+    'SAR' => '﷼ ',
+    _ => '₹',
+  };
+
+  return NumberFormat.currency(
+    locale: 'en_IN',
+    symbol: symbol,
+    decimalDigits: 2,
+  ).format(amount);
+}
 
   @override
   void initState() {
@@ -71,6 +93,36 @@ class InvoiceDetailsModalState extends State<InvoiceDetailsModal>
   @override
   Widget build(BuildContext context) {
     final inv = widget.invoice;
+
+    final subtotal = CurrencyService.convert(
+  inv.price,
+  inv.currency,
+);
+
+final tax = CurrencyService.convert(
+  inv.taxValue,
+  inv.currency,
+);
+
+final discount = CurrencyService.convert(
+  inv.discountValue,
+  inv.currency,
+);
+
+final total = CurrencyService.convert(
+  inv.total,
+  inv.currency,
+);
+
+final paid = CurrencyService.convert(
+  inv.amountPaid,
+  inv.currency,
+);
+
+final due = CurrencyService.convert(
+  inv.balanceDue,
+  inv.currency,
+);
 
     return DraggableScrollableSheet(
       initialChildSize: 0.92,
@@ -122,26 +174,40 @@ class InvoiceDetailsModalState extends State<InvoiceDetailsModal>
                         _infoCard([
                           _info("Client Name", inv.assignTo),
                           _info("Company", inv.dealName),
+                          _info("Billing Address", inv.billingAddress),
+                         _info("Client Tax ID", inv.clientTaxId),
+                         _info("PO Number", inv.poNumber),
                         ]),
                         const SizedBox(height: 18),
                         _sectionTitle("Invoice Information"),
                         _infoCard([
                           _info(
                             "Subtotal",
-                            "${inv.currency} ${inv.price.toStringAsFixed(0)}",
+                            formatCurrency(subtotal, inv.currency),
                           ),
                           _info(
                             "Tax",
-                            "${inv.currency} ${inv.taxValue.toStringAsFixed(0)}",
+                            formatCurrency(tax, inv.currency),
                           ),
                           _info(
                             "Discount",
-                            "${inv.currency} ${inv.discountValue.toStringAsFixed(0)}",
+                            formatCurrency(discount, inv.currency),
                           ),
                           _info(
                             "Total",
-                            "${inv.currency} ${inv.total.toStringAsFixed(0)}",
+                            formatCurrency(total, inv.currency),
                           ),
+                          _info(
+  "Amount Paid",
+  formatCurrency(paid, inv.currency),
+  valueColor: AppColors.success,
+),
+
+_info(
+  "Balance Due",
+  formatCurrency(due, inv.currency),
+  valueColor: AppColors.danger,
+),
                           _info("Issue Date", _fmtDate(inv.issueDate)),
                           _info("Due Date", _fmtDate(inv.dueDate)),
                         ]),
@@ -217,37 +283,41 @@ class InvoiceDetailsModalState extends State<InvoiceDetailsModal>
     );
   }
 
-  Widget _info(String title, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 9),
-      child: Row(
-        children: [
-          Expanded(
-            flex: 4,
-            child: Text(
-              title,
-              style: const TextStyle(
-                fontSize: 13,
-                color: AppColors.textSecondary,
-                fontWeight: FontWeight.w600,
-              ),
+  Widget _info(
+  String title,
+  String value, {
+  Color? valueColor,
+}) {
+  return Padding(
+    padding: const EdgeInsets.symmetric(vertical: 9),
+    child: Row(
+      children: [
+        Expanded(
+          flex: 4,
+          child: Text(
+            title,
+            style: const TextStyle(
+              fontSize: 13,
+              color: AppColors.textSecondary,
+              fontWeight: FontWeight.w600,
             ),
           ),
-          Expanded(
-            flex: 5,
-            child: Text(
-              value,
-              style: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-              ),
+        ),
+        Expanded(
+          flex: 5,
+          child: Text(
+            value,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: valueColor ?? AppColors.textPrimary,
             ),
           ),
-        ],
-      ),
-    );
-  }
-
+        ),
+      ],
+    ),
+  );
+}
   Widget _timelineCard(String title, String time) {
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
