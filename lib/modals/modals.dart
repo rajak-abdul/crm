@@ -211,6 +211,7 @@ class Lead {
   final DateTime? updatedAt;
   final DateTime? lastReminderAt;
   final List<Attachment> attachments;
+  final List<Attachment> images;
   final String? assignedToId;
   final String? assignedToEmail;
 
@@ -257,6 +258,7 @@ class Lead {
     this.assignedToId,
     this.assignedToEmail,
     this.attachments = const [],
+    this.images = const [],
     required this.id,
     required this.name,
     this.companyName = '',
@@ -373,6 +375,14 @@ class Lead {
                 ?.map((e) => Attachment.fromJson(e as Map<String, dynamic>))
                 .toList() ??
             [],
+        images: (j['images'] as List?)
+    ?.map(
+      (e) => Attachment.fromJson(
+        Map<String, dynamic>.from(e),
+      ),
+    )
+    .toList() ??
+    [],
         isLocal: false,
         followUpDate: j['followUpDate'] != null
             ? DateTime.tryParse(j['followUpDate'].toString())
@@ -766,6 +776,7 @@ class Lead {
     DateTime? updatedAt,
     DateTime? lastReminderAt,
     List<Attachment>? attachments,
+    List<Attachment>? images,
     String? assignedToId,
     String? assignedToEmail,
     List<FollowUpNote>? followUpNotes,
@@ -827,6 +838,7 @@ class Lead {
         updatedAt: updatedAt ?? this.updatedAt,
         lastReminderAt: lastReminderAt ?? this.lastReminderAt,
         attachments: attachments ?? this.attachments,
+        images: images ?? this.images,
         assignedToId: assignedToId ?? this.assignedToId,
         assignedToEmail: assignedToEmail ?? this.assignedToEmail,
         followUpNotes: followUpNotes ?? this.followUpNotes,

@@ -119,7 +119,6 @@ void initState() {
   ];
   String _userFilter = 'All Users';
 List<String> _users = ['All Users'];
-  bool _missedPopupShown = false;
 
   @override
   void dispose() {
@@ -219,35 +218,6 @@ List<String> _users = ['All Users'];
           ),
         ),
       );
-  Future<void> _checkMissedFollowups() async {
-    if (_missedPopupShown) return;
-
-    final leads = await LeadCubit().getAllLeads();
-
-    if (!mounted || leads.isEmpty) return;
-
-    _missedPopupShown = true;
-
-    showDialog(
-      context: context,
-      builder: (_) => MissedFollowupDialog(
-        missedLeads: leads,
-        onViewLead: (lead) {
-          Navigator.pop(context);
-
-          showModalBottomSheet(
-            context: context,
-            isScrollControlled: true,
-            backgroundColor: Colors.transparent,
-            builder: (_) => LeadDetailSheet(
-              lead: lead,
-            ),
-          );
-        },
-      ),
-    );
-  }
-
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
@@ -274,7 +244,7 @@ List<String> _users = ['All Users'];
         title: const Text('Invoices'),
         backgroundColor: AppColors.surface,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
+          icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).pop(),
         ),
       ),
@@ -298,11 +268,6 @@ List<String> _users = ['All Users'];
   }
 ];
             final filtered = _filtered(state.invoices);
-            if (!PermissionHelper.can('users_roles')) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                _checkMissedFollowups();
-              });
-            }
             return Column(
               children: [
                 _SummaryCarousel(

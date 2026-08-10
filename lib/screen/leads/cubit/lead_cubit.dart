@@ -1,6 +1,7 @@
 // ══════════════════════════════════════════════════════════════
 // 1️⃣  STATE
 // ══════════════════════════════════════════════════════════════
+import 'dart:convert';
 import 'dart:io' show Platform;
 
 import 'package:crm_app/database/local_db.dart';
@@ -397,108 +398,352 @@ class LeadCubit extends Cubit<LeadState> {
   //   attachments: <file1>
   //   attachments: <file2>
   //   ...other fields as plain string values...
-  Future<String?> createLead(Lead lead,
-      {List<MultipartFile> attachments = const []}) async {
-    try {
-      final payload = _buildPayload(lead, attachments: attachments);
-      debugPrint('=== CREATE LEAD PAYLOAD ===: $payload');
-      final res = await _dio.post('/leads/create', data: payload);
-      debugPrint('=== CREATE LEAD RESPONSE ===: ${res.data}');
-      final saved = _extractLead(res.data) ?? lead;
-      try {
-        await LocalDb.instance.upsertLeadFromApi(saved);
-      } catch (e) {
-        debugPrint('=== LEAD CACHE CREATE WRITE ERROR ===: $e');
-      }
-      if (!isClosed) {
-        final current =
-            state is LeadLoaded ? (state as LeadLoaded).leads : <Lead>[];
-        emit(LeadActionSuccess(
-            leads: [saved, ...current],
-            salesUsers: _salesUsers,
-            message: 'Lead created ✓'));
-      }
-      return null;
-    } on DioException catch (e) {
-      if (_isOfflineDio(e)) {
-        try {
-          final saved = await LocalDb.instance.insertLead(lead);
-          if (!isClosed) {
-            final current =
-                state is LeadLoaded ? (state as LeadLoaded).leads : <Lead>[];
-            emit(LeadActionSuccess(
-                leads: [saved, ...current],
-                salesUsers: _salesUsers,
-                message: 'Lead saved offline'));
-          }
-          return null;
-        } catch (dbErr) {
-          return 'Failed to save lead offline: $dbErr';
-        }
-      }
-      return _dioMsg(e);
-    } catch (e) {
-      return 'Failed to create lead: $e';
-    }
-  }
+  Future<String?> createLead(
+  Lead lead, {
+  List<MultipartFile> attachments = const [],
+   List<MultipartFile> images = const [],
+}) async {
+  try {
+    final customFieldsJson = lead.customFields
+        .map(
+          (field) => {
+            if (field.id.isNotEmpty) '_id': field.id,
+            'cardTitle': field.cardTitle,
+            'name': field.name,
+            'type': field.type,
+            'options': field.options,
+            'value': field.value,
+          },
+        )
+        .toList();
 
+    final formData = FormData();
+
+    formData.fields.add(
+      MapEntry('leadName', lead.name),
+    );
+    formData.fields.add(
+      MapEntry('phoneNumber', lead.phone),
+    );
+    formData.fields.add(
+      MapEntry('alternatePhoneNumber', lead.alternatePhoneNumber),
+    );
+    formData.fields.add(
+      MapEntry('email', lead.email),
+    );
+    formData.fields.add(
+      MapEntry('alternateEmail', lead.alternateEmail),
+    );
+
+    formData.fields.add(
+      MapEntry('source', lead.source),
+    );
+
+    if (lead.sourceId != null) {
+      formData.fields.add(
+        MapEntry('sourceId', lead.sourceId!),
+      );
+    }
+
+    formData.fields.add(
+      MapEntry('companyName', lead.companyName),
+    );
+    formData.fields.add(
+      MapEntry('industry', lead.industry),
+    );
+    formData.fields.add(
+      MapEntry('requirement', lead.requirement),
+    );
+
+    if (lead.clientType.isNotEmpty) {
+      formData.fields.add(
+        MapEntry('clientType', lead.clientType),
+      );
+    }
+
+    if (lead.numberOfEmployees != null) {
+      formData.fields.add(
+        MapEntry(
+          'NumberOfEmployees',
+          lead.numberOfEmployees.toString(),
+        ),
+      );
+    }
+
+    formData.fields.add(
+      MapEntry('status', lead.status),
+    );
+
+    formData.fields.add(
+      MapEntry('notes', lead.notes),
+    );
+
+    if (lead.assignedToId != null &&
+        lead.assignedToId!.isNotEmpty) {
+      formData.fields.add(
+        MapEntry(
+          'assignTo',
+          lead.assignedToId!,
+        ),
+      );
+    }
+
+    if (lead.followUpDate != null) {
+      formData.fields.add(
+        MapEntry(
+          'followUpDate',
+          DateFormat('yyyy-MM-dd').format(
+            lead.followUpDate!,
+          ),
+        ),
+      );
+    }
+
+    formData.fields.add(
+      MapEntry('address', lead.address),
+    );
+    formData.fields.add(
+      MapEntry('city', lead.city),
+    );
+    formData.fields.add(
+      MapEntry('state', lead.state),
+    );
+    formData.fields.add(
+      MapEntry('pincode', lead.pincode),
+    );
+    formData.fields.add(
+      MapEntry('country', lead.country),
+    );
+
+    if (lead.latitude != null) {
+      formData.fields.add(
+        MapEntry(
+          'latitude',
+          lead.latitude.toString(),
+        ),
+      );
+    }
+
+    if (lead.longitude != null) {
+      formData.fields.add(
+        MapEntry(
+          'longitude',
+          lead.longitude.toString(),
+        ),
+      );
+    }
+
+    // Existing attachments
+    formData.fields.add(
+      MapEntry(
+        'existingAttachments',
+        jsonEncode([]),
+      ),
+    );
+
+    // ⭐ IMPORTANT
+    formData.fields.add(
+      MapEntry(
+        'customFields',
+        jsonEncode(customFieldsJson),
+      ),
+    );
+
+    // New attachments
+    for (final file in attachments) {
+      formData.files.add(
+        MapEntry(
+          'attachments',
+          file,
+        ),
+      );
+    }
+    for (final file in images) {
+  formData.files.add(
+    MapEntry(
+      'images',
+      file,
+    ),
+  );
+}
+
+    debugPrint('========== CREATE FORMDATA ==========');
+    debugPrint(
+      'customFields: ${jsonEncode(customFieldsJson)}',
+    );
+    debugPrint('attachments: ${attachments.length}');
+debugPrint('images: ${images.length}');
+    debugPrint('====================================');
+
+    final res = await _dio.post(
+      '/leads/create',
+      data: formData,
+    );
+
+    debugPrint('========== CREATE RESPONSE ==========');
+    debugPrint(res.data.toString());
+    debugPrint('====================================');
+
+    final saved = _extractLead(res.data) ?? lead;
+
+    try {
+      await LocalDb.instance.upsertLeadFromApi(saved);
+    } catch (e) {
+      debugPrint(
+        '=== LEAD CACHE CREATE WRITE ERROR ===: $e',
+      );
+    }
+
+    if (!isClosed) {
+      final current = state is LeadLoaded
+          ? (state as LeadLoaded).leads
+          : <Lead>[];
+
+      emit(
+        LeadActionSuccess(
+          leads: [saved, ...current],
+          salesUsers: _salesUsers,
+          message: 'Lead created ✓',
+        ),
+      );
+    }
+
+    return null;
+  } on DioException catch (e) {
+    if (_isOfflineDio(e)) {
+      try {
+        final saved =
+            await LocalDb.instance.insertLead(lead);
+
+        if (!isClosed) {
+          final current = state is LeadLoaded
+              ? (state as LeadLoaded).leads
+              : <Lead>[];
+
+          emit(
+            LeadActionSuccess(
+              leads: [saved, ...current],
+              salesUsers: _salesUsers,
+              message: 'Lead saved offline',
+            ),
+          );
+        }
+
+        return null;
+      } catch (dbErr) {
+        return 'Failed to save lead offline: $dbErr';
+      }
+    }
+
+    return _dioMsg(e);
+  } catch (e) {
+    return 'Failed to create lead: $e';
+  }
+}
   // ── 🌐 PUT /leads/updateLead/:id ──────────────────────────
   // Edit does NOT re-upload attachments — server keeps existing files.
   // Payload sent as JSON (no FormData needed when no files).
   Future<String?> updateLead(
-    String id,
-    Lead lead, {
-    List<MultipartFile> attachments = const [],
-    List<String>? retainedAttachmentPaths,
-  }) async {
-    try {
-      final res = await _dio.put('/leads/updateLead/$id',
-          data: _buildPayload(
-            lead,
-            attachments: attachments,
-            retainedAttachmentPaths: retainedAttachmentPaths,
-          ));
-      final updated = _extractLead(res.data) ?? lead.copyWith(id: id);
-      try {
-        await LocalDb.instance.upsertLeadFromApi(updated);
-      } catch (e) {
-        debugPrint('=== LEAD CACHE UPDATE WRITE ERROR ===: $e');
-      }
-      if (!isClosed && state is LeadLoaded) {
-        final newList = (state as LeadLoaded)
-            .leads
-            .map((l) => l.id == id ? updated : l)
-            .toList();
-        emit(LeadActionSuccess(
-            leads: newList,
-            salesUsers: _salesUsers,
-            message: 'Lead updated ✓'));
-      }
-      return null;
-    } on DioException catch (e) {
-      if (_isOfflineDio(e)) {
-        try {
-          final updated = await LocalDb.instance.updateLead(id, lead);
-          if (!isClosed && state is LeadLoaded) {
-            final newList = (state as LeadLoaded)
-                .leads
-                .map((l) => l.id == id ? updated : l)
-                .toList();
-            emit(LeadActionSuccess(
-                leads: newList,
-                salesUsers: _salesUsers,
-                message: 'Lead updated offline'));
-          }
-          return null;
-        } catch (dbErr) {
-          return 'Failed to update lead offline: $dbErr';
-        }
-      }
-      return _dioMsg(e);
-    } catch (e) {
-      return 'Failed to update lead: $e';
+  String id,
+  Lead lead, {
+  List<MultipartFile> attachments = const [],
+  List<MultipartFile> images = const [],
+  List<String>? retainedAttachmentPaths,
+}) async {
+  try {
+    final payload = _buildPayload(
+      lead,
+      attachments: attachments,
+      retainedAttachmentPaths: retainedAttachmentPaths,
+      images: images,
+    );
+
+    // DEBUG BEFORE API REQUEST
+    debugPrint('========== MOBILE UPDATE ==========');
+    debugPrint('Lead ID: $id');
+    debugPrint('Custom fields count: ${lead.customFields.length}');
+
+    for (final field in lead.customFields) {
+      debugPrint(
+        'CustomField => '
+        'id=${field.id}, '
+        'name=${field.name}, '
+        'type=${field.type}, '
+        'value=${field.value}',
+      );
     }
+
+    debugPrint('Payload customFields: ${lead.customFields.map((e) => e.toJson()).toList()}');
+    debugPrint('===================================');
+
+    final res = await _dio.put(
+      '/leads/updateLead/$id',
+      data: payload,
+    );
+
+    debugPrint('========== UPDATE RESPONSE ==========');
+    debugPrint(res.data.toString());
+    debugPrint('=====================================');
+
+    final updated = _extractLead(res.data) ?? lead.copyWith(id: id);
+
+    try {
+      await LocalDb.instance.upsertLeadFromApi(updated);
+    } catch (e) {
+      debugPrint('=== LEAD CACHE UPDATE WRITE ERROR ===: $e');
+    }
+
+    if (!isClosed && state is LeadLoaded) {
+      final newList = (state as LeadLoaded)
+          .leads
+          .map((l) => l.id == id ? updated : l)
+          .toList();
+
+      emit(
+        LeadActionSuccess(
+          leads: newList,
+          salesUsers: _salesUsers,
+          message: 'Lead updated ✓',
+        ),
+      );
+    }
+
+    return null;
+  } on DioException catch (e) {
+    debugPrint('=== UPDATE API ERROR ===');
+    debugPrint(e.response?.data.toString());
+    debugPrint('========================');
+
+    if (_isOfflineDio(e)) {
+      try {
+        final updated = await LocalDb.instance.updateLead(id, lead);
+
+        if (!isClosed && state is LeadLoaded) {
+          final newList = (state as LeadLoaded)
+              .leads
+              .map((l) => l.id == id ? updated : l)
+              .toList();
+
+          emit(
+            LeadActionSuccess(
+              leads: newList,
+              salesUsers: _salesUsers,
+              message: 'Lead updated offline',
+            ),
+          );
+        }
+
+        return null;
+      } catch (dbErr) {
+        return 'Failed to update lead offline: $dbErr';
+      }
+    }
+
+    return _dioMsg(e);
+  } catch (e) {
+    return 'Failed to update lead: $e';
   }
+}
 
   // ── 🌐 DELETE /leads/deleteLead/:id ──────────────────────
   Future<String?> deleteLead(String id) async {
@@ -909,29 +1154,57 @@ Future<List<Lead>> getRejectedLeads() async {
 // call, so this method is functionally equivalent to fetchAllLeads()
 // for the "Missed Follow-ups" filter path. Left in place in case any
 // other call site still references it directly.
-Future<void> fetchMissedFollowups() async {
-  if (isClosed) return;
+// =========================
+// Fetch missed follow-ups
+// =========================
+Future<List<Lead>> getMissedFollowups() async {
+  await _initToken();
 
-  emit(LeadLoading());
+  final tenantSlug = _cachedTenantSlug;
 
-  try {
-    final allLeads = await getAllLeads();
-    final rejectedLeads = await getRejectedLeads();
-
-    final combined = [...allLeads, ...rejectedLeads];
-
-    emit(
-      LeadLoaded(
-        leads: combined,
-        salesUsers: _salesUsers,
-      ),
-    );
-  } catch (e) {
-    emit(LeadError(e.toString()));
+  if (tenantSlug == null || tenantSlug.isEmpty) {
+    return [];
   }
-}
 
-// ===============
+  final res = await _dio.get(
+    '$_domain/$tenantSlug/api/leads/missed-followups',
+    queryParameters: {
+      'page': 1,
+      'limit': 1000,
+    },
+  );
+  debugPrint("Missed Follow-ups Raw Data: ${res.data}");
+
+  final parsed = await compute(
+    _parseListIsolate,
+    res.data,
+  );
+
+  final now = DateTime.now();
+
+  final today = DateTime(
+    now.year,
+    now.month,
+    now.day,
+  );
+
+  return parsed
+      .map((e) => Lead.fromJson(e))
+      .where((lead) {
+        if (lead.followUpDate == null) {
+          return false;
+        }
+
+        final followUpDate = DateTime(
+          lead.followUpDate!.year,
+          lead.followUpDate!.month,
+          lead.followUpDate!.day,
+        );
+
+        return followUpDate.isBefore(today);
+      })
+      .toList();
+}// ===============
 // Export the leads
 // ================
 Future<String?> exportLeads({
@@ -1357,17 +1630,16 @@ Future<String> _saveXlsxToDownloads(String fileName, List<int> bytes) async {
   dynamic _buildPayload(
   Lead lead, {
   List<MultipartFile> attachments = const [],
+  List<MultipartFile> images = const [],
   List<String>? retainedAttachmentPaths,
 }) {
   final map = <String, dynamic>{
-    // Basic Information
     'leadName': lead.name,
     'phoneNumber': lead.phone,
     'alternatePhoneNumber': lead.alternatePhoneNumber,
     'email': lead.email,
     'alternateEmail': lead.alternateEmail,
 
-    // Source & Company
     'source': lead.source,
     if (lead.sourceId != null) 'sourceId': lead.sourceId,
 
@@ -1381,7 +1653,6 @@ Future<String> _saveXlsxToDownloads(String fileName, List<int> bytes) async {
     if (lead.numberOfEmployees != null)
       'NumberOfEmployees': lead.numberOfEmployees,
 
-    // Lead Details
     'status': lead.status,
     'notes': lead.notes,
 
@@ -1393,7 +1664,6 @@ Future<String> _saveXlsxToDownloads(String fileName, List<int> bytes) async {
       'followUpDate':
           DateFormat('yyyy-MM-dd').format(lead.followUpDate!),
 
-    // Address
     'address': lead.address,
     'city': lead.city,
     'state': lead.state,
@@ -1406,31 +1676,39 @@ Future<String> _saveXlsxToDownloads(String fileName, List<int> bytes) async {
     if (lead.longitude != null)
       'longitude': lead.longitude,
 
-    // Existing Attachments
-    'existingAttachments': retainedAttachmentPaths ?? [],
+    'existingAttachments':
+        retainedAttachmentPaths ?? [],
 
-    // Custom Fields
-    'customFields': lead.customFields
-        .map(
-          (field) => {
-            if (field.id != null) '_id': field.id,
-            'cardTitle': field.cardTitle,
-            'name': field.name,
-            'type': field.type,
-            'options': field.options,
-            'value': field.value,
-          },
-        )
-        .toList(),
+    // IMPORTANT
+    'customFields': jsonEncode(
+  lead.customFields.map((field) {
+    final data = <String, dynamic>{
+      'cardTitle': field.cardTitle,
+      'name': field.name,
+      'type': field.type,
+      'options': field.options,
+      'value': field.value,
+    };
+
+    if (field.id.isNotEmpty) {
+      data['_id'] = field.id;
+    }
+
+    return data;
+  }).toList(),
+),
   };
 
-  // No attachments → JSON
-  if (attachments.isEmpty) {
-    return map;
-  }
+  final formData = FormData();
 
-  // Attachments → Multipart
-  final formData = FormData.fromMap(map);
+  map.forEach((key, value) {
+    formData.fields.add(
+      MapEntry(
+        key,
+        value.toString(),
+      ),
+    );
+  });
 
   for (final file in attachments) {
     formData.files.add(
@@ -1441,9 +1719,17 @@ Future<String> _saveXlsxToDownloads(String fileName, List<int> bytes) async {
     );
   }
 
-  return formData;
+  for (final file in images) {
+  formData.files.add(
+    MapEntry(
+      'images',
+      file,
+    ),
+  );
 }
 
+  return formData;
+}
 // 
 
   Lead? _extractLead(dynamic d) {

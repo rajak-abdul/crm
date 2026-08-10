@@ -36,6 +36,9 @@ import 'package:file_saver/file_saver.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
 import 'package:just_audio/just_audio.dart';
@@ -412,13 +415,6 @@ debugPrint(
         
   }).toList();
 }
-
-  // List<Lead> _paginate(List<Lead> filtered) {
-  //   final start = (_currentPage - 1) * _kPageSize;
-  //   if (start >= filtered.length) return [];
-  //   final end = (start + _kPageSize).clamp(0, filtered.length);
-  //   return filtered.sublist(start, end);
-  // }
 
   int _totalPages(LeadState state) {
     if (state is! LeadLoaded) return 1;
@@ -2303,6 +2299,14 @@ class LeadDetailSheet extends StatefulWidget {
 class LeadDetailSheetState extends State<LeadDetailSheet> {
  late Lead _currentLead;           // ADD
   Lead get lead => _currentLead;
+  String _getImageUrl(String path) {
+  if (path.startsWith('http://') ||
+      path.startsWith('https://')) {
+    return path;
+  }
+
+  return 'https://crm-backend-api.techzarinfo.cloud$path';
+}
   final AudioPlayer _player = AudioPlayer();
     final ScrollController _followUpsScrollController = ScrollController(); // ADD
 
@@ -3022,91 +3026,525 @@ Future<void> _openAddFollowUpDialog(BuildContext context) async {
     ),
   );
 }
-  Widget _buildDetailsTab(ScrollController ctrl) => ListView(
-          controller: ctrl,
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-          children: [
-            _row(
-              Icons.phone_outlined,
-              'Phone',
-              lead.phone.trim().isEmpty ? '-' : _formatPhone(lead.phone),
-            ),
-            _row(Icons.email_outlined, 'Email', lead.email),
-            if (lead.address.isNotEmpty)
-              _row(Icons.location_on_outlined, 'Address', lead.address),
-            _row(Icons.public_outlined, 'Country', lead.country),
-            if (lead.industry.isNotEmpty)
-              _row(Icons.business_outlined, 'Industry', lead.industry),
-            _row(Icons.radar_outlined, 'Source',
-                lead.source.isEmpty ? '-' : lead.source),
-            if (lead.clientType.isNotEmpty)
-              _row(Icons.corporate_fare_outlined, 'Client Type',
-                  lead.clientType),
-            _row(Icons.person_outline, 'Assigned To',
-                lead.assignTo.trim().isEmpty ? '-' : lead.assignTo.trim()),
-            if (lead.followUpDate != null)
-              _row(Icons.event_outlined, 'Follow-up',
-                  DateFormat('dd MMM yyyy').format(lead.followUpDate!)),
-            if (lead.requirement.isNotEmpty)
-              _row(Icons.list_alt_outlined, 'Requirement', lead.requirement),
-            if (lead.notes.isNotEmpty)
-              _row(Icons.notes_outlined, 'Notes', lead.notes),
-            if (lead.attachments.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              const Text('Attachments',
+  Widget _buildDetailsTab(ScrollController ctrl) {
+  String valueOrDash(String? value) {
+    final v = value?.trim() ?? '';
+    return v.isEmpty ? 'Not specified' : v;
+  }
+
+  String formatDate(DateTime? date) {
+    if (date == null) return 'Not specified';
+    return DateFormat('M/d/yyyy').format(date.toLocal());
+  }
+
+  Widget infoItem(
+    IconData icon,
+    String label,
+    String value, {
+    bool clickable = false,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            icon,
+            size: 20,
+            color: AppColors.primary.withOpacity(.65),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label.toUpperCase(),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textSecondary,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: .3,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textPrimary)),
-              const SizedBox(height: 10),
-              ...lead.attachments.map((a) => Builder(
-                    builder: (tileCtx) => Container(
-                      margin: const EdgeInsets.only(bottom: 10),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: AppColors.background,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: AppColors.border),
-                      ),
-                      child: Row(children: [
-                        const Icon(Icons.insert_drive_file,
-                            size: 18, color: AppColors.textSecondary),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(a.name,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                        fontSize: 13,
-                                        color: AppColors.textPrimary,
-                                        fontWeight: FontWeight.w500)),
-                                Text('${(a.size / 1024).toStringAsFixed(1)} KB',
-                                    style: const TextStyle(
-                                        fontSize: 11,
-                                        color: AppColors.textHint)),
-                              ]),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.visibility,
-                              size: 18, color: AppColors.primary),
-                          tooltip: 'Preview',
-                          onPressed: () => _previewFile(tileCtx, a.path),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.download,
-                              size: 18, color: AppColors.primary),
-                          tooltip: 'Download',
-                          onPressed: () =>
-                              _downloadFile(tileCtx, a.path, a.name),
-                        ),
-                      ]),
-                    ),
-                  )),
+                    fontSize: 16,
+                    color: clickable
+                        ? AppColors.primary
+                        : AppColors.textPrimary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget column(List<Widget> children) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: children,
+      ),
+    );
+  }
+
+  final leftColumn = [
+    infoItem(
+      Icons.person_outline,
+      'Lead Name',
+      valueOrDash(lead.name),
+    ),
+    infoItem(
+      Icons.business_outlined,
+      'Company',
+      valueOrDash(lead.companyName),
+    ),
+    infoItem(
+      Icons.email_outlined,
+      'Email',
+      valueOrDash(lead.email),
+      clickable: lead.email.trim().isNotEmpty,
+    ),
+    infoItem(
+      Icons.email_outlined,
+      'Alternate Email',
+      valueOrDash(lead.alternateEmail),
+    ),
+    infoItem(
+      Icons.phone_outlined,
+      'Phone',
+      lead.phone.trim().isEmpty
+          ? 'Not specified'
+          : _formatPhone(lead.phone),
+      clickable: lead.phone.trim().isNotEmpty,
+    ),
+    infoItem(
+      Icons.phone_outlined,
+      'Alternate Phone',
+      lead.alternatePhoneNumber.trim().isEmpty
+          ? 'Not specified'
+          : _formatPhone(lead.alternatePhoneNumber),
+    ),
+    infoItem(
+      Icons.corporate_fare_outlined,
+      'Client Type',
+      valueOrDash(lead.clientType),
+    ),
+    infoItem(
+      Icons.public_outlined,
+      'Source',
+      valueOrDash(lead.source),
+    ),
+    infoItem(
+      Icons.business_center_outlined,
+      'Industry',
+      valueOrDash(lead.industry),
+    ),
+    infoItem(
+      Icons.people_outline,
+      'Number of Employees',
+      lead.numberOfEmployees == null
+          ? 'Not specified'
+          : lead.numberOfEmployees.toString(),
+    ),
+  ];
+
+  final rightColumn = [
+    infoItem(
+      Icons.person_outline,
+      'Status',
+      valueOrDash(lead.status),
+    ),
+    infoItem(
+      Icons.description_outlined,
+      'Requirement',
+      valueOrDash(lead.requirement),
+    ),
+    infoItem(
+      Icons.location_on_outlined,
+      'Address',
+      valueOrDash(lead.address),
+    ),
+    infoItem(
+      Icons.location_on_outlined,
+      'City',
+      valueOrDash(lead.city),
+    ),
+    infoItem(
+      Icons.location_on_outlined,
+      'State',
+      valueOrDash(lead.state),
+    ),
+    infoItem(
+      Icons.location_on_outlined,
+      'Pincode',
+      valueOrDash(lead.pincode),
+    ),
+    infoItem(
+      Icons.public_outlined,
+      'Country',
+      valueOrDash(lead.country),
+    ),
+    infoItem(
+      Icons.my_location_outlined,
+      'Latitude',
+      lead.latitude == null
+          ? 'Not specified'
+          : lead.latitude.toString(),
+    ),
+    infoItem(
+      Icons.my_location_outlined,
+      'Longitude',
+      lead.longitude == null
+          ? 'Not specified'
+          : lead.longitude.toString(),
+    ),
+    infoItem(
+      Icons.calendar_today_outlined,
+      'Follow-up Date',
+      formatDate(lead.followUpDate),
+    ),
+    infoItem(
+      Icons.calendar_today_outlined,
+      'Created',
+      formatDate(lead.createdAt),
+    ),
+  ];
+
+  return ListView(
+    controller: ctrl,
+    padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+    children: [
+      const Text(
+        'Client Information',
+        style: TextStyle(
+          fontSize: 20,
+          fontWeight: FontWeight.w700,
+          color: AppColors.textPrimary,
+        ),
+      ),
+
+      const SizedBox(height: 24),
+
+      LayoutBuilder(
+        builder: (context, constraints) {
+          // Two columns like your screenshot
+          if (constraints.maxWidth >= 600) {
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                column(leftColumn),
+                const SizedBox(width: 45),
+                column(rightColumn),
+              ],
+            );
+          }
+
+          // One column on smaller screens
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ...leftColumn,
+              ...rightColumn,
             ],
-          ]);
+          );
+        },
+      ),
+
+      // ==========================================================
+      // NOTES
+      // ==========================================================
+
+      if (lead.notes.trim().isNotEmpty) ...[
+        const SizedBox(height: 8),
+        const Divider(),
+        const SizedBox(height: 16),
+
+        const Text(
+          'Notes',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: AppColors.textPrimary,
+          ),
+        ),
+
+        const SizedBox(height: 10),
+
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppColors.background,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: AppColors.border,
+            ),
+          ),
+          child: Text(
+            lead.notes,
+            style: const TextStyle(
+              fontSize: 14,
+              color: AppColors.textPrimary,
+              height: 1.4,
+            ),
+          ),
+        ),
+      ],
+
+      // ==========================================================
+      // CUSTOM FIELDS
+      // ==========================================================
+
+      if (lead.customFields.isNotEmpty) ...[
+        const SizedBox(height: 24),
+
+        const Text(
+          'Custom Fields',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: AppColors.textPrimary,
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        ...lead.customFields.map(
+          (field) {
+            final fieldValue = field.value.trim().isEmpty
+                ? 'Not specified'
+                : field.value;
+
+            return _row(
+              field.type == 'date'
+                  ? Icons.calendar_today_outlined
+                  : field.type == 'dropdown'
+                      ? Icons.arrow_drop_down_circle_outlined
+                      : Icons.tune_outlined,
+              field.name,
+              fieldValue,
+            );
+          },
+        ),
+      ],
+
+      // ==========================================================
+      // IMAGES
+      // ==========================================================
+
+      if (lead.images.isNotEmpty) ...[
+        const SizedBox(height: 10),
+        const Divider(),
+        const SizedBox(height: 16),
+
+        const Text(
+          'Images',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: AppColors.textPrimary,
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: lead.images.map(
+            (image) {
+              final imageUrl = _getImageUrl(image.path);
+
+              return GestureDetector(
+  onTap: () {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.all(10),
+          child: Stack(
+            children: [
+              Center(
+                child: InteractiveViewer(
+                  minScale: 0.5,
+                  maxScale: 4.0,
+                  child: Image.network(
+                    imageUrl,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) {
+                      return const Icon(
+                        Icons.broken_image,
+                        color: Colors.white,
+                        size: 60,
+                      );
+                    },
+                  ),
+                ),
+              ),
+
+              // Close button
+              Positioned(
+                top: 10,
+                right: 10,
+                child: IconButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext);
+                  },
+                  icon: const Icon(
+                    Icons.close,
+                    color: Colors.white,
+                    size: 30,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  },
+  child: ClipRRect(
+    borderRadius: BorderRadius.circular(10),
+    child: Image.network(
+      imageUrl,
+      width: 90,
+      height: 90,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) {
+        return Container(
+          width: 90,
+          height: 90,
+          decoration: BoxDecoration(
+            color: AppColors.background,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: const Icon(
+            Icons.broken_image,
+            color: Colors.grey,
+          ),
+        );
+      },
+    ),
+  ),
+);
+            },
+          ).toList(),
+        ),
+      ],
+
+      // ==========================================================
+      // ATTACHMENTS
+      // ==========================================================
+
+      if (lead.attachments.isNotEmpty) ...[
+        const SizedBox(height: 24),
+        const Divider(),
+        const SizedBox(height: 16),
+
+        const Text(
+          'Attachments',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: AppColors.textPrimary,
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        ...lead.attachments.map(
+          (a) => Builder(
+            builder: (tileCtx) => Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 10,
+              ),
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: AppColors.border,
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.insert_drive_file,
+                    size: 20,
+                    color: AppColors.textSecondary,
+                  ),
+
+                  const SizedBox(width: 10),
+
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment:
+                          CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          a.name,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: AppColors.textPrimary,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          '${(a.size / 1024).toStringAsFixed(1)} KB',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textHint,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  IconButton(
+                    icon: const Icon(
+                      Icons.visibility,
+                      size: 18,
+                      color: AppColors.primary,
+                    ),
+                    tooltip: 'Preview',
+                    onPressed: () =>
+                        _previewFile(tileCtx, a.path),
+                  ),
+
+                  IconButton(
+                    icon: const Icon(
+                      Icons.download,
+                      size: 18,
+                      color: AppColors.primary,
+                    ),
+                    tooltip: 'Download',
+                    onPressed: () =>
+                        _downloadFile(tileCtx, a.path, a.name),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    ],
+  );
+}
   String _formatPhone(String phone) {
     if (phone.trim().isEmpty) return '-';
 
@@ -3561,14 +3999,31 @@ class _LeadFormModal extends StatefulWidget {
 }
 
 class _LeadFormModalState extends State<_LeadFormModal> {
+  String _getImageUrl(String path) {
+  if (path.startsWith('http://') ||
+      path.startsWith('https://')) {
+    return path;
+  }
+
+  return 'https://crm-backend-api.techzarinfo.cloud$path';
+}
+
   String _phoneCountryCode = '+91';
+    final List<XFile> _selectedImages = [];
+    final List<PlatformFile> _leadImages = [];
+
   late final TextEditingController _name,
-      _company,
-      _phone,
-      _email,
-      _addr,
-      _req,
-      _notes;
+    _company,
+    _phone,
+    _email,
+    _addr,
+    _city,
+    _state,
+    _pincode,
+    _latitude,
+    _longitude,
+    _req,
+    _notes;
 
   String? _phoneError;
   String? _emailError;
@@ -3618,9 +4073,17 @@ class _LeadFormModalState extends State<_LeadFormModal> {
     );
     _email = TextEditingController(text: l?.email);
     _addr = TextEditingController(text: l?.address);
-    _req = TextEditingController(text: l?.requirement);
-    _notes = TextEditingController(text: l?.notes);
-
+_city = TextEditingController(text: l?.city);
+_state = TextEditingController(text: l?.state);
+_pincode = TextEditingController(text: l?.pincode);
+_latitude = TextEditingController(
+  text: l?.latitude?.toString() ?? '',
+);
+_longitude = TextEditingController(
+  text: l?.longitude?.toString() ?? '',
+);
+_req = TextEditingController(text: l?.requirement);
+_notes = TextEditingController(text: l?.notes);
     if (l != null) {
       _existingAttachments.addAll(l.attachments);
       _country = (l.country.isNotEmpty && _countries.contains(l.country))
@@ -3651,9 +4114,22 @@ class _LeadFormModalState extends State<_LeadFormModal> {
 
   @override
   void dispose() {
-    for (final c in [_name, _company, _phone, _email, _addr, _req, _notes]) {
-      c.dispose();
-    }
+    for (final c in [
+  _name,
+  _company,
+  _phone,
+  _email,
+  _addr,
+  _city,
+  _state,
+  _pincode,
+  _latitude,
+  _longitude,
+  _req,
+  _notes,
+]) {
+  c.dispose();
+}
     super.dispose();
   }
 
@@ -3688,26 +4164,189 @@ class _LeadFormModalState extends State<_LeadFormModal> {
     return '$countryCode$localNumber';
   }
 
-  Future<List<MultipartFile>> _buildMultipartFiles() async {
-    final files = <MultipartFile>[];
-    for (final f in _attachments) {
-      try {
-        if (f.bytes != null) {
-          files.add(MultipartFile.fromBytes(f.bytes!, filename: f.name));
-        } else if (f.path != null && f.path!.isNotEmpty) {
-          files.add(await MultipartFile.fromFile(f.path!, filename: f.name));
-        }
-      } catch (e) {
-        debugPrint('Attachment skip [${f.name}]: $e');
+  Future<Map<String, List<MultipartFile>>> _buildMultipartFiles() async {
+  final attachments = <MultipartFile>[];
+  final images = <MultipartFile>[];
+
+  // Normal files
+  for (final f in _attachments) {
+    try {
+      MultipartFile multipartFile;
+
+      if (f.bytes != null) {
+        multipartFile = MultipartFile.fromBytes(
+          f.bytes!,
+          filename: f.name,
+        );
+      } else if (f.path != null && f.path!.isNotEmpty) {
+        multipartFile = await MultipartFile.fromFile(
+          f.path!,
+          filename: f.name,
+        );
+      } else {
+        continue;
       }
+
+      attachments.add(multipartFile);
+    } catch (e) {
+      debugPrint('Attachment skip [${f.name}]: $e');
     }
-    return files;
   }
+
+  // Images selected using ImagePicker
+  for (final image in _selectedImages) {
+    try {
+      final multipartFile = await MultipartFile.fromFile(
+        image.path,
+        filename: image.name,
+      );
+
+      images.add(multipartFile);
+    } catch (e) {
+      debugPrint('Image skip [${image.name}]: $e');
+    }
+  }
+
+  return {
+    'attachments': attachments,
+    'images': images,
+  };
+}
 
   List<String> get _retainedAttachmentPaths => _existingAttachments
       .map((a) => a.path)
       .where((p) => p.isNotEmpty)
       .toList();
+
+  Future<void> _pickLeadImage() async {
+  final picker = ImagePicker();
+
+  final image = await picker.pickImage(
+    source: ImageSource.gallery,
+    imageQuality: 85,
+  );
+
+  if (image == null || !mounted) return;
+
+  setState(() {
+    _selectedImages.add(image);
+  });
+}
+
+
+
+  Future<void> _fetchCurrentLocation() async {
+  try {
+    // Check whether location service is enabled
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+
+    if (!serviceEnabled) {
+      if (!mounted) return;
+
+      showApiSnack(
+        context,
+        'Please enable location services',
+        isError: true,
+      );
+      return;
+    }
+
+    // Check permission
+    LocationPermission permission = await Geolocator.checkPermission();
+
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+
+      if (permission == LocationPermission.denied) {
+        if (!mounted) return;
+
+        showApiSnack(
+          context,
+          'Location permission denied',
+          isError: true,
+        );
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      if (!mounted) return;
+
+      showApiSnack(
+        context,
+        'Location permission permanently denied. Enable it from Settings.',
+        isError: true,
+      );
+      return;
+    }
+
+    // Show loading state
+    if (mounted) {
+      setState(() {});
+    }
+
+    // Get current GPS position
+    final position = await Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+      ),
+    );
+
+    // Save coordinates
+    _latitude.text = position.latitude.toString();
+    _longitude.text = position.longitude.toString();
+
+    // Reverse geocode coordinates
+    final placemarks = await placemarkFromCoordinates(
+      position.latitude,
+      position.longitude,
+    );
+
+    if (placemarks.isNotEmpty) {
+      final place = placemarks.first;
+
+      final addressParts = <String>[
+        if ((place.street ?? '').trim().isNotEmpty) place.street!.trim(),
+        if ((place.subLocality ?? '').trim().isNotEmpty)
+          place.subLocality!.trim(),
+      ];
+
+      _addr.text = addressParts.join(', ');
+
+      _city.text =
+          (place.locality ?? place.subAdministrativeArea ?? '').trim();
+
+      _state.text = (place.administrativeArea ?? '').trim();
+
+      _pincode.text = (place.postalCode ?? '').trim();
+
+      final countryName = (place.country ?? '').trim();
+
+      if (countryName.isNotEmpty && _countries.contains(countryName)) {
+        _country = countryName;
+      }
+    }
+
+    if (!mounted) return;
+
+    setState(() {});
+
+    showApiSnack(
+      context,
+      'Current location added',
+    );
+  } catch (e) {
+    debugPrint('Location error: $e');
+
+    if (!mounted) return;
+
+    showApiSnack(
+      context,
+      'Unable to get current location',
+      isError: true,
+    );
+  }
+}
 
   void _removeExistingAttachment(Attachment file) {
     setState(() => _existingAttachments.remove(file));
@@ -3765,7 +4404,12 @@ class _LeadFormModalState extends State<_LeadFormModal> {
       phone: _fullPhoneNumber(),
       email: _email.text.trim(),
       address: _addr.text.trim(),
-      country: _country ?? '',
+city: _city.text.trim(),
+state: _state.text.trim(),
+pincode: _pincode.text.trim(),
+country: _country ?? '',
+latitude: double.tryParse(_latitude.text.trim()),
+longitude: double.tryParse(_longitude.text.trim()),
       industry: _industry ?? '',
       source: _source ?? '',
       clientType: _clientType ?? '',
@@ -3774,22 +4418,35 @@ class _LeadFormModalState extends State<_LeadFormModal> {
       assignTo: _selectedAssignUserId ?? '',
       followUpDate: _followUp,
       notes: _notes.text.trim(),
+      customFields: _customFields,
+      
     );
 
     final cubit = context.read<LeadCubit>();
     String? err;
-    final files = await _buildMultipartFiles();
+    final fileGroups = await _buildMultipartFiles();
+
+final attachmentFiles =
+    fileGroups['attachments'] ?? [];
+
+final imageFiles =
+    fileGroups['images'] ?? [];
     if (!mounted) return;
     if (_isEdit) {
-      err = await cubit.updateLead(
-        widget.existingLead!.id,
-        lead,
-        attachments: files,
-        retainedAttachmentPaths: _retainedAttachmentPaths,
-      );
-    } else {
-      err = await cubit.createLead(lead, attachments: files);
-    }
+  err = await cubit.updateLead(
+    widget.existingLead!.id,
+    lead,
+    attachments: attachmentFiles,
+    images: imageFiles,
+    retainedAttachmentPaths: _retainedAttachmentPaths,
+  );
+} else {
+  err = await cubit.createLead(
+    lead,
+    attachments: attachmentFiles,
+    images: imageFiles,
+  );
+}
     if (!mounted) return;
 
     setState(() => _saving = false);
@@ -3859,8 +4516,13 @@ if (err == null) {
               color: AppColors.surface,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               child: Row(
-                  children: ['Basic', 'Business', 'Manage', 'Notes']
-                      .asMap()
+                  children: [
+  'Basic',
+  'Business',
+  'Location',
+  'Manage',
+  'Notes',
+]                      .asMap()
                       .entries
                       .map((e) {
                 final i = e.key;
@@ -3922,8 +4584,9 @@ if (err == null) {
                     children: [
                   if (_step == 0) _basicStep(),
                   if (_step == 1) _businessStep(),
-                  if (_step == 2) _manageStep(),
-                  if (_step == 3) _notesStep(),
+                  if (_step == 2) _locationStep(),
+                  if (_step == 3) _manageStep(),
+                  if (_step == 4) _notesStep(),
                   const SizedBox(height: 20),
                   Row(children: [
                     if (_step > 0) ...[
@@ -3940,32 +4603,36 @@ if (err == null) {
                     Expanded(
                         child: ElevatedButton.icon(
                       onPressed: _saving
-                          ? null
-                          : (_step < 3
-                              ? () {
-                                  if (_step == 0 && !_validateStep0()) return;
-                                  if (_step == 1 ) {
-                                    
-                                  }
-                                  setState(() => _step++);
-                                }
-                              : _submit),
+    ? null
+    : (_step < 4
+        ? () {
+            if (_step == 0 && !_validateStep0()) return;
+
+            setState(() => _step++);
+          }
+        : _submit),
                       icon: _saving
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white))
-                          : Icon(
-                              _step < 3
-                                  ? Icons.arrow_forward
-                                  : Icons.cloud_upload_outlined,
-                              size: 16),
-                      label: Text(_saving
-                          ? 'Saving...'
-                          : (_step < 3
-                              ? 'Next'
-                              : (_isEdit ? 'Update' : 'Save to Server'))),
+    ? const SizedBox(
+        width: 16,
+        height: 16,
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: Colors.white,
+        ),
+      )
+    : Icon(
+        _step < 4
+            ? Icons.arrow_forward
+            : Icons.cloud_upload_outlined,
+        size: 16,
+      ),
+                      label: Text(
+  _saving
+      ? 'Saving...'
+      : (_step < 4
+          ? 'Next'
+          : (_isEdit ? 'Update' : 'Save to Server')),
+),
                       style: ElevatedButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 13)),
                     )),
@@ -4087,18 +4754,7 @@ if (err == null) {
           ],
         ),
         const SizedBox(height: 14),
-        CrmTextField(
-            label: 'Address',
-            hint: 'Street, City',
-            controller: _addr,
-            maxLines: 2),
-        const SizedBox(height: 14),
-        CrmDropdown(
-            label: 'Country',
-            value: _country,
-            items: _countries,
-            hint: 'Select Country',
-            onChanged: (v) => setState(() => _country = v)),
+        
             ..._customFields
     .where((e) => e.cardTitle == "Basic Information")
     .map((e) => _buildCustomField(e)),
@@ -4141,7 +4797,101 @@ if (err == null) {
     .where((e) => e.cardTitle == "Business Details")
     .map((e) => _buildCustomField(e)),
       ]);
+    
+  Widget _locationStep() {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      // LOCATION HEADING
+      Row(
+        children: [
+          const Expanded(
+            child: Text(
+              'Location',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
 
+          // 👇 PASTE THE ICON BUTTON HERE
+          IconButton(
+            tooltip: 'Get current location',
+            icon: const Icon(
+              Icons.my_location,
+              color: AppColors.primary,
+            ),
+            onPressed: _fetchCurrentLocation,
+          ),
+        ],
+      ),
+
+      const SizedBox(height: 12),
+
+      // ADDRESS
+      CrmTextField(
+        label: 'Address',
+        controller: _addr,
+      ),
+
+      const SizedBox(height: 12),
+
+      // CITY
+      CrmTextField(
+        label: 'City',
+        controller: _city,
+      ),
+
+      const SizedBox(height: 12),
+
+      // STATE
+      CrmTextField(
+        label: 'State',
+        controller: _state,
+      ),
+
+      const SizedBox(height: 12),
+
+      // PINCODE
+      CrmTextField(
+        label: 'Pincode',
+        controller: _pincode,
+      ),
+
+      const SizedBox(height: 12),
+
+      // COUNTRY
+      CrmDropdown(
+        label: 'Country',
+        value: _country,
+        items: _countries,
+        hint: 'Select Country',
+        onChanged: (value) {
+          setState(() {
+            _country = value;
+          });
+        },
+      ),
+
+      const SizedBox(height: 12),
+
+      // LATITUDE
+      CrmTextField(
+        label: 'Latitude',
+        controller: _latitude,
+      ),
+
+      const SizedBox(height: 12),
+
+      // LONGITUDE
+      CrmTextField(
+        label: 'Longitude',
+        controller: _longitude,
+      ),
+    ],
+  );
+}
   Widget _manageStep() =>
       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
          SectionHeader(
@@ -4337,7 +5087,170 @@ if (err == null) {
     .map((e) => _buildCustomField(e))
     .toList(),
         const SizedBox(height: 20),
+
+        // =========================
+// IMAGE SECTION
+// =========================
+Container(
+  padding: const EdgeInsets.all(16),
+  decoration: BoxDecoration(
+    color: AppColors.primaryLight,
+    borderRadius: BorderRadius.circular(14),
+    border: Border.all(
+      color: AppColors.primary.withOpacity(0.2),
+    ),
+  ),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        children: [
+          const Icon(
+            Icons.image_outlined,
+            size: 18,
+            color: AppColors.primary,
+          ),
+          const SizedBox(width: 8),
+
+          const Text(
+            'Images',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: AppColors.primary,
+            ),
+          ),
+
+          const Spacer(),
+
+          IconButton(
+            tooltip: 'Upload image',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            icon: const Icon(
+              Icons.add_photo_alternate_outlined,
+              color: AppColors.primary,
+            ),
+            onPressed: _pickLeadImage,
+          ),
+        ],
+      ),
+
+      const SizedBox(height: 12),
+
+      // Existing + newly selected images
+      if ((widget.existingLead?.images.isNotEmpty ?? false) ||
+          _selectedImages.isNotEmpty)
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            // Existing images
+            if (widget.existingLead != null)
+              ...widget.existingLead!.images.map((image) {
+                return Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.network(
+                        _getImageUrl(image.path),
+                        width: 90,
+                        height: 90,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+
+                    Positioned(
+                      top: -7,
+                      right: -7,
+                      child: GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            widget.existingLead!.images.remove(image);
+                          });
+                        },
+                        child: Container(
+                          width: 24,
+                          height: 24,
+                          decoration: const BoxDecoration(
+                            color: Colors.red,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.close,
+                            color: Colors.white,
+                            size: 16,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              }),
+
+            // Newly selected images
+            ..._selectedImages.asMap().entries.map((entry) {
+              final index = entry.key;
+              final image = entry.value;
+
+              return Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.file(
+                      File(image.path),
+                      width: 90,
+                      height: 90,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+
+                  Positioned(
+                    top: -7,
+                    right: -7,
+                    child: GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _selectedImages.removeAt(index);
+                        });
+                      },
+                      child: Container(
+                        width: 24,
+                        height: 24,
+                        decoration: const BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.close,
+                          color: Colors.white,
+                          size: 16,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            }),
+          ],
+        )
+      else
+        const Text(
+          'No images uploaded',
+          style: TextStyle(
+            fontSize: 12,
+            color: AppColors.textSecondary,
+          ),
+        ),
+    ],
+  ),
+),
+
+const SizedBox(height: 16),
         Container(
+          
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
               color: AppColors.primaryLight,
@@ -4345,20 +5258,152 @@ if (err == null) {
               border: Border.all(color: AppColors.primary.withOpacity(0.2))),
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Row(children: [
-              Icon(Icons.attach_file, size: 16, color: AppColors.primary),
-              SizedBox(width: 6),
-              Text('Attachments',
+            Row(children: [
+              const Icon(Icons.attach_file, size: 16, color: AppColors.primary),
+              const SizedBox(width: 6),
+              const Text('Attachments',
                   style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w700,
                       color: AppColors.primary)),
-              SizedBox(width: 6),
-              Text('(max 5 MB each)',
+      
+
+              const SizedBox(width: 6),
+              const Text('(max 5 MB each)',
                   style:
                       TextStyle(fontSize: 11, color: AppColors.textSecondary)),
             ]),
             const SizedBox(height: 12),
+ if ((widget.existingLead?.images.isNotEmpty ?? false) ||
+    _selectedImages.isNotEmpty)
+  Padding(
+    padding: const EdgeInsets.only(top: 12),
+    child: Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      children: [
+        // =========================
+        // EXISTING SERVER IMAGES
+        // =========================
+                          
+
+        if (widget.existingLead != null)
+          ...widget.existingLead!.images.map((image) {
+              final imageUrl = _getImageUrl(image.path);
+
+  debugPrint('IMAGE PATH FROM API: ${image.path}');
+  debugPrint('IMAGE URL: $imageUrl');
+
+            return Stack(
+              clipBehavior: Clip.none,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+
+
+                  
+                  child: Image.network(
+                    _getImageUrl(image.path),
+                    width: 90,
+                    height: 90,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) {
+                      return Container(
+                        width: 90,
+                        height: 90,
+                        decoration: BoxDecoration(
+                          color: AppColors.background,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(
+                          Icons.broken_image,
+                          color: Colors.grey,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+
+                // X button
+                Positioned(
+                  top: -8,
+                  right: -8,
+                  child: GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        widget.existingLead!.images.remove(image);
+                      });
+                    },
+                    child: Container(
+                      width: 24,
+                      height: 24,
+                      decoration: const BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.close,
+                        color: Colors.white,
+                        size: 16,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          }),
+
+        // =========================
+        // NEWLY UPLOADED IMAGES
+        // =========================
+        ..._selectedImages.asMap().entries.map((entry) {
+          final index = entry.key;
+          final image = entry.value;
+
+          return Stack(
+            clipBehavior: Clip.none,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Image.file(
+                  File(image.path),
+                  width: 90,
+                  height: 90,
+                  fit: BoxFit.cover,
+                ),
+              ),
+
+              // X button
+              Positioned(
+                top: -8,
+                right: -8,
+                child: GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _selectedImages.removeAt(index);
+                    });
+                  },
+                  child: Container(
+                    width: 24,
+                    height: 24,
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.close,
+                      color: Colors.white,
+                      size: 16,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        }),
+      ],
+    ),
+  ),
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
@@ -4551,62 +5596,196 @@ if (err == null) {
 
   String fieldType = 'text';
 
+  final List<TextEditingController> optionControllers = [];
+
   final result = await showDialog<CustomField>(
     context: context,
-    builder: (_) {
-      return AlertDialog(
-        title: const Text("Create Custom Field"),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: "Field Name",
+    builder: (dialogContext) {
+      return StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text("Create Custom Field"),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    decoration: const InputDecoration(
+                      labelText: "Field Name",
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  DropdownButtonFormField<String>(
+                    value: fieldType,
+                    decoration: const InputDecoration(
+                      labelText: "Field Type",
+                      border: OutlineInputBorder(),
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'text',
+                        child: Text("Text"),
+                      ),
+                      DropdownMenuItem(
+                        value: 'number',
+                        child: Text("Number"),
+                      ),
+                      DropdownMenuItem(
+                        value: 'date',
+                        child: Text("Date"),
+                      ),
+                      DropdownMenuItem(
+                        value: 'dropdown',
+                        child: Text("Dropdown"),
+                      ),
+                    ],
+                    onChanged: (v) {
+                      if (v == null) return;
+
+                      setDialogState(() {
+                        fieldType = v;
+
+                        // Clear options when changing away
+                        // from dropdown.
+                        if (fieldType != 'dropdown') {
+                          for (final controller
+                              in optionControllers) {
+                            controller.dispose();
+                          }
+                          optionControllers.clear();
+                        }
+                      });
+                    },
+                  ),
+
+                  // ⭐ DROPDOWN OPTIONS
+                  if (fieldType == 'dropdown') ...[
+                    const SizedBox(height: 16),
+
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Dropdown Options',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    ...List.generate(
+                      optionControllers.length,
+                      (index) {
+                        return Padding(
+                          padding:
+                              const EdgeInsets.only(bottom: 8),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller:
+                                      optionControllers[index],
+                                  decoration: InputDecoration(
+                                    labelText:
+                                        'Option ${index + 1}',
+                                    border:
+                                        const OutlineInputBorder(),
+                                  ),
+                                ),
+                              ),
+
+                              IconButton(
+  icon: const Icon(
+    Icons.close,
+    color: Colors.red,
+  ),
+  onPressed: () {
+    setDialogState(() {
+      final controller =
+          optionControllers.removeAt(index);
+
+      controller.dispose();
+    });
+  },
+),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        setDialogState(() {
+                          optionControllers.add(
+                            TextEditingController(),
+                          );
+                        });
+                      },
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add Option'),
+                    ),
+                  ],
+                ],
               ),
             ),
-            const SizedBox(height: 16),
-            DropdownButtonFormField<String>(
-              value: fieldType,
-              items: const [
-                DropdownMenuItem(value: 'text', child: Text("Text")),
-                DropdownMenuItem(value: 'number', child: Text("Number")),
-                DropdownMenuItem(value: 'date', child: Text("Date")),
-                DropdownMenuItem(value: 'dropdown', child: Text("Dropdown")),
-              ],
-              onChanged: (v) {
-                fieldType = v!;
-              },
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Cancel"),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(
-                context,
-                CustomField(
-                  id: '',
-                  cardTitle: cardTitle,
-                  name: nameController.text.trim(),
-                  type: fieldType,
-                  options: const [],
-                  value: '',
-                ),
-              );
-            },
-            child: const Text("Create"),
-          ),
-        ],
+
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(dialogContext);
+                },
+                child: const Text("Cancel"),
+              ),
+
+              ElevatedButton(
+                onPressed: () {
+                  final fieldName =
+                      nameController.text.trim();
+
+                  if (fieldName.isEmpty) {
+                    return;
+                  }
+
+                  // ⭐ Get dropdown options
+                  final options = optionControllers
+                      .map((controller) =>
+                          controller.text.trim())
+                      .where((value) => value.isNotEmpty)
+                      .toList();
+
+                  // ⭐ THIS IS YOUR CustomField(...)
+                  Navigator.pop(
+                    dialogContext,
+                    CustomField(
+                      id: '',
+                      cardTitle: cardTitle,
+                      name: fieldName,
+                      type: fieldType,
+                      options: options,
+                        value: fieldType == 'dropdown' && options.isNotEmpty
+      ? options.first
+      : '',
+
+                    ),
+                  );
+                },
+                child: const Text("Create"),
+              ),
+            ],
+          );
+        },
       );
     },
   );
 
-  if (result != null) {
+  // Dispose controllers
+  
+  if (result != null && mounted) {
     setState(() {
       _customFields.add(result);
     });
@@ -4616,60 +5795,201 @@ if (err == null) {
 // this is for custom field
 // ==================
 Widget _buildCustomField(CustomField field) {
-  final controller = TextEditingController(text: field.value);
+  Widget fieldWidget;
 
   switch (field.type) {
     case 'text':
-      return Padding(
-        padding: const EdgeInsets.only(top: 14),
-        child: CrmTextField(
-          label: field.name,
-          controller: controller,
-          onChanged: (v) => field.value = v,
+      fieldWidget = TextFormField(
+        initialValue: field.value,
+        decoration: InputDecoration(
+          labelText: field.name,
+          border: const OutlineInputBorder(),
         ),
+        onChanged: (value) {
+          field.value = value;
+        },
       );
+      break;
 
     case 'number':
-      return Padding(
-        padding: const EdgeInsets.only(top: 14),
-        child: CrmTextField(
-          label: field.name,
-          controller: controller,
-          keyboardType: TextInputType.number,
-          onChanged: (v) => field.value = v,
+      fieldWidget = TextFormField(
+        initialValue: field.value,
+        keyboardType: TextInputType.number,
+        decoration: InputDecoration(
+          labelText: field.name,
+          border: const OutlineInputBorder(),
         ),
+        onChanged: (value) {
+          field.value = value;
+        },
       );
-
-    case 'date':
-      return Padding(
-        padding: const EdgeInsets.only(top: 14),
-        child: CrmTextField(
-          label: field.name,
-          controller: controller,
-          onChanged: (v) => field.value = v,
-        ),
-      );
+      break;
 
     case 'dropdown':
-      return Padding(
-        padding: const EdgeInsets.only(top: 14),
-        child: CrmDropdown(
-          label: field.name,
-          value: field.value.isEmpty ? null : field.value,
-          items: field.options,
-          hint: "Select ${field.name}",
-          onChanged: (v) {
+case 'select':
+  fieldWidget = DropdownButtonFormField<String>(
+    value: field.options.contains(field.value)
+        ? field.value
+        : null,
+
+    decoration: InputDecoration(
+      labelText: field.name,
+      border: const OutlineInputBorder(),
+    ),
+
+    items: field.options.map((option) {
+      return DropdownMenuItem<String>(
+        value: option,
+        child: Text(option),
+      );
+    }).toList(),
+
+    onChanged: (String? selectedValue) {
+      if (selectedValue == null) return;
+
+      // IMPORTANT: update the actual CustomField object
+      field.value = selectedValue;
+
+      debugPrint(
+        'DROPDOWN CHANGED => '
+        'name=${field.name}, '
+        'value=${field.value}, '
+        'options=${field.options}',
+      );
+
+      setState(() {});
+    },
+  );
+  break;
+    case 'date':
+      fieldWidget = InkWell(
+        onTap: () async {
+          DateTime initialDate = DateTime.now();
+
+          if (field.value.isNotEmpty) {
+            try {
+              initialDate = DateTime.parse(field.value);
+            } catch (_) {}
+          }
+
+          final picked = await showDatePicker(
+            context: context,
+            initialDate: initialDate,
+            firstDate: DateTime(2000),
+            lastDate: DateTime(2100),
+          );
+
+          if (picked == null || !mounted) return;
+
+          final formatted =
+              DateFormat('yyyy-MM-dd').format(picked);
+
+          setState(() {
+            field.value = formatted;
+          });
+        },
+        child: InputDecorator(
+          decoration: InputDecoration(
+            labelText: field.name,
+            border: const OutlineInputBorder(),
+            suffixIcon: const Icon(Icons.calendar_today),
+          ),
+          child: Text(
+            field.value.isEmpty
+                ? 'Select date'
+                : field.value,
+          ),
+        ),
+      );
+      break;
+
+    default:
+      fieldWidget = TextFormField(
+        initialValue: field.value,
+        decoration: InputDecoration(
+          labelText: field.name,
+          border: const OutlineInputBorder(),
+        ),
+        onChanged: (value) {
+          field.value = value;
+        },
+      );
+  }
+  
+
+  return Padding(
+    padding: const EdgeInsets.only(top: 14),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: fieldWidget,
+        ),
+
+        const SizedBox(width: 4),
+
+        IconButton(
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(
+            minWidth: 36,
+            minHeight: 36,
+          ),
+          icon: const Icon(
+            Icons.close,
+            size: 20,
+            color: Colors.red,
+          ),
+          onPressed: () async {
+            if (field.id.isNotEmpty) {
+              final confirmed = await showDialog<bool>(
+                context: context,
+                builder: (dialogContext) {
+                  return AlertDialog(
+                    title: const Text(
+                      'Remove custom field?',
+                    ),
+                    content: Text(
+                      'Remove "${field.name}" from this lead?',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () {
+                          Navigator.pop(
+                            dialogContext,
+                            false,
+                          );
+                        },
+                        child: const Text('Cancel'),
+                      ),
+                      ElevatedButton(
+                        onPressed: () {
+                          Navigator.pop(
+                            dialogContext,
+                            true,
+                          );
+                        },
+                        child: const Text('Remove'),
+                      ),
+                    ],
+                  );
+                },
+              );
+
+              if (confirmed != true || !mounted) {
+                return;
+              }
+            }
+
             setState(() {
-              field.value = v ?? '';
+              _customFields.remove(field);
             });
           },
         ),
-      );
-
-    default:
-      return const SizedBox.shrink();
-  }
+      ],
+    ),
+  );
 }
+
   Future<void> _pickFiles() async {
     final result = await FilePicker.platform.pickFiles(
       allowMultiple: true,

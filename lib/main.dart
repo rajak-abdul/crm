@@ -4,7 +4,8 @@ import 'package:crm_app/screen/dashboard/ui/dashboard_followup_page.ui.dart';
 import 'package:crm_app/screen/dashboard/ui/dashboard_screen.dart'
     show DashboardScreen;
 import 'package:crm_app/screen/deals/ui/deal_screen.dart' show DealsScreen;
-import 'package:crm_app/screen/leads/ui/lead_screen.dart' show LeadsScreen;
+import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
+import 'package:crm_app/screen/leads/ui/lead_screen.dart' show LeadsScreen, LeadDetailSheet;
 import 'package:crm_app/screen/login/ui/login_screen.dart' show LoginScreen;
 import 'package:crm_app/screen/profile/ui/profile_screen.dart'
     show ProfileScreen;
@@ -12,8 +13,10 @@ import 'package:crm_app/screen/invoice/ui/invoice_screen.dart';
 import 'package:crm_app/screen/LeaderBoard/ui/leader_board.dart';
 import 'package:crm_app/shareWidgets/crm_drawer.dart';
 import 'package:crm_app/shareWidgets/crm_header.dart';
+import 'package:crm_app/shareWidgets/missed_followup.dart';
 import 'package:crm_app/shareWidgets/notifcation_service.dart';
 import 'package:crm_app/thems/app_themes.dart' show AppColors, AppTheme;
+import 'package:crm_app/utils/missed_followup_timer.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -76,13 +79,76 @@ class _MainShellState extends State<MainShell>
   Animation<double>? _anim;
   static const _drawerFraction = 0.72;
   late final NotificationCubit _notifCubit;
-
+  static const String _missedFollowupLastShownKey =
+    'global_missed_followup_last_shown';
   bool _isOpen = false;
   bool _isOffline = false;
   String _authToken = '';
   String _userName = 'User';
   String? _profileImage;
+  Future<void> _checkMissedFollowups() async {
+  if (!mounted) return;
 
+  try {
+    final prefs = await SharedPreferences.getInstance();
+
+    final lastShownMillis =
+        prefs.getInt(_missedFollowupLastShownKey);
+
+    final now = DateTime.now();
+
+    // If popup was already shown within the last hour,
+    // don't show it again.
+    if (lastShownMillis != null) {
+      final lastShown =
+          DateTime.fromMillisecondsSinceEpoch(lastShownMillis);
+
+      if (now.difference(lastShown) <
+          const Duration(hours: 1)) {
+        return;
+      }
+    }
+
+    // Get missed follow-ups from your existing Cubit.
+    final leads = await LeadCubit().getMissedFollowups();
+
+    if (!mounted || leads.isEmpty) {
+      return;
+    }
+
+    // Save the time BEFORE showing the popup.
+    await prefs.setInt(
+      _missedFollowupLastShownKey,
+      now.millisecondsSinceEpoch,
+    );
+
+    if (!mounted) return;
+
+    showDialog(
+  context: context,
+  barrierDismissible: false,
+  builder: (_) => MissedFollowupDialog(
+    missedLeads: leads,
+    onViewLead: (lead) {
+      Navigator.pop(context);
+
+      showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (_) => LeadDetailSheet(
+          lead: lead,
+        ),
+      );
+    },
+  ),
+);
+  } catch (e) {
+    debugPrint(
+      'Missed follow-up check failed: $e',
+    );
+  }
+}
   final List<Widget> _screens = const [
     DashboardScreen(),
     LeadsScreen(showBackButton: false),
@@ -117,6 +183,9 @@ class _MainShellState extends State<MainShell>
 
     _loadUserInfo();
     _loadNotifications();
+    MissedFollowupTimer.instance.start(
+  onTick: _checkMissedFollowups,
+);
   }
 
   Future<void> _checkInternet() async {

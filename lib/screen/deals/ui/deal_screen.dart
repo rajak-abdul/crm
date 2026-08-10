@@ -5,6 +5,7 @@
 
 // ignore_for_file: curly_braces_in_flow_control_structures
 
+
 import 'package:crm_app/screen/deals/cubit/attachment_deals_cubit.dart';
 import 'package:crm_app/screen/deals/cubit/deals_sheet.dart';
 import 'package:crm_app/screen/deals/cubit/deals_sheet_state.dart';
@@ -14,8 +15,6 @@ import 'package:crm_app/screen/deals/ui/deal_form_modal.dart';
 import 'package:crm_app/screen/deals/ui/deals_shared_widget.dart';
 import 'package:crm_app/screen/deals/ui/rejected_deals.dart';
 import 'package:crm_app/screen/invoice/cubit/invoice_cubit.dart';
-import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
-import 'package:crm_app/screen/leads/ui/lead_screen.dart';
 import 'package:crm_app/shareWidgets/date_time.dart';
 import 'package:crm_app/shareWidgets/missed_followup.dart';
 import 'package:crm_app/screen/deals/cubit/deals_cubit.dart';
@@ -27,6 +26,7 @@ import 'package:crm_app/utils/permission_helper.dart';
 import 'package:flutter/material.dart' hide SearchBar;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 bool _isSessionExpiredMessage(String msg) {
   final m = msg.toLowerCase();
@@ -120,7 +120,6 @@ class _DealsShell extends StatefulWidget {
 class _DealsShellState extends State<_DealsShell> {
   late String _view;
   DealsLoaded? _lastLoaded;
-  bool _missedPopupShown = false;
 
   static const _viewOptions = [
     ('stages', 'Deal Stages'),
@@ -133,7 +132,18 @@ class _DealsShellState extends State<_DealsShell> {
       _view = widget.initialStageFilter != null
         ? 'alldeals'
         : (widget.initialTab == 1 ? 'stages' : 'alldeals');
+      
+        
+
   }
+
+  @override
+void dispose() {
+  
+  super.dispose();
+}
+
+  
 
   void _openCreate(List<String> users) => showModalBottomSheet(
       context: context,
@@ -172,35 +182,7 @@ class _DealsShellState extends State<_DealsShell> {
         child: DealDetailSheet(deal: deal),
       ),
     );
-      Future<void> _checkMissedFollowups() async {
-  if (_missedPopupShown) return;
-
-  final leads = await LeadCubit().getAllLeads();
-
-  if (!mounted || leads.isEmpty) return;
-
-  _missedPopupShown = true;
-
-  showDialog(
-    context: context,
-    builder: (_) => MissedFollowupDialog(
-      missedLeads: leads,
-      onViewLead: (lead) {
-        Navigator.pop(context);
-
-        showModalBottomSheet(
-          context: context,
-          isScrollControlled: true,
-          backgroundColor: Colors.transparent,
-          builder: (_) => LeadDetailSheet(
-            lead: lead,
-          ),
-        );
-      },
-    ),
-  );
-}
-
+      
   Widget _buildLoaded(BuildContext ctx, DealsLoaded loaded) => AnimatedSwitcher(
       duration: const Duration(milliseconds: 200),
       child: _view == 'stages'
@@ -247,7 +229,7 @@ class _DealsShellState extends State<_DealsShell> {
             automaticallyImplyLeading: false,
           leading: widget.showBackButton
       ? IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
+          icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).pop())
       : null,
           actions: [
@@ -278,9 +260,7 @@ class _DealsShellState extends State<_DealsShell> {
   _lastLoaded = state;
 
     if (!PermissionHelper.can('users_roles')) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _checkMissedFollowups();
-      });
+      
     }
 }
             if (state is DealsLoading && _lastLoaded == null)
@@ -370,6 +350,14 @@ class _StagesView extends StatefulWidget {
 class _StagesViewState extends State<_StagesView> {
   final _search = TextEditingController();
   String _q = '';
+  DateTimeRange? _pipelineDateRange;
+
+  List<String> _selectedPipelineStages = [];
+
+  bool get _hasPipelineFilter =>
+      _pipelineDateRange != null ||
+      _selectedPipelineStages.isNotEmpty;
+      
   @override
   void dispose() {
     _search.dispose();
@@ -388,17 +376,27 @@ class _StagesViewState extends State<_StagesView> {
                       hint: 'Search deals…',
                       onChanged: (v) => setState(() => _q = v.toLowerCase()),
                       onClear: () => setState(() => _q = ''))),
-              const SizedBox(width: 10),
+                      
+              const SizedBox(width: 8),
+
+IconButton(
+  tooltip: 'Filter',
+  onPressed: _showPipelineFilter,
+  icon: Badge(
+    isLabelVisible: _hasPipelineFilter,
+    label: const Text(''),
+    child: const Icon(Icons.filter_alt_outlined),
+  ),
+),
+
+const SizedBox(width: 4),
               if (PermissionHelper.can('users_roles'))
                 ElevatedButton.icon(
                     onPressed: widget.onCreateDeal,
                     icon: const Icon(Icons.add, size: 16),
                     label: const Text('Create Deal',
                         style: TextStyle(fontSize: 13)),
-                    style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 11),
-                        minimumSize: Size.zero)),
+                   ),
             ])),
         Container(height: 1, color: AppColors.divider),
         if (widget.pendingDeals.isNotEmpty || widget.lostDeals.isNotEmpty)
@@ -417,29 +415,229 @@ class _StagesViewState extends State<_StagesView> {
                     color: AppColors.danger),
               ])),
         Expanded(
-            child: RefreshIndicator(
-                color: AppColors.primary,
-                onRefresh: () => context.read<DealsCubit>().refresh(),
-                child: ListView.builder(
-                    padding: const EdgeInsets.all(14),
-                    itemCount: DealConstants.stages.length,
-                    itemBuilder: (_, i) {
-                      final stage = DealConstants.stages[i];
-                      final filtered = widget.deals
-                          .where((d) =>
-                              DealConstants.canonicalStage(d.stage) == stage &&
-                              (_q.isEmpty ||
-                                  d.name.toLowerCase().contains(_q) ||
-                                  d.companyName.toLowerCase().contains(_q)))
-                          .toList();
-                      return _StageColumn(
-                          stage: stage,
-                          deals: filtered,
-                          onView: widget.onViewDeal,
-                          onEdit: widget.onEditDeal,
-                          onDelete: widget.onDeleteDeal);
-                    }))),
-      ]);
+  child: RefreshIndicator(
+    color: AppColors.primary,
+    onRefresh: () => context.read<DealsCubit>().refresh(),
+    child: ListView.builder(
+      padding: const EdgeInsets.all(14),
+
+      // Show only selected stages.
+      // If nothing is selected, show all stages.
+      itemCount: _selectedPipelineStages.isEmpty
+          ? DealConstants.stages.length
+          : _selectedPipelineStages.length,
+
+      itemBuilder: (_, i) {
+        final stage = _selectedPipelineStages.isEmpty
+            ? DealConstants.stages[i]
+            : _selectedPipelineStages[i];
+
+        final filtered = widget.deals.where((d) {
+          final canonicalStage =
+              DealConstants.canonicalStage(d.stage);
+
+          final matchesSearch =
+              _q.isEmpty ||
+              d.name.toLowerCase().contains(_q) ||
+              d.companyName.toLowerCase().contains(_q);
+
+          final dealDate = d.createdAt;
+
+          final matchesDate =
+              _pipelineDateRange == null ||
+              (dealDate != null &&
+                  !dealDate.isBefore(
+                    _pipelineDateRange!.start,
+                  ) &&
+                  !dealDate.isAfter(
+                    _pipelineDateRange!.end.add(
+                      const Duration(days: 1),
+                    ),
+                  ));
+
+          return canonicalStage == stage &&
+              matchesSearch &&
+              matchesDate;
+        }).toList();
+
+        return _StageColumn(
+          stage: stage,
+          deals: filtered,
+          onView: widget.onViewDeal,
+          onEdit: widget.onEditDeal,
+          onDelete: widget.onDeleteDeal,
+        );
+      },
+    ),
+  ),
+),
+      ]); 
+  
+  // ===================
+  // show pipleine
+  // ===================
+  void _showPipelineFilter() {
+  final tempStages = List<String>.from(_selectedPipelineStages);
+  DateTimeRange? tempDateRange = _pipelineDateRange;
+
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: AppColors.surface,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (sheetContext) {
+      return StatefulBuilder(
+        builder: (context, setSheetState) {
+          return SafeArea(
+            child: Padding(
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 10,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+
+                    const Text(
+                      'Pipeline Filters',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    const Text(
+                      'Date Range',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () async {
+                        final picked = await showDateRangePicker(
+                          context: context,
+                          firstDate: DateTime(2020),
+                          lastDate: DateTime(2100),
+                          initialDateRange: tempDateRange,
+                          helpText: 'Select Date Range',
+                          saveText: 'Apply',
+                          confirmText: 'Apply',
+                          cancelText: 'Cancel',
+                        );
+
+                        if (picked != null) {
+                          setSheetState(() {
+                            tempDateRange = picked;
+                          });
+                        }
+                      },
+                      child: InputDecorator(
+                        decoration: const InputDecoration(
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(
+                            Icons.date_range_outlined,
+                          ),
+                          suffixIcon: Icon(
+                            Icons.calendar_month,
+                          ),
+                        ),
+                        child: Text(
+                          tempDateRange == null
+                              ? 'Select Date Range'
+                              : '${DateFormat('dd MMM yyyy').format(tempDateRange!.start)} - '
+                                  '${DateFormat('dd MMM yyyy').format(tempDateRange!.end)}',
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    const Text(
+                      'Deal Stages',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+
+                    const SizedBox(height: 6),
+
+                    ...DealConstants.stages.map(
+                      (stage) => CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        title: Text(stage),
+                        value: tempStages.contains(stage),
+                        onChanged: (checked) {
+                          setSheetState(() {
+                            if (checked == true) {
+                              if (!tempStages.contains(stage)) {
+                                tempStages.add(stage);
+                              }
+                            } else {
+                              tempStages.remove(stage);
+                            }
+                          });
+                        },
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    Row(
+                      children: [
+
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () {
+                              setState(() {
+                                _pipelineDateRange = null;
+                                _selectedPipelineStages.clear();
+                              });
+
+                              Navigator.pop(sheetContext);
+                            },
+                            child: const Text('Reset'),
+                          ),
+                        ),
+
+                        const SizedBox(width: 12),
+
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () {
+                              setState(() {
+                                _pipelineDateRange = tempDateRange;
+                                _selectedPipelineStages =
+                                    List<String>.from(tempStages);
+                              });
+
+                              Navigator.pop(sheetContext);
+                            },
+                            child: const Text('Apply'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+} 
 }
 
 class _StripChip extends StatelessWidget {
@@ -491,7 +689,7 @@ class _StageColumn extends StatefulWidget {
 }
 
 class _StageColumnState extends State<_StageColumn> {
-  bool _collapsed = false;
+  bool _collapsed = true;
   @override
   Widget build(BuildContext context) {
     final color = stageColor(widget.stage);

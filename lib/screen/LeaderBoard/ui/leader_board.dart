@@ -3,6 +3,9 @@ import 'package:crm_app/screen/LeaderBoard/cubit/leaderBoard_cubit.dart';
 import 'package:crm_app/screen/LeaderBoard/modal/leaderBoard_modal.dart';
 import 'package:crm_app/screen/LeaderBoard/utils/utils.dart';
 import 'package:crm_app/screen/LeaderBoard/utils/utils.dart' as AppColors;
+import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
+import 'package:crm_app/screen/leads/ui/lead_screen.dart';
+import 'package:crm_app/shareWidgets/missed_followup.dart';
 import 'package:flutter/material.dart';
 
 class LeaderboardPage extends StatefulWidget {
@@ -47,6 +50,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
     _searchCtrl.dispose();
     super.dispose();
   }
+
 
   List<SalesPerson> _paginate(List<SalesPerson> filtered) {
     final start = (_currentPage - 1) * _kPageSize;
@@ -133,6 +137,7 @@ List<SalesPerson> get _filtered {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      
       backgroundColor: bg,
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
       floatingActionButton: _filtered.isNotEmpty
@@ -219,13 +224,13 @@ List<SalesPerson> get _filtered {
 
     return Container(
       color: surface,
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      padding: const EdgeInsets.fromLTRB(0, 12, 16, 16),
       child: Row(
         children: [
           IconButton(
             onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.arrow_back_rounded,
-                color: textPrimary, size: 24),
+            icon: const Icon(Icons.arrow_back,
+                color: textPrimary,),
           ),
           Container(
             width: 44,
@@ -1008,4 +1013,4 @@ class _PaginationBar extends StatelessWidget {
       ),
     );
   }
-}
+  }
