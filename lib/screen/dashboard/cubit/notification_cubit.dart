@@ -5,6 +5,9 @@
 // ║                      FULLY FIXED VERSION                     ║
 // ╚══════════════════════════════════════════════════════════════╝
 
+import 'dart:async';
+
+import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:crm_app/thems/app_themes.dart' show AppColors;
 import 'package:dio/dio.dart'
     show DioExceptionType, DioException, Dio, BaseOptions, InterceptorsWrapper;
@@ -216,6 +219,7 @@ class NotificationCubit extends Cubit<NotificationState> {
           handler.next(error);
         },
       ));
+      dio.interceptors.add(AuthInterceptor());
 
       _dio = dio;
 
@@ -260,7 +264,8 @@ class NotificationCubit extends Cubit<NotificationState> {
 
   // ── Called from dashboard after login ──────────────────────
   // Pass userId directly — no need to re-read from prefs.
-  Future<void> load(String userId, {bool refresh = false}) async {
+  Future<void> load(String userId,
+      {bool refresh = false, bool silent = false}) async {
     if (userId.isEmpty) {
       emit(const NotificationError('User ID is required'));
       return;
@@ -290,7 +295,7 @@ class NotificationCubit extends Cubit<NotificationState> {
     if (refresh) {
       _currentPage = 1;
       _hasMore = true;
-      emit(NotificationLoading());
+      if (!silent) emit(NotificationLoading());
     } else if (state is NotificationInitial) {
       emit(NotificationLoading());
     }
@@ -359,14 +364,14 @@ class NotificationCubit extends Cubit<NotificationState> {
   }
 
   // ✅ Safer refresh()
-  Future<void> refresh({String? userId}) async {
+  Future<void> refresh({String? userId, bool silent = false}) async {
     final id = userId ?? _currentUserId;
     if (id == null || id.isEmpty) {
       debugPrint('[NotifCubit] refresh() called but no userId available');
       return;
     }
     _currentUserId = id;
-    await load(id, refresh: true);
+    await load(id, refresh: true, silent: silent);
   }
 
   Future<void> markAsRead(String notifId) async {
@@ -915,16 +920,23 @@ class _NotificationsScreenState extends State<NotificationsScreen>
   late TabController _tabController;
   final Set<String> _selected = {};
   bool _isSelecting = false;
+  Timer? _autoRefreshTimer;
+  static const _autoRefreshInterval = Duration(seconds: 15);
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
     _loadOnOpen(); // ← add this
+    _autoRefreshTimer = Timer.periodic(_autoRefreshInterval, (_) {
+      if (_isSelecting) return;
+      _autoRefresh();
+    });
   }
 
   @override
   void dispose() {
+    _autoRefreshTimer?.cancel();
     _tabController.dispose();
     super.dispose();
   }
@@ -943,6 +955,13 @@ class _NotificationsScreenState extends State<NotificationsScreen>
     final uid = prefs.getString('user_id') ?? '';
     if (uid.isEmpty) return;
     widget.cubit.load(uid, refresh: true);
+  }
+
+  Future<void> _autoRefresh() async {
+    final prefs = await SharedPreferences.getInstance();
+    final uid = prefs.getString('user_id') ?? '';
+    if (uid.isEmpty) return;
+    widget.cubit.refresh(userId: uid, silent: true);
   }
 
   Future<void> _handleRefresh() async {

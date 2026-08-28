@@ -6,6 +6,7 @@ import 'dart:io' show Platform;
 
 import 'package:crm_app/database/local_db.dart';
 import 'package:crm_app/modals/modals.dart';
+import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:dio/dio.dart';
 import 'package:equatable/equatable.dart';
@@ -186,7 +187,8 @@ class LeadImportResult {
 class LeadCubit extends Cubit<LeadState> {
   static const _domain = 'https://crm-backend-api.techzarinfo.cloud';
   static const _base = '$_domain/api';
-
+  String? _currentUserId;
+  bool _isSalesman = false;
   late final Dio _dio;
   // ignore: unused_field
   final _db = LocalDb.instance;
@@ -215,28 +217,71 @@ class LeadCubit extends Cubit<LeadState> {
         handler.next(err);
       },
     ));
+    _dio.interceptors.add(AuthInterceptor());
     _initToken();
   }
 
  Future<void> _initToken() async {
   try {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs =
+        await SharedPreferences.getInstance();
 
-    _cachedToken = prefs.getString('token');
-    _cachedTenantSlug = prefs.getString('tenant_slug');
+    _cachedToken =
+        prefs.getString('token');
 
-    if (_cachedToken != null && _cachedToken!.isNotEmpty) {
+    _cachedTenantSlug = (
+      prefs.getString('tenant_slug') ??
+      prefs.getString('tenantSlug') ??
+      ''
+    ).trim();
+
+    if (_cachedTenantSlug == null ||
+        _cachedTenantSlug!.isEmpty) {
+      throw Exception(
+        'Tenant slug not found',
+      );
+    }
+
+    // IMPORTANT
+    // Set tenant-specific API URL
+    _dio.options.baseUrl =
+        '$_domain/'
+        '$_cachedTenantSlug/api';
+
+    if (_cachedToken != null &&
+        _cachedToken!.isNotEmpty) {
       _dio.options.headers['Authorization'] =
           'Bearer $_cachedToken';
     }
 
-    _dio.options.headers['Content-Type'] = 'application/json';
-    _dio.options.headers['Accept'] = 'application/json';
+    _dio.options.headers['Accept'] =
+        'application/json';
 
-    debugPrint("Token: $_cachedToken");
-    debugPrint("Headers: ${_dio.options.headers}");
+    debugPrint(
+      '========== DIO INITIALIZED ==========',
+    );
+
+    debugPrint(
+      'Tenant: $_cachedTenantSlug',
+    );
+
+    debugPrint(
+      'Base URL: ${_dio.options.baseUrl}',
+    );
+
+    debugPrint(
+      'Token exists: '
+      '${_cachedToken?.isNotEmpty ?? false}',
+    );
+
+    debugPrint(
+      '=====================================',
+    );
   } catch (e) {
-    debugPrint("InitToken Error: $e");
+    debugPrint(
+      'InitToken Error: $e',
+    );
+    rethrow;
   }
 }
   List<AppUser> get salesUsers => List.unmodifiable(_salesUsers);
@@ -247,131 +292,254 @@ class LeadCubit extends Cubit<LeadState> {
   // per current requirements: every filter combination (All Assignee,
   // Missed Follow-ups, both together) should show the same combined,
   // un-deduped list of normal + rejected leads.
-  Future<void> fetchAllLeads(
-      {int page = 1, int limit = 10, String? status}) async {
-    if (isClosed) return;
-    emit(LeadLoading());
-    try {
-      await _initToken();
-      await PermissionHelper.load();
+  Future<void> fetchAllLeads({
+  int page = 1,
+  int limit = 10,
+  String? status,
+}) async {
+  if (isClosed) return;
 
-      final queryParams = <String, dynamic>{
-        'page': page,
-        'limit': limit,
-        if (status != null && status != 'All Status') 'status': status,
-      };
+  emit(LeadLoading());
 
-// ✅ API CALL FIRST
-      final results = await Future.wait([
-        _dio.get('/leads/getAllLead', queryParameters: queryParams),
-        _dio.get('/users/sales').catchError((_) => Response(
-              requestOptions: RequestOptions(path: '/users/sales'),
-              data: [],
-            )),
-      ]);
+  try {
+    await _initToken();
+    await PermissionHelper.load();
 
-      final leadsRaw = results[0].data;
-      final usersRaw = results[1].data;
-      final totalCount = _extractTotalCount(leadsRaw); // ADD
-      debugPrint('=== LEADS META === totalCount=$totalCount rawKeys=${leadsRaw is Map ? leadsRaw.keys.toList() : "not a map"}'); // ADD — check console once to confirm the real key name
+    final queryParams = <String, dynamic>{
+      'page': page,
+      'limit': limit,
+      if (status != null && status != 'All Status')
+        'status': status,
+    };
 
-// ✅ PARSE DATA (no de-dup — duplicates from the API are intentionally kept)
-      final apiLeads = await compute(_parseListIsolate, leadsRaw)
-          .then((list) => list.map((e) => Lead.fromJson(e)).toList());
+    debugPrint('========== FETCH LEADS ==========');
+    debugPrint('URL: ${_dio.options.baseUrl}/leads/getAllLead');
+    debugPrint('PAGE: $page');
+    debugPrint('LIMIT: $limit');
+    debugPrint('STATUS: $status');
 
-// ✅ ALWAYS merge in rejected leads too (no de-dup against apiLeads either)
-      List<Lead> rejectedLeads = [];
-      try {
-        rejectedLeads = await getRejectedLeads();
-      } catch (e) {
-        debugPrint('=== REJECTED LEADS FETCH ERROR (fetchAllLeads) ===: $e');
-      }
+    // ----------------------------------------------------------
+    // ONLY SERVER REQUEST
+    // ----------------------------------------------------------
 
-      final combinedLeads = [...apiLeads, ...rejectedLeads];
+    final results = await Future.wait([
+      _dio.get(
+        '/leads/getAllLead',
+        queryParameters: queryParams,
+      ),
+      _dio.get('/users/sales').catchError(
+        (_) => Response(
+          requestOptions: RequestOptions(
+            path: '/users/sales',
+          ),
+          data: [],
+        ),
+      ),
+    ]);
 
-      final parsedUsers = _parseListIsolate(usersRaw);
+    final leadsRaw = results[0].data;
+    final usersRaw = results[1].data;
 
-      final prefs = await SharedPreferences.getInstance();
-      final currentUserId = prefs.getString('user_id'); // save this at login
+    debugPrint(
+      'LEADS RESPONSE: $leadsRaw',
+    );
 
-      final filteredLeads = PermissionHelper.can('users_roles')
-          ? combinedLeads
-          : combinedLeads
-              .where((l) => l.assignedToId == currentUserId)
-              .toList();
+    // ----------------------------------------------------------
+    // TOTAL COUNT
+    // ----------------------------------------------------------
 
-      for (final lead in combinedLeads) {
-        try {
-          await LocalDb.instance.upsertLeadFromApi(lead);
-        } catch (e) {
-          debugPrint('=== LEAD CACHE WRITE ERROR ===: $e');
-        }
-      }
-      _salesUsers = parsedUsers
-          .map((e) {
-            final m = Map<String, dynamic>.from(e);
-            if (!m.containsKey('id') ||
-                (m['id'] == null || m['id'].toString().isEmpty)) {
-              m['id'] = m['_id']?.toString() ?? '';
-            }
-            if (!m.containsKey('fullName') ||
-                m['fullName'] == null ||
-                m['fullName'].toString().isEmpty) {
-              final fn = m['firstName']?.toString() ?? '';
-              final ln = m['lastName']?.toString() ?? '';
-              final combined = '$fn $ln'.trim();
-              m['fullName'] = combined.isNotEmpty
-                  ? combined
-                  : (m['name']?.toString() ?? '');
-            }
-            return AppUser.fromJson(m);
-          })
-          .where((u) => u.id.isNotEmpty)
-          .toList();
+    final totalCount =
+        _extractTotalCount(leadsRaw);
 
-      if (isClosed) return;
-      emit(LeadLoaded(leads: filteredLeads, 
-      salesUsers: _salesUsers,
-       currentPage: page,
-       totalCount: totalCount,));
-    } on DioException catch (e) {
-      if (_isOfflineDio(e)) {
-        try {
-          final prefs = await SharedPreferences.getInstance();
-          final currentUserId = prefs.getString('user_id')?.trim() ?? '';
-          final currentUserName =
-              (prefs.getString('user_name') ?? '').trim().toLowerCase();
-          final localLeads = await LocalDb.instance.getLocalLeads();
-          final filteredLocalLeads = PermissionHelper.can('leads')
-              ? localLeads
-              : localLeads.where((l) {
-                  final assignedToId = (l.assignedToId ?? '').trim();
-                  final assignToRaw = l.assignTo.trim();
-                  final byAssignedToId =
-                      assignedToId.isNotEmpty && assignedToId == currentUserId;
-                  final byAssignToUserId =
-                      assignToRaw.isNotEmpty && assignToRaw == currentUserId;
-                  final byName = l.assignTo.trim().toLowerCase().isNotEmpty &&
-                      l.assignTo.trim().toLowerCase() == currentUserName;
-                  return byAssignedToId || byAssignToUserId || byName;
-                }).toList();
-          if (!isClosed) {
-            emit(
-                LeadLoaded(leads: filteredLocalLeads, salesUsers: _salesUsers));
-          }
-          return;
-        } catch (dbErr) {
-          debugPrint('=== LEADS OFFLINE LOAD ERROR ===: $dbErr');
-        }
-      }
-      if (isClosed) return;
-      emit(LeadError(_dioMsg(e)));
-    } catch (e) {
-      if (isClosed) return;
-      emit(LeadError(e.toString()));
+    debugPrint(
+      '=== LEADS META === '
+      'totalCount=$totalCount '
+      'rawKeys=${leadsRaw is Map ? leadsRaw.keys.toList() : "not map"}',
+    );
+
+    // ----------------------------------------------------------
+    // PARSE SERVER LEADS
+    // ----------------------------------------------------------
+
+    final parsedLeadMaps =
+        await compute(
+      _parseListIsolate,
+      leadsRaw,
+    );
+
+    final apiLeads = parsedLeadMaps
+        .map(
+          (e) => Lead.fromJson(e),
+        )
+        .toList();
+
+    debugPrint(
+      'SERVER LEADS RECEIVED: ${apiLeads.length}',
+    );
+
+    for (final lead in apiLeads) {
+      debugPrint(
+        '${lead.name} | '
+        'ID=${lead.id} | '
+        'assignedToId=${lead.assignedToId} | '
+        'assignTo=${lead.assignTo}',
+      );
     }
-  }
 
+    // ----------------------------------------------------------
+    // SALES USERS
+    // ----------------------------------------------------------
+
+    final parsedUsers =
+        _parseListIsolate(usersRaw);
+
+    _salesUsers = parsedUsers
+        .map((e) {
+          final m =
+              Map<String, dynamic>.from(e);
+
+          if (!m.containsKey('id') ||
+              m['id'] == null ||
+              m['id'].toString().isEmpty) {
+            m['id'] =
+                m['_id']?.toString() ?? '';
+          }
+
+          if (!m.containsKey('fullName') ||
+              m['fullName'] == null ||
+              m['fullName']
+                  .toString()
+                  .isEmpty) {
+            final fn =
+                m['firstName']?.toString() ?? '';
+
+            final ln =
+                m['lastName']?.toString() ?? '';
+
+            final combined =
+                '$fn $ln'.trim();
+
+            m['fullName'] =
+                combined.isNotEmpty
+                    ? combined
+                    : (m['name']?.toString() ?? '');
+          }
+
+          return AppUser.fromJson(m);
+        })
+        .where(
+          (u) => u.id.isNotEmpty,
+        )
+        .toList();
+
+    // ----------------------------------------------------------
+    // USER PERMISSION FILTER
+    // ----------------------------------------------------------
+
+    final prefs =
+    await SharedPreferences.getInstance();
+
+_currentUserId =
+    prefs.getString('user_id')?.trim();
+
+final hasUsersRoles =
+    PermissionHelper.can('users_roles');
+
+_isSalesman = !hasUsersRoles;
+
+debugPrint('========== ASSIGNEE CHECK ==========');
+debugPrint('CURRENT USER ID: $_currentUserId');
+debugPrint('HAS USERS ROLES: $hasUsersRoles');
+debugPrint('IS SALESMAN: $_isSalesman');
+debugPrint('====================================');
+
+List<Lead> finalLeads;
+
+if (_isSalesman &&
+    _currentUserId != null &&
+    _currentUserId!.isNotEmpty) {
+  finalLeads = apiLeads.where((lead) {
+    final assignedId =
+        lead.assignedToId?.trim();
+
+    final match =
+        assignedId == _currentUserId;
+
+    debugPrint(
+      '${lead.name} | '
+      'assigned=$assignedId | '
+      'current=$_currentUserId | '
+      'MATCH=$match',
+    );
+
+    return match;
+  }).toList();
+} else {
+  // Admin / manager
+  finalLeads = apiLeads;
+}
+
+    // ----------------------------------------------------------
+    // EMIT SERVER DATA ONLY
+    // ----------------------------------------------------------
+
+    if (isClosed) return;
+
+    emit(
+      LeadLoaded(
+        leads: finalLeads,
+        salesUsers: _salesUsers,
+        currentPage: page,
+        totalCount: totalCount,
+      ),
+    );
+  } on DioException catch (e) {
+    debugPrint(
+      '========== FETCH LEADS ERROR ==========',
+    );
+
+    debugPrint(
+      'STATUS: ${e.response?.statusCode}',
+    );
+
+    debugPrint(
+      'URL: ${e.requestOptions.uri}',
+    );
+
+    debugPrint(
+      'RESPONSE: ${e.response?.data}',
+    );
+
+    debugPrint(
+      'MESSAGE: ${e.message}',
+    );
+
+    debugPrint(
+      '=======================================',
+    );
+
+    if (isClosed) return;
+
+    // NO OFFLINE FALLBACK
+    emit(
+      LeadError(
+        _dioMsg(e),
+      ),
+    );
+  } catch (e) {
+    debugPrint(
+      'FETCH LEADS ERROR: $e',
+    );
+
+    if (isClosed) return;
+
+    emit(
+      LeadError(
+        e.toString(),
+      ),
+    );
+  }
+}
   // ── 🌐 GET /leads/getLead/:id ─────────────────────────────
   Future<Lead?> fetchLeadById(String id) async {
     try {
@@ -401,38 +569,78 @@ class LeadCubit extends Cubit<LeadState> {
   Future<String?> createLead(
   Lead lead, {
   List<MultipartFile> attachments = const [],
-   List<MultipartFile> images = const [],
+  List<MultipartFile> images = const [],
 }) async {
   try {
-    final customFieldsJson = lead.customFields
-        .map(
-          (field) => {
-            if (field.id.isNotEmpty) '_id': field.id,
-            'cardTitle': field.cardTitle,
-            'name': field.name,
-            'type': field.type,
-            'options': field.options,
-            'value': field.value,
-          },
-        )
-        .toList();
+    await _initToken();
+
+    // ==========================================================
+    // CURRENT USER
+    // ==========================================================
+
+    final prefs = await SharedPreferences.getInstance();
+
+    final currentUserId =
+        prefs.getString('user_id')?.trim();
+
+    final isSalesman =
+        !PermissionHelper.can('users_roles');
+
+    debugPrint(
+      '========== CREATE LEAD USER =========='
+    );
+    debugPrint('Current User ID: $currentUserId');
+    debugPrint('Is Salesman: $isSalesman');
+    debugPrint('UI Assigned ID: ${lead.assignedToId}');
+    debugPrint(
+      '======================================',
+    );
+
+    // ==========================================================
+    // CUSTOM FIELDS
+    // ==========================================================
+
+    final customFieldsJson =
+        lead.customFields.map(
+      (field) {
+        return {
+          if (field.id.isNotEmpty)
+            '_id': field.id,
+          'cardTitle': field.cardTitle,
+          'name': field.name,
+          'type': field.type,
+          'options': field.options,
+          'value': field.value,
+        };
+      },
+    ).toList();
 
     final formData = FormData();
 
     formData.fields.add(
       MapEntry('leadName', lead.name),
     );
+
     formData.fields.add(
       MapEntry('phoneNumber', lead.phone),
     );
+
     formData.fields.add(
-      MapEntry('alternatePhoneNumber', lead.alternatePhoneNumber),
+      MapEntry(
+        'alternatePhoneNumber',
+        lead.alternatePhoneNumber,
+      ),
     );
+
     formData.fields.add(
       MapEntry('email', lead.email),
     );
+
     formData.fields.add(
-      MapEntry('alternateEmail', lead.alternateEmail),
+      MapEntry(
+        'alternateEmail',
+        lead.alternateEmail,
+      ),
     );
 
     formData.fields.add(
@@ -441,23 +649,40 @@ class LeadCubit extends Cubit<LeadState> {
 
     if (lead.sourceId != null) {
       formData.fields.add(
-        MapEntry('sourceId', lead.sourceId!),
+        MapEntry(
+          'sourceId',
+          lead.sourceId!,
+        ),
       );
     }
 
     formData.fields.add(
-      MapEntry('companyName', lead.companyName),
+      MapEntry(
+        'companyName',
+        lead.companyName,
+      ),
     );
+
     formData.fields.add(
-      MapEntry('industry', lead.industry),
+      MapEntry(
+        'industry',
+        lead.industry,
+      ),
     );
+
     formData.fields.add(
-      MapEntry('requirement', lead.requirement),
+      MapEntry(
+        'requirement',
+        lead.requirement,
+      ),
     );
 
     if (lead.clientType.isNotEmpty) {
       formData.fields.add(
-        MapEntry('clientType', lead.clientType),
+        MapEntry(
+          'clientType',
+          lead.clientType,
+        ),
       );
     }
 
@@ -471,22 +696,58 @@ class LeadCubit extends Cubit<LeadState> {
     }
 
     formData.fields.add(
-      MapEntry('status', lead.status),
+      MapEntry(
+        'status',
+        lead.status,
+      ),
     );
 
     formData.fields.add(
-      MapEntry('notes', lead.notes),
+      MapEntry(
+        'notes',
+        lead.notes,
+      ),
     );
 
-    if (lead.assignedToId != null &&
-        lead.assignedToId!.isNotEmpty) {
+    // ==========================================================
+    // ASSIGN TO
+    // ==========================================================
+
+    String? assignToId;
+
+    // SALESMAN
+    // Always assign the newly created lead to himself.
+    if (isSalesman &&
+        currentUserId != null &&
+        currentUserId.isNotEmpty) {
+      assignToId = currentUserId;
+    }
+
+    // ADMIN / MANAGER
+    // Use the assignee selected in the UI.
+    else if (lead.assignedToId != null &&
+        lead.assignedToId!.trim().isNotEmpty) {
+      assignToId =
+          lead.assignedToId!.trim();
+    }
+
+    if (assignToId != null &&
+        assignToId.isNotEmpty) {
       formData.fields.add(
         MapEntry(
           'assignTo',
-          lead.assignedToId!,
+          assignToId,
         ),
       );
     }
+
+    debugPrint(
+      'FINAL assignTo SENT TO API: $assignToId',
+    );
+
+    // ==========================================================
+    // FOLLOW UP
+    // ==========================================================
 
     if (lead.followUpDate != null) {
       formData.fields.add(
@@ -499,20 +760,43 @@ class LeadCubit extends Cubit<LeadState> {
       );
     }
 
+    // ==========================================================
+    // ADDRESS
+    // ==========================================================
+
     formData.fields.add(
-      MapEntry('address', lead.address),
+      MapEntry(
+        'address',
+        lead.address,
+      ),
     );
+
     formData.fields.add(
-      MapEntry('city', lead.city),
+      MapEntry(
+        'city',
+        lead.city,
+      ),
     );
+
     formData.fields.add(
-      MapEntry('state', lead.state),
+      MapEntry(
+        'state',
+        lead.state,
+      ),
     );
+
     formData.fields.add(
-      MapEntry('pincode', lead.pincode),
+      MapEntry(
+        'pincode',
+        lead.pincode,
+      ),
     );
+
     formData.fields.add(
-      MapEntry('country', lead.country),
+      MapEntry(
+        'country',
+        lead.country,
+      ),
     );
 
     if (lead.latitude != null) {
@@ -533,7 +817,10 @@ class LeadCubit extends Cubit<LeadState> {
       );
     }
 
-    // Existing attachments
+    // ==========================================================
+    // ATTACHMENTS
+    // ==========================================================
+
     formData.fields.add(
       MapEntry(
         'existingAttachments',
@@ -541,7 +828,6 @@ class LeadCubit extends Cubit<LeadState> {
       ),
     );
 
-    // ⭐ IMPORTANT
     formData.fields.add(
       MapEntry(
         'customFields',
@@ -549,7 +835,6 @@ class LeadCubit extends Cubit<LeadState> {
       ),
     );
 
-    // New attachments
     for (final file in attachments) {
       formData.files.add(
         MapEntry(
@@ -558,36 +843,72 @@ class LeadCubit extends Cubit<LeadState> {
         ),
       );
     }
-    for (final file in images) {
-  formData.files.add(
-    MapEntry(
-      'images',
-      file,
-    ),
-  );
-}
 
-    debugPrint('========== CREATE FORMDATA ==========');
+    for (final file in images) {
+      formData.files.add(
+        MapEntry(
+          'images',
+          file,
+        ),
+      );
+    }
+
+    // ==========================================================
+    // DEBUG
+    // ==========================================================
+
     debugPrint(
-      'customFields: ${jsonEncode(customFieldsJson)}',
+      '========== CREATE FORMDATA =========='
     );
-    debugPrint('attachments: ${attachments.length}');
-debugPrint('images: ${images.length}');
-    debugPrint('====================================');
+
+    debugPrint(
+      'assignTo: $assignToId',
+    );
+
+    debugPrint(
+      'customFields: '
+      '${jsonEncode(customFieldsJson)}',
+    );
+
+    debugPrint(
+      'attachments: ${attachments.length}',
+    );
+
+    debugPrint(
+      'images: ${images.length}',
+    );
+
+    debugPrint(
+      '===================================='
+    );
+
+    // ==========================================================
+    // API
+    // ==========================================================
 
     final res = await _dio.post(
       '/leads/create',
       data: formData,
     );
 
-    debugPrint('========== CREATE RESPONSE ==========');
-    debugPrint(res.data.toString());
-    debugPrint('====================================');
+    debugPrint(
+      '========== CREATE RESPONSE =========='
+    );
 
-    final saved = _extractLead(res.data) ?? lead;
+    debugPrint(
+      res.data.toString(),
+    );
+
+    debugPrint(
+      '===================================='
+    );
+
+    final saved =
+        _extractLead(res.data) ?? lead;
 
     try {
-      await LocalDb.instance.upsertLeadFromApi(saved);
+      await LocalDb.instance
+          .upsertLeadFromApi(saved);
     } catch (e) {
       debugPrint(
         '=== LEAD CACHE CREATE WRITE ERROR ===: $e',
@@ -595,13 +916,17 @@ debugPrint('images: ${images.length}');
     }
 
     if (!isClosed) {
-      final current = state is LeadLoaded
-          ? (state as LeadLoaded).leads
-          : <Lead>[];
+      final current =
+          state is LeadLoaded
+              ? (state as LeadLoaded).leads
+              : <Lead>[];
 
       emit(
         LeadActionSuccess(
-          leads: [saved, ...current],
+          leads: [
+            saved,
+            ...current,
+          ],
           salesUsers: _salesUsers,
           message: 'Lead created ✓',
         ),
@@ -613,16 +938,21 @@ debugPrint('images: ${images.length}');
     if (_isOfflineDio(e)) {
       try {
         final saved =
-            await LocalDb.instance.insertLead(lead);
+            await LocalDb.instance
+                .insertLead(lead);
 
         if (!isClosed) {
-          final current = state is LeadLoaded
-              ? (state as LeadLoaded).leads
-              : <Lead>[];
+          final current =
+              state is LeadLoaded
+                  ? (state as LeadLoaded).leads
+                  : <Lead>[];
 
           emit(
             LeadActionSuccess(
-              leads: [saved, ...current],
+              leads: [
+                saved,
+                ...current,
+              ],
               salesUsers: _salesUsers,
               message: 'Lead saved offline',
             ),
@@ -649,6 +979,7 @@ debugPrint('images: ${images.length}');
   List<MultipartFile> attachments = const [],
   List<MultipartFile> images = const [],
   List<String>? retainedAttachmentPaths,
+  List<String>? retainedImagePaths,
 }) async {
   try {
     final payload = _buildPayload(
@@ -656,6 +987,7 @@ debugPrint('images: ${images.length}');
       attachments: attachments,
       retainedAttachmentPaths: retainedAttachmentPaths,
       images: images,
+      retainedImagePaths: retainedImagePaths,
     );
 
     // DEBUG BEFORE API REQUEST
@@ -1069,6 +1401,273 @@ Future<String?> rejectLead(String id, String reason) async {
       return 'Failed to convert lead: $e';
     }
   }
+
+//============================
+// leads for notes
+//=============================
+Future<String?> addNote(
+  String id,
+  String note,
+) async {
+  final trimmed = note.trim();
+
+  if (trimmed.isEmpty) {
+    return 'Note cannot be empty';
+  }
+
+  try {
+    await _initToken();
+
+    final tenantSlug = _cachedTenantSlug;
+
+    if (tenantSlug == null || tenantSlug.isEmpty) {
+      return 'Missing tenant slug — please log in again';
+    }
+
+    final payload = {
+  'text': trimmed,
+};
+    final res = await _dio.post(
+      '$_domain/$tenantSlug/api/leads/$id/notes',
+      data: payload,
+    );
+
+    debugPrint('========== NORMAL NOTE REQUEST ==========');
+debugPrint('URL: $_domain/$tenantSlug/api/leads/$id/notes');
+debugPrint('PAYLOAD: $payload');
+debugPrint('TEXT LENGTH: ${trimmed.length}');
+debugPrint('=========================================');
+
+
+    final updated = _extractLead(res.data);
+
+    if (updated == null) {
+      return 'Note added, but response could not be parsed';
+    }
+
+    // Update Cubit state only.
+    // No LocalDb integration for now.
+    if (!isClosed && state is LeadLoaded) {
+      final newList = (state as LeadLoaded)
+          .leads
+          .map(
+            (l) => l.id == id ? updated : l,
+          )
+          .toList();
+
+      final message =
+          res.data is Map<String, dynamic>
+              ? (res.data['message'] as String? ?? 'Note added')
+              : 'Note added';
+
+      emit(
+        LeadActionSuccess(
+          leads: newList,
+          salesUsers: _salesUsers,
+          message: message,
+        ),
+      );
+    }
+
+    return null;
+  } on DioException catch (e) {
+    debugPrint('=== ADD NOTE API ERROR ===');
+    debugPrint(e.response?.data.toString());
+    debugPrint('==========================');
+
+    return _dioMsg(e);
+  } catch (e) {
+    return 'Failed to add note: $e';
+  }
+}
+
+// ===================
+// delete note
+// ===================
+Future<String?> deleteNote(
+  String leadId,
+  String noteId,
+) async {
+  try {
+    await _initToken();
+
+    final tenantSlug = _cachedTenantSlug;
+
+    if (tenantSlug == null || tenantSlug.isEmpty) {
+      return 'Missing tenant slug — please log in again';
+    }
+
+    debugPrint('========== DELETE NOTE ==========');
+    debugPrint('Lead ID: $leadId');
+    debugPrint('Note ID: $noteId');
+
+    final res = await _dio.delete(
+      '$_domain/$tenantSlug/api/leads/$leadId/notes/$noteId',
+    );
+
+    debugPrint('DELETE NOTE RESPONSE: ${res.data}');
+    debugPrint('================================');
+
+    final updated = _extractLead(res.data);
+
+    if (updated != null && !isClosed && state is LeadLoaded) {
+      final newList = (state as LeadLoaded)
+          .leads
+          .map(
+            (l) => l.id == leadId ? updated : l,
+          )
+          .toList();
+
+      emit(
+        LeadActionSuccess(
+          leads: newList,
+          salesUsers: _salesUsers,
+          message: 'Note deleted successfully',
+        ),
+      );
+    }
+
+    return null;
+  } on DioException catch (e) {
+    debugPrint('=== DELETE NOTE API ERROR ===');
+    debugPrint(e.response?.data.toString());
+    debugPrint('=============================');
+
+    return _dioMsg(e);
+  } catch (e) {
+    return 'Failed to delete note: $e';
+  }
+}
+
+// ===============
+// update note
+// ================
+Future<String?> updateNote(
+  String leadId,
+  String noteId,
+  String text,
+) async {
+  final trimmed = text.trim();
+
+  if (trimmed.isEmpty) {
+    return 'Note cannot be empty';
+  }
+
+  try {
+    await _initToken();
+
+    final tenantSlug = _cachedTenantSlug;
+
+    if (tenantSlug == null || tenantSlug.isEmpty) {
+      return 'Missing tenant slug — please log in again';
+    }
+
+    debugPrint('========== UPDATE NOTE ==========');
+    debugPrint('Lead ID: $leadId');
+    debugPrint('Note ID: $noteId');
+    debugPrint('Text: $trimmed');
+
+    final res = await _dio.patch(
+      '$_domain/$tenantSlug/api/leads/$leadId/notes/$noteId',
+      data: {
+        'text': trimmed,
+      },
+    );
+
+    debugPrint('UPDATE NOTE RESPONSE: ${res.data}');
+    debugPrint('================================');
+
+    final updated = _extractLead(res.data);
+
+    if (updated == null) {
+      return 'Note updated, but response could not be parsed';
+    }
+
+    // No LocalDb integration.
+    if (!isClosed && state is LeadLoaded) {
+      final newList = (state as LeadLoaded)
+          .leads
+          .map(
+            (l) => l.id == leadId ? updated : l,
+          )
+          .toList();
+
+      emit(
+        LeadActionSuccess(
+          leads: newList,
+          salesUsers: _salesUsers,
+          message: 'Note updated successfully',
+        ),
+      );
+    }
+
+    return null;
+  } on DioException catch (e) {
+    debugPrint('=== UPDATE NOTE API ERROR ===');
+    debugPrint(e.response?.data.toString());
+    debugPrint('=============================');
+
+    return _dioMsg(e);
+  } catch (e) {
+    return 'Failed to update note: $e';
+  }
+}
+// ================
+// fetch Activity
+// ================
+
+Future<List<LeadActivity>> fetchLeadActivity(
+  String leadId,
+) async {
+  try {
+    await _initToken();
+
+    final tenantSlug = _cachedTenantSlug;
+
+    if (tenantSlug == null || tenantSlug.isEmpty) {
+      debugPrint('Missing tenant slug');
+      return [];
+    }
+
+    final res = await _dio.get(
+      '$_domain/$tenantSlug/api/leads/$leadId/activity',
+    );
+
+    debugPrint('========== LEAD ACTIVITY ==========');
+    debugPrint(res.data.toString());
+    debugPrint('===================================');
+
+    final data = res.data;
+
+    if (data is! Map) {
+      return [];
+    }
+
+    final activityData = data['activity'];
+
+    if (activityData is! List) {
+      return [];
+    }
+
+    return activityData
+        .whereType<Map>()
+        .map(
+          (item) => LeadActivity.fromJson(
+            Map<String, dynamic>.from(item),
+          ),
+        )
+        .toList();
+  } on DioException catch (e) {
+    debugPrint('=== FETCH ACTIVITY ERROR ===');
+    debugPrint(e.response?.data.toString());
+    debugPrint('============================');
+    return [];
+  } catch (e) {
+    debugPrint('Failed to fetch lead activity: $e');
+    return [];
+  }
+}
+
 
 //============================
 //get All Leads for pop-up
@@ -1632,6 +2231,7 @@ Future<String> _saveXlsxToDownloads(String fileName, List<int> bytes) async {
   List<MultipartFile> attachments = const [],
   List<MultipartFile> images = const [],
   List<String>? retainedAttachmentPaths,
+  List<String>? retainedImagePaths,
 }) {
   final map = <String, dynamic>{
     'leadName': lead.name,
@@ -1678,7 +2278,8 @@ Future<String> _saveXlsxToDownloads(String fileName, List<int> bytes) async {
 
     'existingAttachments':
         retainedAttachmentPaths ?? [],
-
+  'existingImages':
+    retainedImagePaths ?? [],
     // IMPORTANT
     'customFields': jsonEncode(
   lead.customFields.map((field) {

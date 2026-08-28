@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:crm_app/services/location_service.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -58,7 +59,7 @@ class LocationApiService {
         return;
       }
 
-      final dio = Dio();
+      final dio = Dio()..interceptors.add(AuthInterceptor());
 
       final response = await dio.post(
         "https://crm-backend-api.techzarinfo.cloud/$slug/api/location/update",

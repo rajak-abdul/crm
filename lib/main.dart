@@ -1,12 +1,22 @@
+import 'dart:async';
+
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:crm_app/screen/dashboard/cubit/notification_cubit.dart';
-import 'package:crm_app/screen/dashboard/ui/dashboard_followup_page.ui.dart';
 import 'package:crm_app/screen/dashboard/ui/dashboard_screen.dart'
     show DashboardScreen;
 import 'package:crm_app/screen/deals/ui/deal_screen.dart' show DealsScreen;
+import 'package:crm_app/screen/document/deal/cubit/deal_doc_cubit.dart'
+    show DealDocCubit;
+import 'package:crm_app/screen/document/deal/ui/deal_doc_ui.dart'
+    show DealDocumentScreen;
+import 'package:crm_app/screen/document/lead/cubit/leads_document_cubit.dart'
+    show LeadsCubit;
+import 'package:crm_app/screen/document/lead/ui/lead_document_ui.dart'
+    show LeadsDoc;
 import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
 import 'package:crm_app/screen/leads/ui/lead_screen.dart' show LeadsScreen, LeadDetailSheet;
 import 'package:crm_app/screen/login/ui/login_screen.dart' show LoginScreen;
+import 'package:crm_app/screen/meeting/UI/meeting.dart' show MeetingsScreen;
 import 'package:crm_app/screen/profile/ui/profile_screen.dart'
     show ProfileScreen;
 import 'package:crm_app/screen/invoice/ui/invoice_screen.dart';
@@ -18,6 +28,7 @@ import 'package:crm_app/shareWidgets/notifcation_service.dart';
 import 'package:crm_app/thems/app_themes.dart' show AppColors, AppTheme;
 import 'package:crm_app/utils/missed_followup_timer.dart';
 import 'package:crm_app/utils/permission_helper.dart';
+import 'package:dio/dio.dart' show Dio;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -73,12 +84,45 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell>
     with SingleTickerProviderStateMixin {
+      
+
+      // in _MainShellState
+String? _pendingSelectedLeadId;
+
+Future<void> _openLeadFromNotification(String leadId) async {
+  debugPrint('========== VIEW LEAD START ==========');
+  debugPrint('LEAD ID: $leadId');
+  debugPrint('CURRENT IDX BEFORE: $_idx');
+  debugPrint('CURRENT PENDING BEFORE: $_pendingSelectedLeadId');
+
+  if (!mounted) {
+    debugPrint('MAIN SHELL NOT MOUNTED');
+    return;
+  }
+
+  setState(() {
+    _pendingSelectedLeadId = leadId;
+    _idx = 1;
+  });
+
+  debugPrint('IDX AFTER SETSTATE: $_idx');
+  debugPrint('PENDING AFTER SETSTATE: $_pendingSelectedLeadId');
+
+  await WidgetsBinding.instance.endOfFrame;
+
+  debugPrint('========== END OF FRAME ==========');
+  debugPrint('IDX AFTER FRAME: $_idx');
+  debugPrint('PENDING AFTER FRAME: $_pendingSelectedLeadId');
+}
   int _idx = 0;
   late final Connectivity _connectivity;
   AnimationController? _ctrl;
   Animation<double>? _anim;
   static const _drawerFraction = 0.72;
   late final NotificationCubit _notifCubit;
+  late final LeadCubit _leadCubit;
+  Timer? _notifAutoRefreshTimer;
+  static const _notifAutoRefreshInterval = Duration(seconds: 15);
   static const String _missedFollowupLastShownKey =
     'global_missed_followup_last_shown';
   bool _isOpen = false;
@@ -110,7 +154,7 @@ class _MainShellState extends State<MainShell>
     }
 
     // Get missed follow-ups from your existing Cubit.
-    final leads = await LeadCubit().getMissedFollowups();
+    final leads = await _leadCubit.getMissedFollowups();
 
     if (!mounted || leads.isEmpty) {
       return;
@@ -127,20 +171,19 @@ class _MainShellState extends State<MainShell>
     showDialog(
   context: context,
   barrierDismissible: false,
-  builder: (_) => MissedFollowupDialog(
+  builder: (dialogContext) => MissedFollowupDialog(
     missedLeads: leads,
-    onViewLead: (lead) {
-      Navigator.pop(context);
+    onViewLead: (lead) async {
+  Navigator.of(dialogContext).pop();
 
-      showModalBottomSheet(
-        context: context,
-        isScrollControlled: true,
-        backgroundColor: Colors.transparent,
-        builder: (_) => LeadDetailSheet(
-          lead: lead,
-        ),
-      );
-    },
+  await Future.delayed(
+    const Duration(milliseconds: 300),
+  );
+
+  if (!mounted) return;
+
+  await _openLeadFromNotification(lead.id);
+},
   ),
 );
   } catch (e) {
@@ -149,16 +192,13 @@ class _MainShellState extends State<MainShell>
     );
   }
 }
-  final List<Widget> _screens = const [
-    DashboardScreen(),
-    LeadsScreen(showBackButton: false),
-    DealsScreen(initialTab: 0, showBackButton: false),
-  ];
+// Inside build(), right before you use `_screens` in the IndexedStack:
 
   @override
   void initState() {
     super.initState();
     _notifCubit = NotificationCubit();
+    _leadCubit = LeadCubit();
     _ctrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 300));
     _anim = CurvedAnimation(parent: _ctrl!, curve: Curves.easeOutCubic);
@@ -172,20 +212,24 @@ class _MainShellState extends State<MainShell>
         _isOffline = isOffline;
         if (isOffline) _idx = 0;
       });
-      if (isOffline) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          Navigator.of(context, rootNavigator: true)
-              .popUntil((route) => route.isFirst);
-        });
-      }
+      
     });
 
     _loadUserInfo();
     _loadNotifications();
+    _notifAutoRefreshTimer = Timer.periodic(
+        _notifAutoRefreshInterval, (_) => _autoRefreshNotifications());
     MissedFollowupTimer.instance.start(
   onTick: _checkMissedFollowups,
 );
+  }
+
+  Future<void> _autoRefreshNotifications() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    final uid = prefs.getString('user_id') ?? '';
+    if (uid.isEmpty) return;
+    _notifCubit.refresh(userId: uid, silent: true);
   }
 
   Future<void> _checkInternet() async {
@@ -238,21 +282,36 @@ void _close() {
 
 @override
 void dispose() {
+  debugPrint('DIAG MainShellState DISPOSED\n${StackTrace.current}');
+  debugPrint('DIAG MainShellState DISPOSED');
+debugPrintStack();
+  _notifAutoRefreshTimer?.cancel();
   _ctrl?.dispose();
   _notifCubit.close();
+  _leadCubit.close();
   super.dispose();
 }
   void _toggle() => _isOpen ? _close() : _open();
 
-  Route _slide(Widget page) => PageRouteBuilder(
-        pageBuilder: (_, __, ___) => page,
-        transitionsBuilder: (_, a, __, child) => SlideTransition(
-          position: Tween(begin: const Offset(1, 0), end: Offset.zero)
-              .animate(CurvedAnimation(parent: a, curve: Curves.easeOutCubic)),
-          child: child,
+Route _slide(Widget page) => PageRouteBuilder(
+  opaque: true,
+  barrierColor: AppColors.background,
+  pageBuilder: (_, __, ___) => page,
+  transitionsBuilder: (_, animation, __, child) {
+    return SlideTransition(
+      position: Tween<Offset>(
+        begin: const Offset(1, 0),
+        end: Offset.zero,
+      ).animate(
+        CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
         ),
-      );
-
+      ),
+      child: child,
+    );
+  },
+);
   void _onDrawerNav(String route, {int tab = 0}) async {
     final result = await _connectivity.checkConnectivity();
     if (result == ConnectivityResult.none && route != '/dashboard') {
@@ -274,6 +333,27 @@ void dispose() {
       } else if (route == '/invoice') {
         Navigator.of(context, rootNavigator: true)
             .push(_slide(const InvoiceScreen()));
+      } else if (route == '/meetings') {
+        Navigator.of(context, rootNavigator: true)
+            .push(_slide(const MeetingsScreen()));
+      } else if (route == '/lead-documents') {
+        Navigator.of(context, rootNavigator: true).push(
+          _slide(
+            BlocProvider(
+              create: (_) => LeadsCubit(),
+              child: const LeadsDoc(),
+            ),
+          ),
+        );
+      } else if (route == '/deal-documents') {
+        Navigator.of(context, rootNavigator: true).push(
+          _slide(
+            BlocProvider(
+              create: (_) => DealDocCubit(Dio()),
+              child: const DealDocumentScreen(),
+            ),
+          ),
+        );
       } else if (route == '/LeaderboardPage') {
         Navigator.of(context, rootNavigator: true)
             .push(_slide(LeaderboardPage(authToken: _authToken)));
@@ -334,8 +414,23 @@ void dispose() {
 
   @override
   Widget build(BuildContext context) {
+      debugPrint('MainShell.build() called, _idx=$_idx, pending=$_pendingSelectedLeadId');
+
     final sw = MediaQuery.of(context).size.width;
     final dw = sw * _drawerFraction;
+      final screens = [
+    const DashboardScreen(),
+    LeadsScreen(
+      key: const PageStorageKey('leads_tab'), // ADD THIS
+      showBackButton: false,
+      selectedLeadId: _pendingSelectedLeadId,
+      onLeadOpened: () => setState(() => _pendingSelectedLeadId = null),
+    ),
+    const DealsScreen(
+      initialTab: 0,
+      showBackButton: false,
+    ),
+  ];
 
     return BlocProvider.value(
   value: _notifCubit,
@@ -402,7 +497,7 @@ void dispose() {
   },
 ),
                         Expanded(
-                          child: IndexedStack(index: _idx, children: _screens),
+                          child: IndexedStack(index: _idx, children: screens),
                         ),
                       ],
                     ),

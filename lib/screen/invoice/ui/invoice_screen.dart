@@ -10,8 +10,6 @@ import 'package:crm_app/screen/invoice/cubit/invoice_cubit.dart';
 import 'package:crm_app/screen/invoice/modal/invoice_model.dart';
 import 'package:crm_app/screen/invoice/ui/dealOption.dart';
 import 'package:crm_app/screen/invoice/ui/invoice_details_screen.dart';
-import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
-import 'package:crm_app/screen/leads/ui/lead_screen.dart';
 import 'package:crm_app/services/invoice_excel_exporter.dart';
 import 'package:crm_app/shareWidgets/missed_followup.dart';
 import 'package:crm_app/shareWidgets/share_widgets.dart'
@@ -22,6 +20,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:equatable/equatable.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ══════════════════════════════════════════════════════════════
 // STATE
@@ -795,6 +794,20 @@ SizedBox(
 // ══════════════════════════════════════════════════════════════
 // FINANCIAL SUMMARY CAROUSEL
 // ══════════════════════════════════════════════════════════════
+
+/// Symbol for a currency code, matching the switches already used
+/// elsewhere in this file for per-invoice amounts (_fmtTotal, _fmtBalance,
+/// _fmtAmountPaid) so the carousel's totals render consistently with them.
+String _currencySymbolFor(String currency) => switch (currency.toUpperCase()) {
+      'USD' => '\$',
+      'EUR' => '€',
+      'GBP' => '£',
+      'JPY' || 'CNY' => '¥',
+      'AED' => 'د.إ ',
+      'SAR' => '﷼ ',
+      _ => '₹',
+    };
+
 class _SummaryCarousel extends StatefulWidget {
   final List<Invoice> invoices;
   final List<Invoice> pendingInvoices;
@@ -811,6 +824,34 @@ class _SummaryCarousel extends StatefulWidget {
 class _SummaryCarouselState extends State<_SummaryCarousel> {
   int _page = 0;
 
+  /// Account's preferred currency, e.g. "USD" — cached locally by UserCubit
+  /// from GET /users/me. inv.totalInInr is already backend-converted into
+  /// this currency, so no client-side re-conversion is needed here.
+  String _currency = 'INR';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCurrency();
+  }
+
+  Future<void> _loadCurrency() async {
+    // Show the cached value immediately (if any) so there's no flash of
+    // "INR", then refresh it live from /users/me in case it was stale or
+    // never cached (e.g. Invoice screen opened before the Dashboard tab's
+    // UserCubit had a chance to fetch and cache it).
+    final prefs = await SharedPreferences.getInstance();
+    final cached = prefs.getString('currency')?.trim();
+    if (cached != null && cached.isNotEmpty && mounted) {
+      setState(() => _currency = cached.toUpperCase());
+    }
+
+    final live = await context.read<InvoiceCubit>().getAccountCurrency();
+    if (mounted && live.isNotEmpty) {
+      setState(() => _currency = live);
+    }
+  }
+
   Map<String, dynamic> get _summary {
     int totalCount = widget.invoices.length;
     int paidCount = 0;
@@ -823,28 +864,28 @@ class _SummaryCarouselState extends State<_SummaryCarousel> {
     double partialValue = 0;
 
     for (final inv in widget.invoices) {
-      final inrValue = inv.totalInInr;
-      totalValue += inrValue;
+  final preferredValue = inv.totalInInr;
 
-      switch (inv.status) {
-        case 'Paid':
-          paidCount++;
-          paidValue += inrValue;
-          break;
+  totalValue += preferredValue;
 
-        case 'Partially Paid':
-          partialCount++;
-          partialValue += inv.amountPaid;
-          break;
+  switch (inv.status) {
+    case 'Paid':
+      paidCount++;
+      paidValue += preferredValue;
+      break;
 
-        case 'Unpaid':
-        default:
-          unpaidCount++;
-          unpaidValue += inrValue;
-          break;
-      }
-    }
-    return {
+    case 'Partially Paid':
+      partialCount++;
+      partialValue += preferredValue;
+      break;
+
+    case 'Unpaid':
+    default:
+      unpaidCount++;
+      unpaidValue += preferredValue;
+      break;
+  }
+}    return {
       'totalCount': totalCount,
       'paidCount': paidCount,
       'partialCount': partialCount,
@@ -897,7 +938,8 @@ class _SummaryCarouselState extends State<_SummaryCarousel> {
           child: PageView.builder(
             itemCount: slides.length,
             onPageChanged: (i) => setState(() => _page = i),
-            itemBuilder: (_, i) => _SummaryCard(slide: slides[i]),
+            itemBuilder: (_, i) =>
+                _SummaryCard(slide: slides[i], currency: _currency),
           ),
         ),
         if (slides.length > 1)
@@ -927,7 +969,8 @@ class _SummaryCarouselState extends State<_SummaryCarousel> {
 
 class _SummaryCard extends StatelessWidget {
   final Map<String, dynamic> slide;
-  const _SummaryCard({required this.slide});
+  final String currency;
+  const _SummaryCard({required this.slide, required this.currency});
 
   String _fmt(double v) {
     return NumberFormat.currency(
@@ -995,8 +1038,8 @@ class _SummaryCard extends StatelessWidget {
               ),
               Expanded(
                 child: _metric(
-                  'Total (INR)',
-                  '₹${_fmt(value)}',
+                  'Total ($currency)',
+                  '${_currencySymbolFor(currency)}${_fmt(value)}',
                   alignStart: false,
                 ),
               ),
@@ -1079,20 +1122,58 @@ class _InvoiceCard extends StatefulWidget {
 class _InvoiceCardState extends State<_InvoiceCard> {
   bool _expanded = false;
 
+  /// Account's preferred currency from GET /users/me — same source and
+  /// cache the summary carousel uses. Unlike the per-invoice
+  /// `preferredCurrency` field (which the backend only reliably sets at
+  /// payment time), this always reflects the account's actual setting.
+  String _accountCurrency = 'INR';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAccountCurrency();
+  }
+
+  Future<void> _loadAccountCurrency() async {
+    final prefs = await SharedPreferences.getInstance();
+    final cached = prefs.getString('currency')?.trim();
+    if (cached != null && cached.isNotEmpty && mounted) {
+      setState(() => _accountCurrency = cached.toUpperCase());
+    }
+
+    final live = await context.read<InvoiceCubit>().getAccountCurrency();
+    if (mounted && live.isNotEmpty) {
+      setState(() => _accountCurrency = live.toUpperCase());
+    }
+  }
+
   Color get _statusColor => switch (widget.invoice.status) {
         'Paid' => AppColors.success,
-        'Unpaid' => AppColors.warning,
-        'Partially Paid' => AppColors.accent,
+        'Unpaid' => AppColors.danger,
+        'Partially Paid' => AppColors.purple,
         _ => AppColors.textSecondary,
+      };
+
+  String get _statusLabel => switch (widget.invoice.status) {
+        'Paid' => 'Fully Paid',
+        _ => widget.invoice.status,
       };
 String _fmtAmountPaid(Invoice inv) {
   final sym = switch (inv.currency.toUpperCase()) {
+
     'USD' => '\$',
     'EUR' => '€',
+    'INR' => '₹',
     'GBP' => '£',
-    'JPY' || 'CNY' => '¥',
-    'AED' => 'د.إ ',
-    'SAR' => '﷼ ',
+    'JPY' => '¥',
+    'AUD' => 'A\$',
+    'CAD' => 'C\$',
+    'CHF' => 'CHF',
+    'MYR' => 'RM',
+    'AED' => 'د.إ',
+    'SGD' => 'S\$',
+    'ZAR' => 'R',
+    'SAR' => '﷼',
     _ => '₹',
   };
 
@@ -1102,9 +1183,42 @@ String _fmtAmountPaid(Invoice inv) {
     decimalDigits: 2,
   ).format(inv.amountPaid);
 }
+
+/// Headline card amount: Paid/Partially Paid show what's actually been
+/// paid so far (amountPaid); Unpaid has nothing paid yet, so it falls
+/// back to the invoice's own total (price - discount + tax) instead.
+String _fmtBigAmount(Invoice inv) {
+  if (inv.status == 'Paid' || inv.status == 'Partially Paid') {
+    return _fmtAmountPaid(inv);
+  }
+  final sym = switch (inv.currency.toUpperCase()) {
+    'USD' => '\$',
+    'EUR' => '€',
+    'INR' => '₹',
+    'GBP' => '£',
+    'JPY' => '¥',
+    'AUD' => 'A\$',
+    'CAD' => 'C\$',
+    'CHF' => 'CHF',
+    'MYR' => 'RM',
+    'AED' => 'د.إ',
+    'SGD' => 'S\$',
+    'ZAR' => 'R',
+    'SAR' => '﷼',
+    _ => '₹',
+  };
+  final total =
+      (inv.price - inv.discountAmount + inv.taxAmount).clamp(0, double.infinity);
+  return NumberFormat.currency(
+    locale: 'en_IN',
+    symbol: sym,
+    decimalDigits: 2,
+  ).format(total);
+}
+
   IconData get _statusIcon => switch (widget.invoice.status) {
         'Paid' => Icons.check_circle_outline,
-        'Unpaid' => Icons.access_time_outlined,
+        'Unpaid' => Icons.cancel_outlined,
         'Partially Paid' => Icons.hourglass_bottom_outlined,
         _ => Icons.receipt_outlined,
       };
@@ -1127,10 +1241,7 @@ final discount = CurrencyService.convert(
   inv.currency,
 );
 
-final total = CurrencyService.convert(
-  inv.total,
-  inv.currency,
-);
+final total = inv.totalPreferredCurrencyValue;
 
 final paid = CurrencyService.convert(
   inv.amountPaid,
@@ -1166,63 +1277,83 @@ final due = CurrencyService.convert(
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.all(14),
-              child: Row(
+              padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppColors.primaryLight,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      inv.invoiceNo,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.primary,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.primaryLight,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          inv.invoiceNo,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.primary,
+                          ),
+                        ),
                       ),
-                    ),
+                      const Spacer(),
+                      _StatusBadge(
+                        status: _statusLabel,
+                        color: _statusColor,
+                        icon: _statusIcon,
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
+                  const SizedBox(height: 10),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Text(
                           inv.dealName.isNotEmpty ? inv.dealName : 'No Deal',
                           style: const TextStyle(
-                            fontSize: 13,
+                            fontSize: 15,
                             fontWeight: FontWeight.w700,
                             color: AppColors.textPrimary,
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        Text(
-                          inv.assignTo.isNotEmpty ? inv.assignTo : 'Unassigned',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: AppColors.textSecondary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
+                      ),
+                      const SizedBox(width: 8),
                       Text(
-                        _fmtTotal(inv),
+                        _fmtBigAmount(inv),
                         style: const TextStyle(
-                          fontSize: 15,
+                          fontSize: 16,
                           fontWeight: FontWeight.w800,
                           color: AppColors.textPrimary,
                         ),
                       ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          inv.assignTo.isNotEmpty
+                              ? inv.assignTo
+                              : 'Unassigned',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textSecondary,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
                       Text(
                         _fmtInrExact(inv),
                         style: const TextStyle(
@@ -1231,65 +1362,54 @@ final due = CurrencyService.convert(
                           color: AppColors.textSecondary,
                         ),
                       ),
-//                       if (inv.status == 'Partially Paid') ...[
-//   const SizedBox(height: 2),
-//   Text(
-//     'Paid: ${_fmtAmountPaid(inv)}',
-//     style: const TextStyle(
-//       fontSize: 11,
-//       fontWeight: FontWeight.w700,
-//       color: AppColors.success,
-//     ),
-//   ),
-// ],
-                      if (inv.status == 'Paid') ...[
-  const SizedBox(height: 2),
-  Text(
-    'Paid: ${_fmtAmountPaid(inv)}',
-    style: const TextStyle(
-      fontSize: 11,
-      fontWeight: FontWeight.w700,
-      color: AppColors.success,
-    ),
-  ),
-] else if (inv.status == 'Partially Paid') ...[
-  const SizedBox(height: 2),
-  Text(
-    'Paid: ${_fmtAmountPaid(inv)}',
-    style: const TextStyle(
-      fontSize: 11,
-      fontWeight: FontWeight.w700,
-      color: AppColors.success,
-    ),
-  ),
-  const SizedBox(height: 2),
-  Text(
-    'Due: ${_fmtBalance(inv)}',
-    style: const TextStyle(
-      fontSize: 11,
-      fontWeight: FontWeight.w700,
-      color: AppColors.danger,
-    ),
-  ),
-] else if (inv.balanceDue > 0) ...[
-  const SizedBox(height: 2),
-  Text(
-    'Due: ${_fmtBalance(inv)}',
-    style: const TextStyle(
-      fontSize: 11,
-      fontWeight: FontWeight.w700,
-      color: AppColors.danger,
-    ),
-  ),
-],
-                      const SizedBox(height: 3),
-                      _StatusBadge(
-                        status: inv.status,
-                        color: _statusColor,
-                        icon: _statusIcon,
-                      ),
                     ],
                   ),
+                  if (inv.status != 'Paid') ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.divider,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          const Text(
+                            'Payment Details',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                          const Spacer(),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              if (inv.status == 'Partially Paid') ...[
+                                _PaymentLine(
+                                  label: 'Paid',
+                                  value: _fmtAmountPaid(inv),
+                                  color: AppColors.success,
+                                ),
+                                const SizedBox(height: 3),
+                              ],
+                              _PaymentLine(
+                                label: 'Due',
+                                value: _fmtBalance(inv),
+                                color: AppColors.danger,
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -1369,7 +1489,6 @@ final due = CurrencyService.convert(
                       ),
                       child: Row(
                         children: [
-                          if (widget.invoice.status != 'Paid') ...[
   Expanded(
     child: TextButton.icon(
       onPressed: widget.onEdit,
@@ -1389,7 +1508,6 @@ final due = CurrencyService.convert(
     height: 36,
     color: AppColors.divider,
   ),
-],
                           
                           Expanded(
                             child: TextButton.icon(
@@ -1465,48 +1583,67 @@ final due = CurrencyService.convert(
     return DateFormat('dd MMM yyyy').format(dt.toLocal());
   }
 
-  String _fmtTotal(Invoice inv) {
-    final sym = switch (inv.currency.toUpperCase()) {
-      'USD' => '\$',
-      'EUR' => '€',
-      'GBP' => '£',
-      'JPY' || 'CNY' => '¥',
-      'AED' => 'د.إ ',
-      'SAR' => '﷼ ',
+  String _fmtInrExact(Invoice inv) {
+    final sym = switch (_accountCurrency.toUpperCase()) {
+    'USD' => '\$',
+    'EUR' => '€',
+    'INR' => '₹',
+    'GBP' => '£',
+    'JPY' => '¥',
+    'AUD' => 'A\$',
+    'CAD' => 'C\$',
+    'CHF' => 'CHF',
+    'MYR' => 'RM',
+    'AED' => 'د.إ',
+    'SGD' => 'S\$',
+    'ZAR' => 'R',
+    'SAR' => '﷼',
       _ => '₹',
     };
-
+    // hasBackendConversion gates on exchangeRate/inrAmount, which the
+    // backend only sets at payment time — Unpaid invoices never get them
+    // even though totalPreferredCurrencyValue (used below) is already
+    // populated for every status. So Unpaid is shown the same way
+    // Paid/Partially Paid already are, keyed off the total alone.
+    if (inv.totalPreferredCurrencyValue <= 0 && !inv.hasBackendConversion) {
+      return '$sym—';
+    }
     return NumberFormat.currency(
       locale: 'en_IN',
       symbol: sym,
-      decimalDigits: 2,
-    ).format(inv.total);
-  }
-
-  String _fmtInrExact(Invoice inv) {
-    if (!inv.hasBackendConversion) return '₹—';
-    return NumberFormat.currency(
-      locale: 'en_IN',
-      symbol: '₹',
       decimalDigits: 2,
     ).format(inv.totalInInr);
   }
 
   String _fmtBalance(Invoice inv) {
     final sym = switch (inv.currency.toUpperCase()) {
-      'USD' => '\$',
-      'EUR' => '€',
-      'GBP' => '£',
-      'JPY' || 'CNY' => '¥',
-      'AED' => 'د.إ ',
-      'SAR' => '﷼ ',
+    'USD' => '\$',
+    'EUR' => '€',
+    'INR' => '₹',
+    'GBP' => '£',
+    'JPY' => '¥',
+    'AUD' => 'A\$',
+    'CAD' => 'C\$',
+    'CHF' => 'CHF',
+    'MYR' => 'RM',
+    'AED' => 'د.إ',
+    'SGD' => 'S\$',
+    'ZAR' => 'R',
+    'SAR' => '﷼',
       _ => '₹',
     };
+    // inv.balanceDue mixes currencies (totalPreferredCurrencyValue minus
+    // an original-currency amountPaid) — due is the invoice's own value
+    // (price, adjusted for tax/discount) minus what's been paid, both in
+    // the invoice's original currency, matching the symbol above.
+    final originalTotal =
+        (inv.price - inv.discountAmount + inv.taxAmount).clamp(0, double.infinity);
+    final due = (originalTotal - inv.amountPaid).clamp(0, double.infinity);
     return NumberFormat.currency(
       locale: 'en_IN',
       symbol: sym,
       decimalDigits: 2,
-    ).format(inv.balanceDue);
+    ).format(due);
   }
 }
 
@@ -1521,7 +1658,7 @@ class _StatusBadge extends StatelessWidget {
   });
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
           color: color.withOpacity(0.1),
           borderRadius: BorderRadius.circular(20),
@@ -1532,15 +1669,49 @@ class _StatusBadge extends StatelessWidget {
             Icon(icon, size: 11, color: color),
             const SizedBox(width: 3),
             Text(
-              status,
+              status.toUpperCase(),
               style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w700,
+                letterSpacing: 0.2,
                 color: color,
               ),
             ),
           ],
         ),
+      );
+}
+
+class _PaymentLine extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+  const _PaymentLine({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+  @override
+  Widget build(BuildContext context) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '$label: ',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textSecondary,
+            ),
+          ),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: color,
+            ),
+          ),
+        ],
       );
 }
 
@@ -1628,7 +1799,6 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
   final _clientTaxIdCtrl = TextEditingController();
   final _poNumberCtrl = TextEditingController();
   final _clientStateCtrl = TextEditingController();
-  final _countryCtrl = TextEditingController();
 
   // Custom fields
   final List<_CustomFieldRow> _customFields = [];
@@ -1744,7 +1914,6 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
       _clientTaxIdCtrl.text = e.clientTaxId;
       _poNumberCtrl.text = e.poNumber;
       _clientStateCtrl.text = e.clientState;
-      _countryCtrl.text = e.dealCountry;
 
       // Custom fields — API shape is {label, type, value}, type lowercase
       for (final raw in e.customFields) {
@@ -1805,7 +1974,6 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
     _clientTaxIdCtrl.dispose();
     _poNumberCtrl.dispose();
     _clientStateCtrl.dispose();
-    _countryCtrl.dispose();
     for (final f in _customFields) {
       f.dispose();
     }
@@ -1832,11 +2000,8 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
   double get _total =>
       (_price - _discountAmount + _taxAmount).clamp(0, double.infinity);
 
-  String _fmtCur(double v) {
-    if (v >= 100000) return '${(v / 100000).toStringAsFixed(2)}L';
-    if (v >= 1000) return '${(v / 1000).toStringAsFixed(2)}K';
-    return v.toStringAsFixed(2);
-  }
+  String _fmtCur(double v) =>
+      NumberFormat('#,##,##0.00', 'en_IN').format(v);
 
   Future<void> _save() async {
   setState(() {
@@ -1880,7 +2045,6 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
       'clientTaxId': _clientTaxIdCtrl.text.trim(),
       'poNumber': _poNumberCtrl.text.trim(),
       'clientState': _clientStateCtrl.text.trim(),
-      'dealCountry': _countryCtrl.text.trim(),
       'customFields': _customFields
           .where((f) => f.nameCtrl.text.trim().isNotEmpty)
           .map((f) => {
@@ -2057,13 +2221,14 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
           ],
         ),
       ),
-                  const _SecHeader(
-                    title: 'Basic Information',
-                    icon: Icons.info_outline,
-                  ),
-                  const SizedBox(height: 14),
-
-                  const _FieldLabel('Assign To (Sales User)', required: true),
+                  _InvoiceAccordion(
+  title: 'Basic Information',
+  icon: Icons.info_outline,
+  initiallyExpanded: true,
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+                       const _FieldLabel('Assign To (Sales User)', required: true),
                   const SizedBox(height: 6),
 
                   Container(
@@ -2078,7 +2243,7 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
                             : AppColors.border,
                       ),
                     ),
-                    child: DropdownButtonHideUnderline(
+                    child:  DropdownButtonHideUnderline(
                       child: DropdownButton<SalesUser>(
                         value: _selectedUser,
                         isExpanded: true,
@@ -2124,7 +2289,7 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
                   const SizedBox(height: 14),
 
                   if (_assignToError != null)
-                    Padding(
+                     Padding(
                       padding: const EdgeInsets.only(top: 3, left: 4),
                       child: Text(
                         _assignToError!,
@@ -2139,14 +2304,14 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
                   const SizedBox(height: 14),
 
                   // ── Rest of the form is identical to original ──
-                  Row(
+                   Row(
                     children: [
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const _FieldLabel('Issue Date', required: true),
-                            const SizedBox(height: 6),
+                            const  SizedBox(height: 6),
                             _DateTile(
                               value:
                                   _issueDate.isEmpty ? 'Pick date' : _issueDate,
@@ -2154,7 +2319,7 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
                             ),
                             if (_issueDateError != null)
                               Padding(
-                                padding: const EdgeInsets.only(top: 6, left: 4),
+                                padding: const  EdgeInsets.only(top: 6, left: 4),
                                 child: Text(
                                   _issueDateError!,
                                   style: const TextStyle(
@@ -2167,23 +2332,23 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
                           ],
                         ),
                       ),
-                      const SizedBox(width: 12),
+                    const   SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const _FieldLabel('Due Date', required: true),
-                            const SizedBox(height: 6),
+                           const  _FieldLabel('Due Date', required: true),
+                           const  SizedBox(height: 6),
                             _DateTile(
                               value: _dueDate.isEmpty ? 'Pick date' : _dueDate,
                               onTap: () => _pickDate(false),
                             ),
                             if (_dueDateError != null)
                               Padding(
-                                padding: const EdgeInsets.only(top: 6, left: 4),
+                                padding:const  EdgeInsets.only(top: 6, left: 4),
                                 child: Text(
                                   _dueDateError!,
-                                  style: const TextStyle(
+                                  style:const  TextStyle(
                                     color: AppColors.danger,
                                     fontSize: 12,
                                     fontWeight: FontWeight.w500,
@@ -2199,7 +2364,7 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
 
                   const _FieldLabel('Status'),
                   const SizedBox(height: 6),
-                  _FullDrop(
+                   _FullDrop(
                     value: _status,
                     items: _statuses,
                     icon: Icons.info_outline,
@@ -2210,87 +2375,392 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
                   const _FieldLabel('Amount Received'),
                   const SizedBox(height: 6),
                   _tfNum(_amountPaidCtrl, '0.00'),
-                  const SizedBox(height: 22),
+    ],
+  ),
+),
 
-                  Row(children: [
-                    Expanded(
-                        child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                          const _FieldLabel('Tax Type'),
-                          const SizedBox(height: 6),
-                          _FullDrop(
-                              value: _taxType,
-                              items: _taxTypes,
-                              icon: Icons.percent_outlined,
-                              onChanged: (v) => setState(() {
-                                    _taxType = v;
-                                    _taxValCtrl.clear();
-                                  })),
-                        ])),
-                    if (_taxType != 'Zero Tax') ...[
-                      const SizedBox(width: 12),
-                      Expanded(
-                          child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                            _FieldLabel(_taxType == 'Percentage'
-                                ? 'Tax %'
-                                : 'Tax Amount'),
-                            const SizedBox(height: 6),
-                            _tfNum(_taxValCtrl, '0'),
-                          ])),
-                    ],
-                  ]),
-                  const SizedBox(height: 14),
 
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const _FieldLabel('Discount Type'),
-                            const SizedBox(height: 6),
-                            _FullDrop(
-                              value: _discountType,
-                              items: _discountTypes,
-                              icon: Icons.local_offer_outlined,
-                              onChanged: (v) => setState(() {
-                                _discountType = v;
-                                _disValCtrl.clear();
+                  const SizedBox(height: 8),
+
+                  _InvoiceAccordion(
+                    title: 'Deal Information',
+                    icon: Icons.handshake_outlined,
+                    initiallyExpanded: true,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const _FieldLabel(
+                          'Select Deal',
+                          required: true,
+                        ),
+                        const SizedBox(height: 6),
+
+                        Container(
+                          height: 48,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.98),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: _dealError != null
+                                  ? AppColors.danger
+                                  : AppColors.border,
+                            ),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<DealOption>(
+                              value: _dealForDropdown,
+                              isExpanded: true,
+                              isDense: true,
+                              hint: const Row(
+                                children: [
+                                  Icon(
+                                    Icons.handshake_outlined,
+                                    size: 14,
+                                    color: AppColors.textHint,
+                                  ),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'Select Deal',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: AppColors.textHint,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              icon: const Icon(
+                                Icons.keyboard_arrow_down_rounded,
+                                size: 18,
+                                color: AppColors.textSecondary,
+                              ),
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: AppColors.textPrimary,
+                              ),
+                              items: widget.deals
+                                  .map(
+                                    (d) => DropdownMenuItem<DealOption>(
+                                      value: d,
+                                      child: Row(
+                                        children: [
+                                          const Icon(
+                                            Icons.handshake_outlined,
+                                            size: 14,
+                                            color: AppColors.textHint,
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              d.name,
+                                              overflow:
+                                                  TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  )
+                                  .toList(),
+                              onChanged: (d) => setState(() {
+                                _selectedDeal = d;
+
+                                if (d != null) {
+                                  _priceCtrl.text =
+                                      d.value.toStringAsFixed(2);
+
+                                  _currency =
+                                      _sanitizeCurrency(d.currency);
+                                }
                               }),
+                            ),
+                          ),
+                        ),
+
+                        const SizedBox(height: 14),
+
+                        if (_selectedDeal != null) ...[
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: AppColors.surface,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: AppColors.border,
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Deal Value: '
+                                  '${_symFor(_sanitizeCurrency(
+                                    _selectedDeal?.currency ?? 'INR',
+                                  ))}'
+                                  '${(_selectedDeal?.value ?? 0)
+                                      .toStringAsFixed(2)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Requirement: '
+                                  '${(_selectedDeal?.requirement ?? '')
+                                          .trim()
+                                          .isEmpty
+                                      ? '-'
+                                      : (_selectedDeal?.requirement ?? '')}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.textSecondary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                        ],
+
+                        const _FieldLabel(
+                          'Price',
+                          required: true,
+                        ),
+                        const SizedBox(height: 6),
+
+                        Row(
+                          children: [
+                            Container(
+                              width: 90,
+                              height: 48,
+                              alignment: Alignment.centerLeft,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
+                              decoration: BoxDecoration(
+                                color: AppColors.background,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: AppColors.border,
+                                ),
+                              ),
+                              child: Text(
+                                _currency,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: _tfNum(
+                                _priceCtrl,
+                                '0.00',
+                                onChanged: (_) => setState(() {}),
+                              ),
                             ),
                           ],
                         ),
-                      ),
-                      if (_discountType != 'No Discount') ...[
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              _FieldLabel(
-                                _discountType == 'Percentage'
-                                    ? 'Discount %'
-                                    : 'Discount Amt',
-                              ),
-                              const SizedBox(height: 6),
-                              _tfNum(_disValCtrl, '0'),
-                            ],
-                          ),
-                        ),
+
+                        const SizedBox(height: 18),
                       ],
-                    ],
+                    ),
                   ),
-                  const SizedBox(height: 22),
 
-                  const _SecHeader(
-                    title: 'Billing Details',
-                    icon: Icons.description_outlined,
+                  const SizedBox(height: 8),
+
+                  // Financial Details comes NEXT
+
+_InvoiceAccordion(
+  title: 'Financial Details',
+  icon: Icons.account_balance_wallet_outlined,
+  initiallyExpanded: true,
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const _FieldLabel('Tax Type'),
+                const SizedBox(height: 6),
+                _FullDrop(
+                  value: _taxType,
+                  items: _taxTypes,
+                  icon: Icons.percent_outlined,
+                  onChanged: (v) {
+  if (v == null) return;
+
+  setState(() {
+    _taxType = v;
+  });
+},
+                ),
+              ],
+            ),
+          ),
+
+          if (_taxType != 'Zero Tax') ...[
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _FieldLabel(
+                    _taxType == 'Percentage'
+                        ? 'Tax %'
+                        : 'Tax Amount',
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 6),
+                  _taxType == 'Percentage'
+                      ? _gstRateDropdown()
+                      : _tfNum(_taxValCtrl, '0'),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
 
+      const SizedBox(height: 14),
+
+      Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const _FieldLabel('Discount Type'),
+                const SizedBox(height: 6),
+                _FullDrop(
+                  value: _discountType,
+                  items: _discountTypes,
+                  icon: Icons.local_offer_outlined,
+                  onChanged: (v) {
+  if (v == null) return;
+
+  setState(() {
+    _discountType = v;
+  });
+},
+                ),
+              ],
+            ),
+          ),
+
+          if (_discountType != 'No Discount') ...[
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _FieldLabel(
+                    _discountType == 'Percentage'
+                        ? 'Discount %'
+                        : 'Discount Amt',
+                  ),
+                  const SizedBox(height: 6),
+                  _tfNum(_disValCtrl, '0'),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+
+      const SizedBox(height: 18),
+
+      Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.background,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Subtotal',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  Text(
+                    '${_symFor(_currency)}${_fmtCur(_price)}',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (_discountType != 'No Discount')
+              _TotalRow(
+                label: 'Discount',
+                value: _discountAmount,
+                currency: _currency,
+                isAdd: false,
+              ),
+            if (_taxType != 'Zero Tax')
+              _TotalRow(
+                label: 'Tax',
+                value: _taxAmount,
+                currency: _currency,
+                isAdd: true,
+              ),
+            const Divider(height: 18),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Total',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                Text(
+                  '${_symFor(_currency)}${_fmtCur(_total)}',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.primary,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ],
+  ),
+),
+
+                  _InvoiceAccordion(
+  title: 'Billing Details',
+  icon: Icons.description_outlined,
+  initiallyExpanded: false,
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
                   const _FieldLabel('Billing Address'),
                   const SizedBox(height: 6),
                   TextField(
@@ -2387,459 +2857,169 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
 
                   const _FieldLabel('Client State (GST)'),
                   const SizedBox(height: 6),
-                  TextField(
-                    controller: _clientStateCtrl,
-                    style: const TextStyle(fontSize: 14),
-                    decoration: InputDecoration(
-                      hintText: "Defaults to the deal's state",
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 13,
-                      ),
-                      filled: true,
-                      fillColor: AppColors.surface,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: AppColors.border),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: AppColors.border),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                          color: AppColors.primary,
-                          width: 1.5,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-
-                  const _FieldLabel('Country'),
-                  const SizedBox(height: 6),
-                  TextField(
-                    controller: _countryCtrl,
-                    style: const TextStyle(fontSize: 14),
-                    decoration: InputDecoration(
-                      hintText: "Defaults to the deal's country",
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 13,
-                      ),
-                      filled: true,
-                      fillColor: AppColors.surface,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: AppColors.border),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: AppColors.border),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                          color: AppColors.primary,
-                          width: 1.5,
-                        ),
-                      ),
-                    ),
-                  ),
+                  _clientStateDropdown(),
 
                   const SizedBox(height: 22),
 
-                  const _SecHeader(
-                    title: 'Deal Information',
-                    icon: Icons.handshake_outlined,
-                  ),
-                  const SizedBox(height: 14),
 
-                  const _FieldLabel('Select Deal', required: true),
-                  const SizedBox(height: 6),
-                  Container(
-                    height: 48,
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.98),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: _dealError != null
-                            ? AppColors.danger
-                            : AppColors.border,
-                      ),
-                    ),
-                    child: DropdownButtonHideUnderline(
-                      child: DropdownButton<DealOption>(
-                        value: _dealForDropdown,
-                        isExpanded: true,
-                        isDense: true,
-                        hint: const Row(
-                          children: [
-                            Icon(
-                              Icons.handshake_outlined,
-                              size: 14,
-                              color: AppColors.textHint,
-                            ),
-                            SizedBox(width: 8),
-                            Text(
-                              'Select Deal',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: AppColors.textHint,
+
+                  const SizedBox(height: 24),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 8),
+
+            _InvoiceAccordion(
+              title: 'Custom Fields',
+              icon: Icons.dashboard_customize_outlined,
+              initiallyExpanded: false,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final row in _customFields) ...[
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          flex: 3,
+                          child: TextField(
+                            controller: row.nameCtrl,
+                            style: const TextStyle(fontSize: 14),
+                            decoration: InputDecoration(
+                              hintText: 'Field name',
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 13,
                               ),
-                            ),
-                          ],
-                        ),
-                        icon: const Icon(
-                          Icons.keyboard_arrow_down_rounded,
-                          size: 18,
-                          color: AppColors.textSecondary,
-                        ),
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: AppColors.textPrimary,
-                        ),
-                        items: widget.deals
-                            .map(
-                              (d) => DropdownMenuItem(
-                                value: d,
-                                child: Row(
-                                  children: [
-                                    const Icon(
-                                      Icons.handshake_outlined,
-                                      size: 14,
-                                      color: AppColors.textHint,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        d.name,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                  ],
+                              filled: true,
+                              fillColor: AppColors.surface,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide:
+                                    const BorderSide(color: AppColors.border),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide:
+                                    const BorderSide(color: AppColors.border),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(
+                                  color: AppColors.primary,
+                                  width: 1.5,
                                 ),
                               ),
-                            )
-                            .toList(),
-                        onChanged: (d) => setState(() {
-                          _selectedDeal = d;
-                          if (d != null) {
-                            // Auto-fill from selected deal value, then user can edit manually.
-                            print("DEAL VALUE => ${d.value}");
-                            print("DEAL CURRENCY => ${d.currency}");
-
-                            _priceCtrl.text = d.value.toStringAsFixed(2);
-                            _currency = _sanitizeCurrency(d.currency);
-                            if (_countryCtrl.text.trim().isEmpty) {
-                              _countryCtrl.text = d.country;
-                            }
-
-                            print("PRICE CTRL => ${_priceCtrl.text}");
-                          }
-                        }),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-
-                  if (_selectedDeal != null) ...[
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppColors.border),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Deal Value: ${_symFor(_sanitizeCurrency(_selectedDeal?.currency ?? 'INR'))}${(_selectedDeal?.value ?? 0).toStringAsFixed(2)}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.textPrimary,
                             ),
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Requirement: ${(_selectedDeal?.requirement ?? '').trim().isEmpty ? '-' : (_selectedDeal?.requirement ?? '')}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                  ],
-
-                  const _FieldLabel('Price', required: true),
-                  const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      Container(
-                        width: 90,
-                        height: 48,
-                        alignment: Alignment.centerLeft,
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        decoration: BoxDecoration(
-                          color: AppColors.background,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: AppColors.border),
                         ),
-                        child: Text(
-                          _currency,
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textSecondary,
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: 2,
+                          child: _FullDrop(
+                            value: row.type,
+                            items: _customFieldTypes,
+                            icon: Icons.text_fields,
+                            onChanged: (v) => setState(() => row.type = v),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: _tfNum(
-                          _priceCtrl,
-                          '0.00',
-                          onChanged: (_) => setState(() {}),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: 3,
+                          child: row.type == 'Number'
+                              ? _tfNum(row.valueCtrl, 'Value')
+                              : TextField(
+                                  controller: row.valueCtrl,
+                                  style: const TextStyle(fontSize: 14),
+                                  decoration: InputDecoration(
+                                    hintText: row.type == 'Date'
+                                        ? 'dd MMM yyyy'
+                                        : 'Value',
+                                    contentPadding:
+                                        const EdgeInsets.symmetric(
+                                      horizontal: 14,
+                                      vertical: 13,
+                                    ),
+                                    filled: true,
+                                    fillColor: AppColors.surface,
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: const BorderSide(
+                                          color: AppColors.border),
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: const BorderSide(
+                                          color: AppColors.border),
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: const BorderSide(
+                                        color: AppColors.primary,
+                                        width: 1.5,
+                                      ),
+                                    ),
+                                  ),
+                                ),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 18),
-
-                  Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: AppColors.surface,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppColors.border),
-                    ),
-                    child: Column(
-                      children: [
-                        _TotalRow(
-                          label: 'Price',
-                          value: _price,
-                          currency: _currency,
-                        ),
-                        if (_taxAmount != 0)
-                          _TotalRow(
-                            label: 'Tax',
-                            value: _taxAmount,
-                            currency: _currency,
-                            isAdd: true,
-                          ),
-                        if (_discountAmount != 0)
-                          _TotalRow(
-                            label: 'Discount',
-                            value: _discountAmount,
-                            currency: _currency,
-                            isAdd: false,
-                          ),
-                        const Divider(height: 16, color: AppColors.divider),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              'Total',
-                              style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w800,
-                                color: AppColors.textPrimary,
-                              ),
-                            ),
-                            Text(
-                              '${_symFor(_currency)}${_fmtCur(_total)}',
-                              style: const TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w800,
-                                color: AppColors.primary,
-                              ),
-                            ),
-                          ],
+                        IconButton(
+                          onPressed: () => setState(() {
+                            row.dispose();
+                            _customFields.remove(row);
+                          }),
+                          icon: const Icon(Icons.close, size: 18),
+                          color: AppColors.textSecondary,
                         ),
                       ],
                     ),
+                    const SizedBox(height: 10),
+                  ],
+                  TextButton.icon(
+                    onPressed: () =>
+                        setState(() => _customFields.add(_CustomFieldRow())),
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('Add Custom Field'),
                   ),
-                  const SizedBox(height: 22),
+                ],
+              ),
+            ),
 
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const _SecHeader(
-                        title: 'Custom Fields',
-                        icon: Icons.dashboard_customize_outlined,
-                      ),
-                      TextButton.icon(
-                        onPressed: () =>
-                            setState(() => _customFields.add(_CustomFieldRow())),
-                        icon: const Icon(Icons.add, size: 15),
-                        label: const Text(
-                          'Add field',
-                          style: TextStyle(fontSize: 12),
-                        ),
-                      ),
-                    ],
+            const SizedBox(height: 8),
+
+            _InvoiceAccordion(
+              title: 'Notes',
+              icon: Icons.notes_outlined,
+              initiallyExpanded: false,
+              child: TextField(
+                controller: _notesCtrl,
+                maxLines: 4,
+                style: const TextStyle(fontSize: 14),
+                decoration: InputDecoration(
+                  hintText: 'Add any additional notes for this invoice',
+                  contentPadding: const EdgeInsets.all(14),
+                  filled: true,
+                  fillColor: AppColors.surface,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AppColors.border),
                   ),
-                  const SizedBox(height: 10),
-                  for (var i = 0; i < _customFields.length; i++)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            flex: 3,
-                            child: TextField(
-                              controller: _customFields[i].nameCtrl,
-                              style: const TextStyle(fontSize: 13),
-                              decoration: InputDecoration(
-                                hintText: 'Field name',
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 11,
-                                ),
-                                filled: true,
-                                fillColor: AppColors.surface,
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide:
-                                      const BorderSide(color: AppColors.border),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide:
-                                      const BorderSide(color: AppColors.border),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide:
-                                      const BorderSide(color: AppColors.primary),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            flex: 2,
-                            child: Container(
-                              height: 40,
-                              padding: const EdgeInsets.symmetric(horizontal: 10),
-                              decoration: BoxDecoration(
-                                color: AppColors.surface,
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: AppColors.border),
-                              ),
-                              child: DropdownButtonHideUnderline(
-                                child: DropdownButton<String>(
-                                  value: _customFields[i].type,
-                                  isExpanded: true,
-                                  isDense: true,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: AppColors.textPrimary,
-                                  ),
-                                  items: _customFieldTypes
-                                      .map((t) => DropdownMenuItem(
-                                            value: t,
-                                            child: Text(t),
-                                          ))
-                                      .toList(),
-                                  onChanged: (v) => setState(() {
-                                    if (v != null) _customFields[i].type = v;
-                                  }),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            flex: 3,
-                            child: TextField(
-                              controller: _customFields[i].valueCtrl,
-                              style: const TextStyle(fontSize: 13),
-                              keyboardType: _customFields[i].type == 'Number'
-                                  ? TextInputType.number
-                                  : TextInputType.text,
-                              decoration: InputDecoration(
-                                hintText: 'Value',
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 11,
-                                ),
-                                filled: true,
-                                fillColor: AppColors.surface,
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide:
-                                      const BorderSide(color: AppColors.border),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide:
-                                      const BorderSide(color: AppColors.border),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide:
-                                      const BorderSide(color: AppColors.primary),
-                                ),
-                              ),
-                            ),
-                          ),
-                          IconButton(
-                            onPressed: () => setState(() {
-                              _customFields[i].dispose();
-                              _customFields.removeAt(i);
-                            }),
-                            icon: const Icon(
-                              Icons.delete_outline,
-                              size: 18,
-                              color: AppColors.danger,
-                            ),
-                            padding: EdgeInsets.zero,
-                            constraints:
-                                const BoxConstraints(minWidth: 32, minHeight: 32),
-                          ),
-                        ],
-                      ),
-                    ),
-                  const SizedBox(height: 10),
-
-                  const _FieldLabel('Notes'),
-                  const SizedBox(height: 6),
-                  TextField(
-                    controller: _notesCtrl,
-                    maxLines: 4,
-                    style: const TextStyle(fontSize: 14),
-                    decoration: InputDecoration(
-                      hintText: 'Any additional notes or payment instructions…',
-                      contentPadding: const EdgeInsets.all(14),
-                      filled: true,
-                      fillColor: AppColors.surface,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: AppColors.border),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: AppColors.border),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                          color: AppColors.primary,
-                          width: 1.5,
-                        ),
-                      ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AppColors.border),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(
+                      color: AppColors.primary,
+                      width: 1.5,
                     ),
                   ),
-                  const SizedBox(height: 28),
+                ),
+              ),
+            ),
 
+            const SizedBox(height: 14),
                   Row(
                     children: [
                       Expanded(
@@ -2873,14 +3053,19 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 24),
-                ],
-              ),
-            ),
+
           ],
         ),
       ),
+      ],
+  ),
+),
+
+                  
+
     );
+
+
   }
 
   Widget _tfNum(
@@ -2913,6 +3098,156 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
           ),
         ),
       );
+
+  static const _gstRates = [0.0, 5.0, 12.0, 18.0, 28.0];
+
+  /// GST-slab picker shown for Tax Type = Percentage, in place of the
+  /// free-text field. Preserves any pre-existing non-standard rate
+  /// (e.g. legacy data) as an extra selectable entry rather than
+  /// silently resetting it.
+  Widget _gstRateDropdown() {
+    final currentVal = double.tryParse(_taxValCtrl.text.trim()) ?? 0;
+    final matchesPreset =
+        _gstRates.any((p) => (p - currentVal).abs() < 0.001);
+    final selected = matchesPreset
+        ? currentVal.toStringAsFixed(0)
+        : currentVal.toStringAsFixed(currentVal % 1 == 0 ? 0 : 2);
+    final items = [
+      ..._gstRates.map((p) => p.toStringAsFixed(0)),
+      if (!matchesPreset) selected,
+    ];
+
+    return Container(
+      height: 48,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: selected,
+          isExpanded: true,
+          isDense: true,
+          icon: const Icon(
+            Icons.keyboard_arrow_down_rounded,
+            size: 18,
+            color: AppColors.textSecondary,
+          ),
+          style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
+          items: items
+              .map((r) => DropdownMenuItem(
+                    value: r,
+                    child: Text('$r% GST Rate', overflow: TextOverflow.ellipsis),
+                  ))
+              .toList(),
+          onChanged: (v) {
+            if (v == null) return;
+            setState(() => _taxValCtrl.text = v);
+          },
+        ),
+      ),
+    );
+  }
+
+  static const _indianStates = [
+  // 28 States
+  'Andhra Pradesh',
+  'Arunachal Pradesh',
+  'Assam',
+  'Bihar',
+  'Chhattisgarh',
+  'Goa',
+  'Gujarat',
+  'Haryana',
+  'Himachal Pradesh',
+  'Jharkhand',
+  'Karnataka',
+  'Kerala',
+  'Madhya Pradesh',
+  'Maharashtra',
+  'Manipur',
+  'Meghalaya',
+  'Mizoram',
+  'Nagaland',
+  'Odisha',
+  'Punjab',
+  'Rajasthan',
+  'Sikkim',
+  'Tamil Nadu',
+  'Telangana',
+  'Tripura',
+  'Uttar Pradesh',
+  'Uttarakhand',
+  'West Bengal',
+
+  // 8 Union Territories
+  'Andaman and Nicobar Islands',
+  'Chandigarh',
+  'Dadra and Nagar Haveli and Daman and Diu',
+  'Delhi',
+  'Jammu and Kashmir',
+  'Ladakh',
+  'Lakshadweep',
+  'Puducherry',
+];
+  /// State picker for "Client State (GST)". Empty ⇒ no selection (shows
+  /// the hint). A non-empty existing value (e.g. "Madhya Pradesh") is
+  /// mapped onto the matching list entry; a legacy value that doesn't
+  /// match any state is kept as an extra selectable entry instead of
+  /// being silently dropped.
+  Widget _clientStateDropdown() {
+    final current = _clientStateCtrl.text.trim();
+    final matched = _indianStates.firstWhere(
+      (s) => s.toLowerCase() == current.toLowerCase(),
+      orElse: () => '',
+    );
+    final items = [
+      ..._indianStates,
+      if (current.isNotEmpty && matched.isEmpty) current,
+    ];
+    final selected = matched.isNotEmpty
+        ? matched
+        : (current.isEmpty ? null : current);
+
+    return Container(
+      height: 48,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: selected,
+          isExpanded: true,
+          isDense: true,
+          hint: const Text(
+            'Select state',
+            style: TextStyle(fontSize: 14, color: AppColors.textHint),
+          ),
+          icon: const Icon(
+            Icons.keyboard_arrow_down_rounded,
+            size: 18,
+            color: AppColors.textSecondary,
+          ),
+          style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
+          items: items
+              .map((s) => DropdownMenuItem(
+                    value: s,
+                    child: Text(s, overflow: TextOverflow.ellipsis),
+                  ))
+              .toList(),
+          onChanged: (v) {
+            if (v == null) return;
+            setState(() => _clientStateCtrl.text = v);
+          },
+        ),
+      ),
+    );
+  }
 }
 
 class _TotalRow extends StatelessWidget {
@@ -2937,7 +3272,7 @@ class _TotalRow extends StatelessWidget {
                   const TextStyle(fontSize: 13, color: AppColors.textSecondary),
             ),
             Text(
-              '${isAdd ? '+' : '-'}${_symFor(currency)}${value >= 1000 ? '${(value / 1000).toStringAsFixed(1)}K' : value.toStringAsFixed(0)}',
+              '${isAdd ? '+' : '-'}${_symFor(currency)}${NumberFormat('#,##,##0.00', 'en_IN').format(value)}',
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
@@ -3100,7 +3435,143 @@ class _FullDrop extends StatelessWidget {
         ),
       );
 }
+class _InvoiceAccordion extends StatefulWidget {
+  final String title;
+  final IconData icon;
+  final Widget child;
+  final bool initiallyExpanded;
+  final Widget? trailing;
 
+  const _InvoiceAccordion({
+    required this.title,
+    required this.icon,
+    required this.child,
+    this.initiallyExpanded = true,
+    this.trailing,
+  });
+
+  @override
+  State<_InvoiceAccordion> createState() => _InvoiceAccordionState();
+}
+
+class _InvoiceAccordionState extends State<_InvoiceAccordion> {
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.initiallyExpanded;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: AppColors.border,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.03),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () {
+              setState(() {
+                _expanded = !_expanded;
+              });
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 13,
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 34,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: AppColors.primaryLight,
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: Icon(
+                      widget.icon,
+                      size: 17,
+                      color: AppColors.primary,
+                    ),
+                  ),
+
+                  const SizedBox(width: 10),
+
+                  Expanded(
+                    child: Text(
+                      widget.title,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+
+                  if (widget.trailing != null)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: widget.trailing!,
+                    ),
+
+                  AnimatedRotation(
+                    turns: _expanded ? 0.5 : 0,
+                    duration: const Duration(milliseconds: 200),
+                    child: const Icon(
+                      Icons.keyboard_arrow_down_rounded,
+                      size: 22,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          AnimatedSize(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeInOut,
+            child: _expanded
+                ? Column(
+                    children: [
+                      const Divider(
+                        height: 1,
+                        color: AppColors.divider,
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(
+                          14,
+                          14,
+                          14,
+                          16,
+                        ),
+                        child: widget.child,
+                      ),
+                    ],
+                  )
+                : const SizedBox.shrink(),
+          ),
+        ],
+      ),
+    );
+  }
+}
 class _SecHeader extends StatelessWidget {
   final String title;
   final IconData icon;

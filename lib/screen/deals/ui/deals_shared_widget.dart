@@ -157,14 +157,38 @@ class CompactDrop extends StatelessWidget {
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textPrimary),
+              selectedItemBuilder: (context) => items
+                  .map((e) => Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(_currencyCompactLabel(e),
+                          overflow: TextOverflow.ellipsis)))
+                  .toList(),
               items: items
                   .map((e) => DropdownMenuItem(
                       value: e,
-                      child: Text(e, overflow: TextOverflow.ellipsis)))
+                      child: Text(_currencyMenuLabel(e),
+                          overflow: TextOverflow.ellipsis)))
                   .toList(),
               onChanged: (v) {
                 if (v != null) onChanged(v);
               })));
+
+  /// "₹ INR" → "🇮🇳 INR" for the closed field; falls back to the raw
+  /// entry when it isn't one of the known currency codes.
+  static String _currencyCompactLabel(String item) {
+    final code = item.split(' ').last.trim().toUpperCase();
+    final flag = DealConstants.currencyFlags[code];
+    return flag != null ? '$flag $code' : item;
+  }
+
+  /// "₹ INR" → "🇮🇳 INR - Indian Rupee" for the open dropdown list.
+  static String _currencyMenuLabel(String item) {
+    final code = item.split(' ').last.trim().toUpperCase();
+    final flag = DealConstants.currencyFlags[code];
+    final name = DealConstants.currencyNames[code];
+    if (flag == null || name == null) return item;
+    return '$flag  $code - $name';
+  }
 }
 // =============
 // Field label

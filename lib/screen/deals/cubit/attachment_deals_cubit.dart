@@ -7,6 +7,7 @@ import 'package:file_saver/file_saver.dart';
 import 'package:flutter/services.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'deals_attachment_state.dart';
@@ -21,7 +22,7 @@ class DealsAttachmentCubit extends Cubit<DealsAttachmentState> {
 
     
 
-  final Dio _dio = Dio();
+  final Dio _dio = Dio()..interceptors.add(AuthInterceptor());
 
   //=========================================================
   // Preview Attachment

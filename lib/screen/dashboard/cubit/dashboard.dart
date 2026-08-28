@@ -21,6 +21,7 @@ import 'package:crm_app/screen/dashboard/ui/dashboard_screen.dart'
         DashboardLoaded,
         DashboardError,
         InvoiceRecord;
+import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:dio/dio.dart'
     show DioExceptionType, DioException, Dio, BaseOptions, InterceptorsWrapper;
@@ -30,7 +31,7 @@ import 'package:shared_preferences/shared_preferences.dart'
     show SharedPreferences;
 
 class DashboardCubit extends Cubit<DashboardState> {
-  static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
+  static const _base = 'https://crm-backend-api.techzarinfo.cloud';
 
   late final Dio _dio;
   String? _cachedToken;
@@ -55,6 +56,7 @@ class DashboardCubit extends Cubit<DashboardState> {
         handler.next(err);
       },
     ));
+    _dio.interceptors.add(AuthInterceptor());
     _initToken();
   }
 
@@ -85,36 +87,119 @@ class DashboardCubit extends Cubit<DashboardState> {
 
     try {
       if (_cachedToken == null || _cachedToken!.isEmpty) await _initToken();
+      await _setTenantBaseUrl();
 
       await PermissionHelper.load();
 
       final userName = prefs.getString('user_name') ?? '';
-      final canViewAll = PermissionHelper.can('users_roles');
+      final canViewAll = PermissionHelper.can('s');
 
       // Fetch everything in parallel
-      final results = await Future.wait([
+  final results = await Future.wait([
   _fetchLeads('/leads/getAllLead'),
   _safeLeads('/leads/recent'),
+
+  // NEW: dashboard overview
+  _fetchDashboardOverview(),
+
   _fetchSummary(),
   _fetchInvoices(),
-  _fetchPipelineResolved(
-    canViewAll: canViewAll,
-    userId: userId,
-    userName: userName,
-  ),
+
   _fetchAllDealMaps(),
 ]);
 
-final leadsResult = results[0] as ({List<Lead> leads, int? total});
+final leadsResult =
+    results[0] as ({List<Lead> leads, int? total});
+
 final allLeadsRaw = leadsResult.leads;
+
 final leadsTotalFromApi = leadsResult.total;
 
-      final recentLeadsRaw = results[1] as List<Lead>;
-      final base = results[2] as DashboardSummary;
-      final invoices = results[3] as List<InvoiceRecord>;
-      final pipeline = results[4] as List<PipelineStage>;
-      final allDealRows = results[5] as List<Map<String, dynamic>>;
+final recentLeadsRaw =
+    results[1] as List<Lead>;
 
+final overview =
+    results[2] as Map<String, dynamic>;
+
+// ─────────────────────────────────────────────
+// OVERVIEW → SUMMARY → REVENUE BY CURRENCY
+// ─────────────────────────────────────────────
+
+Map<String, dynamic> overviewSummary = {};
+
+if (overview['summary'] is Map) {
+  overviewSummary = Map<String, dynamic>.from(
+    overview['summary'] as Map,
+  );
+} else if (overview['data'] is Map &&
+    (overview['data'] as Map)['summary'] is Map) {
+  overviewSummary = Map<String, dynamic>.from(
+    (overview['data'] as Map)['summary'] as Map,
+  );
+}
+
+double totalRevenue = 0;
+String preferredCurrency = 'INR';
+
+final revenueByCurrency =
+    overviewSummary['revenueByCurrency'];
+
+debugPrint(
+  '[Revenue DEBUG] summary keys=${overviewSummary.keys.toList()}',
+);
+
+debugPrint(
+  '[Revenue DEBUG] revenueByCurrency=$revenueByCurrency',
+);
+
+if (revenueByCurrency is Map) {
+  for (final entry in revenueByCurrency.entries) {
+    final value = entry.value;
+
+    if (value is! Map) continue;
+
+    final currency =
+        value['preferredCurrency']?.toString().trim();
+
+    if (currency != null && currency.isNotEmpty) {
+      preferredCurrency = currency;
+    }
+
+    final rawValue =
+        value['preferredCurrencyValue'];
+
+    final parsedValue =
+        rawValue is num
+            ? rawValue.toDouble()
+            : double.tryParse(
+                rawValue?.toString().replaceAll(',', '') ?? '0',
+              ) ??
+              0;
+
+    totalRevenue += parsedValue;
+
+    debugPrint(
+      '[Revenue DEBUG] '
+      'key=${entry.key} '
+      'currency=$preferredCurrency '
+      'preferredCurrencyValue=$parsedValue',
+    );
+  }
+}
+
+debugPrint(
+  '[Revenue DEBUG] FINAL '
+  'currency=$preferredCurrency '
+  'totalRevenue=$totalRevenue',
+);
+final base =
+    results[3] as DashboardSummary;
+
+final invoices =
+    results[4] as List<InvoiceRecord>;
+
+final allDealRows =
+    results[5] as List<Map<String, dynamic>>;
       final allLeads = canViewAll
           ? allLeadsRaw
           : allLeadsRaw.where((l) => l.assignedToId == userId).toList();
@@ -124,8 +209,6 @@ final leadsTotalFromApi = leadsResult.total;
       final todaysFollowUps =
           _buildTodaysFollowUps(allLeads, allDealRows); // ← ADD
 
-      final allRates = await _fetchRatesForInvoices(invoices);
-      final revenue = _computeRevenue(invoices, rates: allRates);
 
       final pendingLeads = base.pendingLeads > 0
           ? base.pendingLeads
@@ -137,15 +220,37 @@ final leadsTotalFromApi = leadsResult.total;
         userId: userId,
         userName: userName,
       );
+      final pipeline = _buildPipelineFromDeals(scopedDeals);
       final dealMetrics = _dealMetricsForPeriod(
-        scopedDeals,
-        range: 'last7',
-        month: null,
-        year: null,
-        apiFallback: base,
-        dealsFetched: allDealRows.isNotEmpty,
-      );
+  scopedDeals,
+  range: 'all',
+  month: null,
+  year: null,
+  apiFallback: base,
+  dealsFetched: allDealRows.isNotEmpty,
+);
+// ════════════════════════════════════════════════════════════
+// DASHBOARD CARD VALUES FROM OVERVIEW API
+// ════════════════════════════════════════════════════════════
 
+final overviewTotalLeads =
+    _getOverviewTotalLeads(overview);
+
+final overviewDealsWon =
+    _getOverviewDealsWon(overview);
+
+final overviewPendingInvoices =
+    _getOverviewPendingInvoices(overview);
+
+
+debugPrint(
+  '[Dashboard Cards] '
+  'leads=$overviewTotalLeads, '
+  'dealsWon=$overviewDealsWon, '
+  'pendingInvoices=$overviewPendingInvoices, '
+  'totalRevenue=$totalRevenue, '
+  'currency=$preferredCurrency',
+);
 //
       Map<String, dynamic>? topPerformer;
 
@@ -208,30 +313,34 @@ try {
     }
   }
 } catch (_) {}
-      final summary = DashboardSummary(
-         totalLeads: allLeads.length,
+  final summary = DashboardSummary(
+  totalLeads: overviewTotalLeads,
 
-        totalDeals: dealMetrics.totalDeals,
-        dealsWon: _totalWonDealsCount(scopedDeals),        
-        pendingLeads: pendingLeads,
-        leadsChange: base.leadsChange,
-        dealsChange: dealMetrics.dealsChange,
-        paidRevenue: revenue.paid,
-        unpaidRevenue: revenue.unpaid,
-        totalRevenue: revenue.total,
-      );
+  totalDeals: dealMetrics.totalDeals,
 
+  dealsWon: overviewDealsWon,
+
+  pendingLeads: pendingLeads,
+
+  pendingInvoices: overviewPendingInvoices,
+
+  leadsChange: base.leadsChange,
+
+  dealsChange: dealMetrics.dealsChange,
+
+  paidRevenue: 0,
+
+  unpaidRevenue: 0,
+
+  totalRevenue: totalRevenue,
+
+  preferredCurrency: preferredCurrency,
+);
       // Default filter: last 7 days
       final now = DateTime.now();
       final start = DateTime(now.year, now.month, now.day)
           .subtract(const Duration(days: 6));
-      final last7Invoices = invoices.where((inv) {
-        final d = inv.issueDate;
-        if (d == null) return false;
-        return !DateTime(d.year, d.month, d.day).isBefore(start);
-      }).toList();
-      final rangeRates = await _fetchRatesForInvoices(last7Invoices);
-      final rangeRevenue = _computeRevenue(last7Invoices, rates: rangeRates);
+      
 
       if (isClosed) return;
 
@@ -239,16 +348,12 @@ try {
         topPerformer: topPerformer,
         allLeads: allLeads,
         recentLeads: recentLeads,
-        summary: summary.copyWith(
-          paidRevenue: rangeRevenue.paid,
-          unpaidRevenue: rangeRevenue.unpaid,
-          totalRevenue: rangeRevenue.total,
-        ),
+        summary: summary,
         pipeline: pipeline,
         invoices: invoices,
         todaysFollowUps: todaysFollowUps, // ← ADD
         allDealRows: allDealRows,
-        filterRange: 'last7',
+        filterRange: 'all',
         filterMonth: null,
         filterYear: null,
       );
@@ -278,6 +383,110 @@ try {
     await loadDashboard();
   }
 }
+
+// ════════════════════════════════════════════════════════════
+// DASHBOARD OVERVIEW
+// ════════════════════════════════════════════════════════════
+
+Future<Map<String, dynamic>> _fetchDashboardOverview({
+  String? start,
+  String? end,
+}) async {
+  try {
+    final res = await _dio.get(
+      '/dashboard/overview',
+      queryParameters: {
+        'start': start ?? '',
+        'end': end ?? '',
+      },
+    );
+
+    if (res.data is Map) {
+      return Map<String, dynamic>.from(res.data as Map);
+    }
+
+    return {};
+  } catch (e) {
+    debugPrint('[Dashboard Overview] $e');
+    return {};
+  }
+}
+// ════════════════════════════════════════════════════════════
+// OVERVIEW CARD CALCULATIONS
+// ════════════════════════════════════════════════════════════
+
+List<dynamic> _extractOverviewList(
+  Map<String, dynamic> overview,
+  String key,
+) {
+  dynamic value = overview[key];
+
+  // If the API wraps everything inside data
+  if (value == null && overview['data'] is Map) {
+    value = (overview['data'] as Map)[key];
+  }
+
+  // If the API wraps everything inside result
+  if (value == null && overview['result'] is Map) {
+    value = (overview['result'] as Map)[key];
+  }
+
+  if (value is List) {
+    return value;
+  }
+
+  return <dynamic>[];
+}
+
+
+// Total Leads = number of items inside leads
+int _getOverviewTotalLeads(
+  Map<String, dynamic> overview,
+) {
+  final leads = _extractOverviewList(overview, 'leads');
+
+  return leads.length;
+}
+
+
+// Deals Won = number of items inside dealsWon whose stage is "Closed Won"
+int _getOverviewDealsWon(
+  Map<String, dynamic> overview,
+) {
+  final dealsWon = _extractOverviewList(overview, 'dealsWon');
+
+  return dealsWon.where((item) {
+    if (item is! Map) return false;
+    final stage = item['stage']?.toString().toLowerCase().trim();
+    return stage == 'closed won';
+  }).length;
+}
+
+
+// Pending invoices = count invoices whose status is unpaid
+int _getOverviewPendingInvoices(
+  Map<String, dynamic> overview,
+) {
+  final invoices = _extractOverviewList(overview, 'invoices');
+
+  int count = 0;
+
+  for (final item in invoices) {
+    if (item is! Map) continue;
+
+    final status =
+        item['status']?.toString().trim().toLowerCase();
+
+    if (status == 'unpaid') {
+      count++;
+    }
+  }
+
+  return count;
+}
+
+
+
 
   // ════════════════════════════════════════════════════════════
   // OFFLINE HELPERS
@@ -330,6 +539,7 @@ try {
     int? month,
     int? year,
   }) async {
+    
     final cur = state;
 
     if (cur is! DashboardLoaded) return;
@@ -340,7 +550,11 @@ try {
 
     final userName = prefs.getString('user_name') ?? '';
 
-    final canViewAll = PermissionHelper.can('users_roles');
+    final canViewAll = PermissionHelper.can('s');
+
+    double filteredTotalRevenue = cur.summary.totalRevenue;
+String filteredPreferredCurrency =
+    cur.summary.preferredCurrency;
 
     final scopedDeals = _scopeDealsForUser(
       cur.allDealRows,
@@ -348,6 +562,17 @@ try {
       userId: userId,
       userName: userName,
     );
+
+    final window = _periodWindow(
+  range,
+  month: month,
+  year: year,
+);
+
+final filteredDealRows = scopedDeals.where((deal) {
+  final date = _dealFilterDate(deal);
+  return _dateInWindow(date, window);
+}).toList();
 
     final dealMetrics = _dealMetricsForPeriod(
       scopedDeals,
@@ -358,29 +583,103 @@ try {
       dealsFetched: cur.allDealRows.isNotEmpty,
     );
 
-    final window = _periodWindow(range, month: month, year: year);
+
+    final filteredPipeline = _buildPipelineFromDeals(
+  filteredDealRows,
+);
+
 
     List<InvoiceRecord> filtered = cur.invoices.where((inv) {
       return _dateInWindow(inv.issueDate, window);
     }).toList();
 
+    
+
     List<Lead> leadsInRange = cur.allLeads.where((l) {
       return _dateInWindow(l.createdAt, window);
     }).toList();
-    // Revenue
-    Map<String, double> rates = {};
 
-    try {
-      rates = await _fetchRatesForInvoices(filtered);
-    } catch (_) {
-      rates = Map<String, double>.from(_rateCache);
+  
+// ─────────────────────────────────────────────
+// FILTERED REVENUE FROM DASHBOARD OVERVIEW API
+// ─────────────────────────────────────────────
+
+
+
+String? revenueStart;
+String? revenueEnd;
+
+if (window != null) {
+  revenueStart =
+      '${window.start.year}-'
+      '${window.start.month.toString().padLeft(2, '0')}-'
+      '${window.start.day.toString().padLeft(2, '0')}';
+
+  final endDay = window.endExclusive != null
+      ? window.endExclusive!.subtract(
+          const Duration(days: 1),
+        )
+      : DateTime.now();
+
+  revenueEnd =
+      '${endDay.year}-'
+      '${endDay.month.toString().padLeft(2, '0')}-'
+      '${endDay.day.toString().padLeft(2, '0')}';
+}
+
+// Get filtered summary from overview API
+final filteredOverview = await _fetchDashboardOverview(
+  start: revenueStart,
+  end: revenueEnd,
+);
+
+final filteredOverviewSummary =
+    filteredOverview['summary'] is Map
+        ? Map<String, dynamic>.from(
+            filteredOverview['summary'] as Map,
+          )
+        : <String, dynamic>{};
+
+final filteredRevenueByCurrency =
+    filteredOverviewSummary['revenueByCurrency'];
+
+filteredTotalRevenue = 0;
+
+if (filteredRevenueByCurrency is Map) {
+  for (final value
+      in filteredRevenueByCurrency.values) {
+    if (value is Map) {
+      final rawValue =
+          value['preferredCurrencyValue'];
+
+      final parsedValue = rawValue is num
+          ? rawValue.toDouble()
+          : double.tryParse(
+                rawValue?.toString() ?? '0',
+              ) ??
+              0;
+
+      filteredTotalRevenue += parsedValue;
+
+      final currency =
+          value['preferredCurrency']?.toString().trim();
+
+      if (currency != null && currency.isNotEmpty) {
+        filteredPreferredCurrency = currency;
+      }
     }
+  }
+}
 
-    final revenue = _computeRevenue(
-      filtered,
-      rates: rates,
-    );
-
+debugPrint(
+  '[FILTER REVENUE] '
+  'range=$range '
+  'start=$revenueStart '
+  'end=$revenueEnd '
+  'currency=$filteredPreferredCurrency '
+  'total=$filteredTotalRevenue',
+);
+    
     // Top Performer
     Map<String, dynamic>? topPerformer;
 
@@ -467,15 +766,16 @@ if (range == 'year' && year != null) {
         allLeads: cur.allLeads,
         recentLeads: cur.recentLeads,
         summary: cur.summary.copyWith(
-  paidRevenue: revenue.paid,
-  unpaidRevenue: revenue.unpaid,
-  totalRevenue: revenue.total,
   totalLeads: leadsInRange.length,
   totalDeals: dealMetrics.totalDeals,
   dealsWon: dealMetrics.dealsWon,
   dealsChange: dealMetrics.dealsChange,
+  totalRevenue: filteredTotalRevenue,
+  preferredCurrency: filteredPreferredCurrency,
+
+
 ),
-        pipeline: cur.pipeline,
+        pipeline: filteredPipeline,
 invoices: filtered,
 todaysFollowUps: cur.todaysFollowUps
     .where((f) => _dateInWindow(f.followUpDate, window))
@@ -489,6 +789,66 @@ allDealRows: cur.allDealRows,
       ),
     );
   }
+
+  List<PipelineStage> _buildPipelineFromDeals(
+  List<Map<String, dynamic>> deals,
+) {
+  final stages = <String, PipelineStage>{};
+
+  for (final deal in deals) {
+    final rawStage = deal['stage']?.toString().trim();
+
+    if (rawStage == null || rawStage.isEmpty) {
+      continue;
+    }
+
+    final rawValue =
+        deal['value'] ??
+        deal['dealValue'] ??
+        deal['amount'];
+
+    final value = double.tryParse(
+          rawValue
+                  ?.toString()
+                  .replaceAll(RegExp(r'[^\d.\-]'), '') ??
+              '0',
+        ) ??
+        0;
+
+    final currency =
+        deal['currency']?.toString().trim();
+
+    final key = rawStage.toLowerCase();
+
+    final existing = stages[key];
+
+    if (existing == null) {
+      stages[key] = PipelineStage(
+        stage: rawStage,
+        count: 1,
+        value: value,
+        currency:
+            currency != null && currency.isNotEmpty
+                ? currency
+                : 'INR',
+      );
+    } else {
+      stages[key] = PipelineStage(
+        stage: existing.stage,
+        count: existing.count + 1,
+        value: existing.value + value,
+        currency: existing.currency,
+      );
+    }
+  }
+
+  return _mergePipelineByStage(
+    _applyPipelineStageRules(
+      stages.values.toList(),
+    ),
+  );
+}
+
   // ════════════════════════════════════════════════════════════
   // DEALS
   // ════════════════════════════════════════════════════════════
@@ -539,10 +899,7 @@ allDealRows: cur.allDealRows,
   bool _isWonDealStage(String? raw) {
     if (raw == null || raw.trim().isEmpty) return false;
     final s = raw.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '');
-    if (s.contains('lost')) return false;
-    if (s == 'closedwon') return true;
-    if (s.contains('closed') && s.contains('won')) return true;
-    return s.contains('won');
+    return s == 'closedwon';
   }
 
   bool _dealDayInRange(
@@ -982,71 +1339,6 @@ if (range == 'today') {      final cur = _dealCountsInRange(
   // PIPELINE
   // ════════════════════════════════════════════════════════════
 
-  Future<List<PipelineStage>> _fetchPipelineResolved({
-    required bool canViewAll,
-    required String userId,
-    required String userName,
-  }) async {
-    if (!canViewAll) {
-      final fromDeals = await _pipelineFromAssignedDeals(userId, userName);
-      if (fromDeals.isNotEmpty) return fromDeals;
-      final scoped = await _fetchPipelineApi(userId: userId);
-      if (scoped.isNotEmpty) return scoped;
-      return <PipelineStage>[];
-    }
-    return _fetchPipelineApi(userId: null);
-  }
-
-  Future<List<PipelineStage>> _pipelineFromAssignedDeals(
-    String userId,
-    String userName,
-  ) async {
-    final uid = userId.trim();
-    if (uid.isEmpty && userName.trim().isEmpty) return [];
-    try {
-      final res = await _dio.get('/deals/getAll');
-      final body = res.data;
-      List<dynamic> raw = [];
-      if (body is List) {
-        raw = body;
-      } else if (body is Map) {
-        for (final k in ['data', 'deals', 'result', 'records']) {
-          if (body[k] is List) {
-            raw = body[k] as List;
-            break;
-          }
-        }
-      }
-      final perStage = <PipelineStage>[];
-      for (final item in raw) {
-        if (item is! Map) continue;
-        final m = Map<String, dynamic>.from(item);
-        if (!_dealAssignedToUser(m, uid, userName)) continue;
-        final stage = m['stage']?.toString().trim();
-        if (stage == null || stage.isEmpty) continue;
-        double val = 0;
-        final rv = m['value'] ?? m['dealValue'] ?? m['amount'];
-        if (rv != null) {
-          val = double.tryParse(
-                  rv.toString().replaceAll(RegExp(r'[^\d.\-]'), '')) ??
-              0;
-        }
-        final ccy = m['currency']?.toString().trim();
-        perStage.add(PipelineStage(
-          stage: stage,
-          count: 1,
-          value: val,
-          currency: (ccy != null && ccy.isNotEmpty) ? ccy : 'INR',
-        ));
-      }
-      if (perStage.isEmpty) return [];
-      return _mergePipelineByStage(_applyPipelineStageRules(perStage));
-    } catch (e) {
-      debugPrint('[Pipeline] deals aggregation: $e');
-      return [];
-    }
-  }
-
   bool _dealAssignedToUser(
     Map<String, dynamic> m,
     String userId,
@@ -1091,56 +1383,6 @@ T? _findOwnLeaderboardEntry<T>(
   }
   return null;
 }
-  Future<List<PipelineStage>> _fetchPipelineApi({String? userId}) async {
-    try {
-      final query = <String, dynamic>{};
-      if (userId != null && userId.trim().isNotEmpty) {
-        query['userId'] = userId.trim();
-      }
-      final res = await _dio.get(
-        '/dashboard/pipeline',
-        queryParameters: query.isEmpty ? null : query,
-      );
-      final body = res.data;
-
-      if (body is List) {
-        final direct = <PipelineStage>[];
-        for (final e in body) {
-          if (e is Map) {
-            try {
-              final stage =
-                  PipelineStage.fromJson(Map<String, dynamic>.from(e));
-              if (stage.stage.trim().isNotEmpty) direct.add(stage);
-            } catch (err) {
-              debugPrint('[Pipeline] direct parse err: $err');
-            }
-          }
-        }
-        if (direct.isNotEmpty) {
-          debugPrint('[Pipeline] direct rows=${direct.length}');
-          return _mergePipelineByStage(_applyPipelineStageRules(direct));
-        }
-      }
-
-      final rows = _extractPipelineRows(body);
-      debugPrint('[Pipeline] rows extracted=${rows.length}');
-
-      final out = <PipelineStage>[];
-      for (final row in rows) {
-        try {
-          final stage = PipelineStage.fromJson(row);
-          if (stage.stage.trim().isNotEmpty) out.add(stage);
-        } catch (err) {
-          debugPrint('[Pipeline] parse err: $err');
-        }
-      }
-      return _mergePipelineByStage(_applyPipelineStageRules(out));
-    } catch (e) {
-      debugPrint('[Pipeline] API error: $e');
-      return <PipelineStage>[];
-    }
-  }
-
   List<PipelineStage> _applyPipelineStageRules(List<PipelineStage> input) {
     var proposalCount = 0;
     var proposalValue = 0.0;
@@ -1249,85 +1491,26 @@ T? _findOwnLeaderboardEntry<T>(
     return merged.values.toList()..sort(_comparePipelineStages);
   }
 
-  List<Map<String, dynamic>> _extractPipelineRows(dynamic node,
-      {String? parentKey}) {
-    final out = <Map<String, dynamic>>[];
-    const metricKeys = {
-      'count',
-      'dealCount',
-      'deals',
-      'total',
-      'totalDeals',
-      'value',
-      'totalValue',
-      'amount',
-      'dealValue',
-      'revenue',
-    };
+  Future<void> _setTenantBaseUrl() async {
+  final prefs = await SharedPreferences.getInstance();
 
-    bool looksLikeRow(Map<String, dynamic> m) {
-      final hasStage = m['stage'] != null ||
-          m['stageName'] != null ||
-          m['_id'] != null ||
-          m['name'] != null ||
-          m['label'] != null;
-      final hasMetrics = m['count'] != null ||
-          m['dealCount'] != null ||
-          m['deals'] != null ||
-          m['total'] != null ||
-          m['totalDeals'] != null ||
-          m['value'] != null ||
-          m['totalValue'] != null ||
-          m['amount'] != null ||
-          m['dealValue'] != null ||
-          m['items'] is List ||
-          m['leads'] is List ||
-          m['records'] is List;
-      return hasStage && (hasMetrics || m.length <= 3);
-    }
+  final tenantSlug =
+      prefs.getString('tenant_slug') ??
+      prefs.getString('slug') ??
+      '';
 
-    if (node is List) {
-      for (final e in node) {
-        out.addAll(_extractPipelineRows(e, parentKey: parentKey));
-      }
-      return out;
-    }
-
-    if (node is Map) {
-      final m = Map<String, dynamic>.from(node);
-      if (looksLikeRow(m)) out.add(m);
-
-      for (final entry in m.entries) {
-        final k = entry.key.toString();
-        final v = entry.value;
-
-        if (v is Map) {
-          final vm = Map<String, dynamic>.from(v);
-          final hasMetricsOnly = vm['count'] != null ||
-              vm['dealCount'] != null ||
-              vm['deals'] != null ||
-              vm['total'] != null ||
-              vm['totalDeals'] != null ||
-              vm['value'] != null ||
-              vm['totalValue'] != null ||
-              vm['amount'] != null ||
-              vm['dealValue'] != null;
-          if (!looksLikeRow(vm) && hasMetricsOnly) {
-            out.add({'stage': k, ...vm});
-          }
-          out.addAll(_extractPipelineRows(v, parentKey: k));
-        } else if (v is List) {
-          if (!metricKeys.contains(k)) {
-            out.add({'stage': k, 'count': v.length});
-          }
-          out.addAll(_extractPipelineRows(v, parentKey: k));
-        } else if (v is num && !metricKeys.contains(k)) {
-          out.add({'stage': k, 'count': v});
-        }
-      }
-    }
-    return out;
+  if (tenantSlug.trim().isEmpty) {
+    throw Exception('Tenant slug not found');
   }
+
+  _dio.options.baseUrl =
+      'https://crm-backend-api.techzarinfo.cloud/'
+      '${tenantSlug.trim()}/api';
+
+  debugPrint(
+    '[Dashboard] Base URL = ${_dio.options.baseUrl}',
+  );
+}
   // deal helper
 
   int _totalWonDealsCount(List<Map<String, dynamic>> deals) =>
@@ -1348,9 +1531,12 @@ T? _findOwnLeaderboardEntry<T>(
       };
 }
 
+
+
 // ════════════════════════════════════════════════════════════
 // INTERNAL HELPERS
 // ════════════════════════════════════════════════════════════
+
 
 class _RevenueResult {
   final double paid, unpaid, total;
@@ -1380,21 +1566,27 @@ extension DashboardSummaryX on DashboardSummary {
     int? totalDeals,
     int? dealsWon,
     int? pendingLeads,
+    int? pendingInvoices,
     double? leadsChange,
     double? dealsChange,
     double? paidRevenue,
     double? unpaidRevenue,
     double? totalRevenue,
+    String? preferredCurrency,
   }) =>
       DashboardSummary(
         totalLeads: totalLeads ?? this.totalLeads,
         totalDeals: totalDeals ?? this.totalDeals,
         dealsWon: dealsWon ?? this.dealsWon,
         pendingLeads: pendingLeads ?? this.pendingLeads,
+        pendingInvoices:
+            pendingInvoices ?? this.pendingInvoices,
         leadsChange: leadsChange ?? this.leadsChange,
         dealsChange: dealsChange ?? this.dealsChange,
         paidRevenue: paidRevenue ?? this.paidRevenue,
         unpaidRevenue: unpaidRevenue ?? this.unpaidRevenue,
         totalRevenue: totalRevenue ?? this.totalRevenue,
+        preferredCurrency:
+            preferredCurrency ?? this.preferredCurrency,
       );
 }

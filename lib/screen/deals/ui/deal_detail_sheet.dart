@@ -9,6 +9,10 @@ import 'package:crm_app/screen/invoice/cubit/invoice_cubit.dart';
 import 'package:crm_app/screen/invoice/modal/invoice_model.dart';
 import 'package:crm_app/screen/invoice/ui/invoice_details_screen.dart';
 import 'package:crm_app/screen/invoice/ui/invoice_screen.dart';
+import 'package:crm_app/screen/leads/ui/meeting.dart' show MeetingCard;
+import 'package:crm_app/screen/meeting/UI/meeting.dart' show CreateMeetingSheet;
+import 'package:crm_app/screen/meeting/cubit/meeting_cubit.dart';
+import 'package:crm_app/screen/meeting/cubit/meeting_state.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -221,7 +225,7 @@ for (final item in updated!.followUpHistory) {
   child: ScaffoldMessenger(
     key: _detailMessengerKey,
     child: DefaultTabController(
-  length: 6,
+  length: 7,
   child: Scaffold(
     backgroundColor: Colors.transparent,
     floatingActionButton: Builder(
@@ -388,6 +392,7 @@ Future.delayed(const Duration(milliseconds: 200), () {
                         Tab(text:'Attachments'),
                         Tab(text:'Invoice'),
                         Tab(text:'Notes'),
+                        Tab(text:'Meetings'),
                       ],
                     ),
                   ),
@@ -401,6 +406,7 @@ Future.delayed(const Duration(milliseconds: 200), () {
                          _buildAttachements(ctrl), // new
                          _buildInvoiceTab(ctrl), // new
                          _buildNewTab3(ctrl), // new
+                         _buildMeetingsTab(),
                       ],
                     ),
                   ),
@@ -1943,6 +1949,181 @@ Future<void> _showAddNoteDialog() async {
             child: const Text("Add"),
           ),
         ],
+      );
+    },
+  );
+}
+
+Widget _buildMeetingsTab() {
+  return Stack(
+    children: [
+      _buildDealMeetings(),
+
+      Positioned(
+        right: 20,
+        bottom: 20,
+        child: BlocBuilder<MeetingsCubit, MeetingsState>(
+          builder: (context, state) {
+            final connected = switch (state) {
+              MeetingsLoaded(:final googleConnected) => googleConnected,
+              MeetingsCreating(:final googleConnected) => googleConnected,
+              _ => false,
+            };
+
+            return Opacity(
+              opacity: connected ? 1 : 0.45,
+              child: FloatingActionButton(
+                heroTag: 'dealMeetingsFab',
+                mini: true,
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                elevation: 4,
+                tooltip: connected
+                    ? 'Create meeting'
+                    : 'Connect Google to create meetings',
+                onPressed: connected ? _createMeetingForDeal : null,
+                child: Icon(
+                  connected ? Icons.add : Icons.lock_outline,
+                  size: 20,
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    ],
+  );
+}
+
+Widget _buildDealMeetings() {
+  return BlocBuilder<MeetingsCubit, MeetingsState>(
+    builder: (context, state) {
+      if (state is MeetingsLoading) {
+        return const Center(
+          child: CircularProgressIndicator(),
+        );
+      }
+
+      if (state is MeetingsError) {
+        return Center(
+          child: Text(
+            state.message,
+            style: const TextStyle(
+              color: Colors.red,
+            ),
+          ),
+        );
+      }
+
+      if (state is MeetingsLoaded) {
+        final dealMeetings = state.meetings.where((meeting) {
+          return meeting.dealId == _deal.id;
+        }).toList();
+
+        if (dealMeetings.isEmpty) {
+          return const Center(
+            child: Text(
+              'No meetings for this deal',
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 14,
+              ),
+            ),
+          );
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.fromLTRB(
+            16,
+            16,
+            16,
+            90,
+          ),
+          itemCount: dealMeetings.length,
+          itemBuilder: (context, index) {
+            final meeting = dealMeetings[index];
+
+            return MeetingCard(
+              meeting: meeting,
+              meetingsCubit: context.read<MeetingsCubit>(),
+              onMeetingUpdated: (message) async {
+                _showSnack(
+                  context,
+                  SnackBar(
+                    content: Text(message),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              },
+            );
+          },
+        );
+      }
+
+      return const Center(
+        child: Text(
+          'No meetings for this deal',
+          style: TextStyle(
+            color: AppColors.textSecondary,
+          ),
+        ),
+      );
+    },
+  );
+}
+
+void _createMeetingForDeal() {
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) {
+      return CreateMeetingSheet(
+        dealId: _deal.id,
+        checkZoomConnection: () =>
+            context.read<MeetingsCubit>().checkZoomConnection(),
+        onSubmit: ({
+          required title,
+          required description,
+          required startDateTime,
+          required endDateTime,
+          required attendees,
+          required reminderMinutes,
+          required provider,
+        }) async {
+          final success = await context
+              .read<MeetingsCubit>()
+              .createMeeting(
+                title: title,
+                description: description,
+                dealId: _deal.id,
+                startDateTime: startDateTime,
+                endDateTime: endDateTime,
+                attendees: attendees,
+                reminderMinutes: reminderMinutes,
+                provider: provider,
+              );
+
+          if (!mounted) return;
+
+          if (success) {
+            Navigator.pop(context);
+
+            await context
+                .read<MeetingsCubit>()
+                .loadMeetings();
+
+            if (!mounted) return;
+
+            _showSnack(
+              context,
+              const SnackBar(
+                content: Text('Meeting created successfully'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+        },
       );
     },
   );

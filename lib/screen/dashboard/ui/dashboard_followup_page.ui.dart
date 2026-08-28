@@ -3,6 +3,7 @@ import 'package:crm_app/screen/deals/cubit/deals_cubit.dart';
 import 'package:crm_app/screen/deals/ui/deal_detail_sheet.dart';
 import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
 import 'package:crm_app/screen/leads/ui/lead_screen.dart';
+import 'package:crm_app/screen/meeting/cubit/meeting_cubit.dart';
 import 'package:crm_app/thems/app_themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -76,10 +77,14 @@ class _FollowUpsScreenState extends State<FollowUpsScreen> {
     builder: (_) => ScaffoldMessenger(
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: BlocProvider.value(
-          value: cubit,
+        body: MultiBlocProvider(
+          providers: [
+            BlocProvider.value(value: cubit),
+            BlocProvider(create: (_) => MeetingsCubit()..loadMeetings()),
+          ],
           child: LeadDetailSheet(
             lead: lead,
+            leadCubit: cubit,
           ),
         ),
       ),

@@ -3,20 +3,6 @@ import 'package:crm_app/thems/app_themes.dart' show AppColors;
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-bool _isSessionExpiredMessage(String msg) {
-  final m = msg.toLowerCase();
-
-  return m.contains('session expired') ||
-      m.contains('unauthorized') ||
-      m.contains('401') ||
-      m.contains('login again') ||
-      m.contains('token failed') ||
-      m.contains('invalid token') ||
-      m.contains('jwt expired') ||
-      m.contains('token expired') ||
-      m.contains('authentication failed');
-}
-
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
 
@@ -38,13 +24,7 @@ class _ProfileView extends StatelessWidget {
       backgroundColor: AppColors.background,
       appBar: AppBar(title: const Text('Profile')),
       body: BlocConsumer<ProfileCubit, ProfileState>(
-        listener: (context, state) {
-          if (state is ProfileError &&
-              _isSessionExpiredMessage(state.message)) {
-            Navigator.of(context, rootNavigator: true)
-                .pushNamedAndRemoveUntil('/login', (route) => false);
-          }
-        },
+        listener: (context, state) {},
         builder: (context, state) {
           if (state is ProfileLoading || state is ProfileInitial) {
             return const Center(child: CircularProgressIndicator());

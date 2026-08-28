@@ -1,3 +1,4 @@
+import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -16,7 +17,7 @@ class UserCubit extends Cubit<UserState> {
       final token = prefs.getString('token') ?? '';
       final tenant = prefs.getString('tenant_slug') ?? '';
 
-      final dio = Dio();
+      final dio = Dio()..interceptors.add(AuthInterceptor());
 
       final response = await dio.get(
         'https://crm-backend-api.techzarinfo.cloud/$tenant/api/users/me',

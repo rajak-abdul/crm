@@ -1,4 +1,3 @@
-import 'package:crm_app/screen/currency/currency_service.dart';
 import 'package:crm_app/screen/invoice/modal/invoice_model.dart' show Invoice;
 import 'package:crm_app/thems/app_themes.dart' show AppColors;
 import 'package:flutter/material.dart'
@@ -50,6 +49,7 @@ class InvoiceDetailsModal extends StatefulWidget {
 class InvoiceDetailsModalState extends State<InvoiceDetailsModal>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
+
   double convertFromInr(double amountInInr, double rate) {
   return amountInInr * rate;
 }
@@ -90,39 +90,39 @@ String formatCurrency(double amount, String currency) {
     return DateFormat("dd MMM yyyy").format(dt.toLocal());
   }
 
+  /// "Tax" + "Percentage"/28 -> "Tax (28%)"; "Fixed Amount" -> "Tax (Fixed)";
+  /// anything else (Zero Tax / No Discount) -> just the base label.
+  String _rateLabel(String base, String type, double value) {
+    if (type == 'Percentage') {
+      final rate =
+          value % 1 == 0 ? value.toStringAsFixed(0) : value.toStringAsFixed(2);
+      return '$base ($rate%)';
+    }
+    if (type == 'Fixed Amount') {
+      return '$base (Fixed)';
+    }
+    return base;
+  }
+
   @override
   Widget build(BuildContext context) {
     final inv = widget.invoice;
 
-    final subtotal = CurrencyService.convert(
-  inv.price,
-  inv.currency,
-);
+// Every figure in this sheet is shown in the invoice's own currency
+// (inv.currency) — the currency it was actually issued and paid in.
+final currency = inv.currency;
 
-final tax = CurrencyService.convert(
-  inv.taxValue,
-  inv.currency,
-);
-
-final discount = CurrencyService.convert(
-  inv.discountValue,
-  inv.currency,
-);
-
-final total = CurrencyService.convert(
-  inv.total,
-  inv.currency,
-);
-
-final paid = CurrencyService.convert(
-  inv.amountPaid,
-  inv.currency,
-);
-
-final due = CurrencyService.convert(
-  inv.balanceDue,
-  inv.currency,
-);
+final subtotal = inv.price;
+final tax = inv.taxAmount;
+final discount = inv.discountAmount;
+final total =
+    (subtotal - discount + tax).clamp(0, double.infinity).toDouble();
+final paid = inv.amountPaid;
+// NOTE: inv.balanceDue subtracts amountPaid (original currency) from
+// totalPreferredCurrencyValue (preferred currency), mixing currencies
+// when they differ — so it's recomputed here from the original-currency
+// total instead.
+final due = (total - paid).clamp(0, double.infinity).toDouble();
 
     return DraggableScrollableSheet(
       initialChildSize: 0.92,
@@ -170,48 +170,88 @@ final due = CurrencyService.convert(
                       controller: controller,
                       padding: const EdgeInsets.all(16),
                       children: [
-                        _sectionTitle("Client Information"),
-                        _infoCard([
-                          _info("Client Name", inv.assignTo),
-                          _info("Company", inv.dealName),
-                          _info("Billing Address", inv.billingAddress),
-                         _info("Client Tax ID", inv.clientTaxId),
-                         _info("PO Number", inv.poNumber),
-                        ]),
-                        const SizedBox(height: 18),
-                        _sectionTitle("Invoice Information"),
-                        _infoCard([
-                          _info(
-                            "Subtotal",
-                            formatCurrency(subtotal, inv.currency),
-                          ),
-                          _info(
-                            "Tax",
-                            formatCurrency(tax, inv.currency),
-                          ),
-                          _info(
-                            "Discount",
-                            formatCurrency(discount, inv.currency),
-                          ),
-                          _info(
-                            "Total",
-                            formatCurrency(total, inv.currency),
-                          ),
-                          _info(
-  "Amount Paid",
-  formatCurrency(paid, inv.currency),
-  valueColor: AppColors.success,
-),
+_sectionTitle("Client Information"),
+_infoCard([
+  _info(
+    "Client Name",
+    inv.dealName.isNotEmpty ? inv.dealName : '-',
+  ),
+  _info(
+    "Company",
+    inv.companyName.isNotEmpty ? inv.companyName : '-',
+  ),
+]),
+const SizedBox(height: 16),
+_sectionTitle("Invoice Information"),
+_infoCard([
+  _info(
+    "Subtotal",
+    formatCurrency(
+      subtotal,
+      currency,
+    ),
+  ),
 
-_info(
-  "Balance Due",
-  formatCurrency(due, inv.currency),
-  valueColor: AppColors.danger,
-),
-                          _info("Issue Date", _fmtDate(inv.issueDate)),
-                          _info("Due Date", _fmtDate(inv.dueDate)),
-                        ]),
-                      ],
+  _info(
+    _rateLabel(
+      "Tax",
+      inv.taxType,
+      inv.taxValue,
+    ),
+    formatCurrency(
+      tax,
+      currency,
+    ),
+  ),
+
+  _info(
+    _rateLabel(
+      "Discount",
+      inv.discountType,
+      inv.discountValue,
+    ),
+    formatCurrency(
+      discount,
+      currency,
+    ),
+  ),
+
+  _info(
+    "Total",
+    formatCurrency(
+      total,
+      currency,
+    ),
+  ),
+
+  _info(
+    "Amount Paid",
+    formatCurrency(
+      paid,
+      currency,
+    ),
+    valueColor: AppColors.success,
+  ),
+
+  _info(
+    "Balance Due",
+    formatCurrency(
+      due,
+      currency,
+    ),
+    valueColor: AppColors.danger,
+  ),
+
+  _info(
+    "Issue Date",
+    _fmtDate(inv.issueDate),
+  ),
+
+  _info(
+    "Due Date",
+    _fmtDate(inv.dueDate),
+  ),
+]),                      ],
                     ),
 
                     /// ACTIVITY TAB
@@ -232,10 +272,20 @@ _info(
                           "Invoice created",
                           _fmtDateTime(inv.createdAt.toString()),
                         ),
-                        _timelineCard(
-                          "Invoice updated",
-                          _fmtDateTime(inv.updatedAt.toString()),
-                        ),
+                        if (inv.statusHistory.isEmpty)
+                          _timelineCard(
+                            "Invoice updated",
+                            _fmtDateTime(inv.updatedAt.toString()),
+                          )
+                        else
+                          ...inv.statusHistory.map((h) => _timelineCard(
+                                h.amountPaid > 0
+                                    ? "Status changed to ${h.status} · ${formatCurrency(h.amountPaid, inv.currency)} paid"
+                                    : "Status changed to ${h.status}",
+                                h.changedAt != null
+                                    ? _fmtDateTime(h.changedAt.toString())
+                                    : "-",
+                              )),
                       ],
                     ),
                   ],

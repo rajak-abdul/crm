@@ -10,12 +10,23 @@
 // ╚══════════════════════════════════════════════════════════════
 import 'dart:io';
 import 'package:crm_app/modals/modals.dart'
-    show AppConstants, Lead, AppUser, Attachment, CustomField;
+    show
+        AppConstants,
+        Lead,
+        AppUser,
+        Attachment,
+        CustomField,
+        LeadActivity,
+        LeadNote;
 import 'package:crm_app/screen/deals/modal/deal_modal.dart' show DealConstants;
 import 'package:crm_app/screen/leads/cubit/call_cubit.dart';
 import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
 import 'package:crm_app/screen/leads/ui/lead.dart';
+import 'package:crm_app/screen/leads/ui/meeting.dart';
 import 'package:crm_app/screen/leads/ui/reject_lead_screen.dart';
+import 'package:crm_app/screen/meeting/UI/meeting.dart';
+import 'package:crm_app/screen/meeting/cubit/meeting_cubit.dart';
+import 'package:crm_app/screen/meeting/cubit/meeting_state.dart';
 import 'package:crm_app/shareWidgets/missed_followup.dart';
 import 'package:crm_app/shareWidgets/missed_followup_helper.dart';
 import 'package:crm_app/shareWidgets/share_widgets.dart'
@@ -45,7 +56,6 @@ import 'package:just_audio/just_audio.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:phone_numbers_parser/phone_numbers_parser.dart';
 
 // ── Pagination constant ───────────────────────────────────────
@@ -156,15 +166,18 @@ String _mimeStringForAttachmentExt(String ext) {
 class LeadsScreen extends StatelessWidget {
   final String? selectedLeadId;
   final bool showBackButton;
+  final VoidCallback? onLeadOpened;
 
   const LeadsScreen({
   super.key,
-  this.selectedLeadId,    
+  this.selectedLeadId,
   this.showBackButton = false,
+  this.onLeadOpened,
+
 });
   @override
   Widget build(BuildContext context) => MultiBlocProvider(
-    
+
         providers: [
           BlocProvider(
             create: (_) => LeadCubit()..fetchAllLeads(),
@@ -176,6 +189,8 @@ class LeadsScreen extends StatelessWidget {
         child: _LeadsView(
           selectedLeadId: selectedLeadId,
           showBackButton: showBackButton,
+          onLeadOpened: onLeadOpened,
+
         ),
       );
 }
@@ -183,11 +198,14 @@ class LeadsScreen extends StatelessWidget {
 class _LeadsView extends StatefulWidget {
     final String? selectedLeadId;
     final bool showBackButton;
-    
+    final VoidCallback? onLeadOpened;
+
+
 const _LeadsView({
     super.key,
     this.selectedLeadId,
     required this.showBackButton,
+    this.onLeadOpened,
 
   });
  @override
@@ -195,7 +213,8 @@ const _LeadsView({
 }
 
 class _LeadsViewState extends State<_LeadsView> {
-  
+
+  String? _autoOpenedLeadId;
   final TextEditingController _searchController = TextEditingController();
   String _search = '',
       _statusFilter = 'All Status',
@@ -437,6 +456,309 @@ debugPrint(
     }
   }
 
+  bool get _hasActiveFilters =>
+      _statusFilter != 'All Status' ||
+      _sourceFilter != 'All Sources' ||
+      _clientTypeFilter != 'All Client Types' ||
+      _assigneeFilter != 'All Assignees' ||
+      _followupFilter != 'All Follow-ups' ||
+      _fromDate != null ||
+      _toDate != null;
+
+  Future<void> _clearAllFilters() async {
+    setState(() {
+      _statusFilter = 'All Status';
+      _sourceFilter = 'All Sources';
+      _clientTypeFilter = 'All Client Types';
+      _assigneeFilter = 'All Assignees';
+      _followupFilter = 'All Follow-ups';
+      _fromDate = null;
+      _toDate = null;
+      _resetPage();
+    });
+    await context.read<LeadCubit>().fetchAllLeads();
+  }
+
+  void _showFilterSheet() {
+    final leadCubit = context.read<LeadCubit>();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 20,
+                  right: 20,
+                  top: 10,
+                  bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.filter_alt, color: AppColors.primary),
+                          SizedBox(width: 12),
+                          Text(
+                            "Filters",
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      const Text(
+                        "Status",
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      _FilterDrop(
+                        value: _statusFilter,
+                        items: const [
+                          'All Status',
+                          ...AppConstants.leadStatuses,
+                        ],
+                        icon: Icons.flag_outlined,
+                        onChanged: (v) {
+                          setSheetState(() => _statusFilter = v!);
+                          setState(() {});
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        "Source",
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      _FilterDrop(
+                        value: _sourceFilter,
+                        items: const [
+                          'All Sources',
+                          ...AppConstants.leadSources,
+                        ],
+                        icon: Icons.radar_outlined,
+                        onChanged: (v) {
+                          setSheetState(() => _sourceFilter = v!);
+                          setState(() {});
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        "Client Type",
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      _FilterDrop(
+                        value: _clientTypeFilter,
+                        items: const [
+                          'All Client Types',
+                          'B2B',
+                          'B2C',
+                        ],
+                        icon: Icons.business_outlined,
+                        onChanged: (v) {
+                          setSheetState(() => _clientTypeFilter = v!);
+                          setState(() {});
+                        },
+                      ),
+                      if (PermissionHelper.can('users_roles')) ...[
+                        const SizedBox(height: 16),
+                        const Text(
+                          "Assignee",
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 6),
+                        _FilterDrop(
+                          value: _assigneeFilter,
+                          items: _assigneeDropdownItems,
+                          icon: Icons.person_outline,
+                          labelBuilder: (value) {
+                            if (value == 'All Assignees') {
+                              return value;
+                            }
+                            return _assigneeIdToName[value] ?? value;
+                          },
+                          onChanged: (v) {
+                            setSheetState(() => _assigneeFilter = v!);
+                            setState(() {});
+                          },
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+                      const Text(
+                        "Follow-up",
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Expanded(
+                            child: _FilterDrop(
+                              value: _followupFilter,
+                              items: _followupItems,
+                              icon: Icons.event_available_outlined,
+                              onChanged: (value) async {
+                                if (value == null) return;
+                                setSheetState(() => _followupFilter = value);
+                                setState(() {});
+                                await leadCubit.fetchAllLeads();
+                              },
+                            ),
+                          ),
+                          if (_followupFilter != 'All Follow-ups')
+                            IconButton(
+                              tooltip: 'Clear',
+                              icon: const Icon(Icons.clear, size: 18),
+                              onPressed: () async {
+                                setSheetState(
+                                    () => _followupFilter = 'All Follow-ups');
+                                setState(() {});
+                                await leadCubit.fetchAllLeads();
+                              },
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        "From Date",
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      InkWell(
+                        onTap: () async {
+                          final date = await showDatePicker(
+                            context: context,
+                            firstDate: DateTime(2023),
+                            lastDate: DateTime(2100),
+                            initialDate: _fromDate ?? DateTime.now(),
+                          );
+
+                          if (date != null) {
+                            setSheetState(() => _fromDate = date);
+                            setState(() {});
+                          }
+                        },
+                        child: InputDecorator(
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.calendar_today),
+                            suffixIcon: _fromDate == null
+                                ? null
+                                : IconButton(
+                                    tooltip: 'Clear',
+                                    icon: const Icon(Icons.clear, size: 18),
+                                    onPressed: () {
+                                      setSheetState(() => _fromDate = null);
+                                      setState(() {});
+                                    },
+                                  ),
+                            border: const OutlineInputBorder(),
+                          ),
+                          child: Text(
+                            _fromDate == null
+                                ? "From Date"
+                                : "${_fromDate!.day}/${_fromDate!.month}/${_fromDate!.year}",
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        "To Date",
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      InkWell(
+                        onTap: () async {
+                          final date = await showDatePicker(
+                            context: context,
+                            firstDate: DateTime(2023),
+                            lastDate: DateTime(2100),
+                            initialDate: _toDate ?? DateTime.now(),
+                          );
+
+                          if (date != null) {
+                            setSheetState(() => _toDate = date);
+                            setState(() {});
+                          }
+                        },
+                        child: InputDecorator(
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.calendar_today),
+                            suffixIcon: _toDate == null
+                                ? null
+                                : IconButton(
+                                    tooltip: 'Clear',
+                                    icon: const Icon(Icons.clear, size: 18),
+                                    onPressed: () {
+                                      setSheetState(() => _toDate = null);
+                                      setState(() {});
+                                    },
+                                  ),
+                            border: const OutlineInputBorder(),
+                          ),
+                          child: Text(
+                            _toDate == null
+                                ? "To Date"
+                                : "${_toDate!.day}/${_toDate!.month}/${_toDate!.year}",
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () {
+                                setState(() {
+                                  _statusFilter = 'All Status';
+                                  _sourceFilter = 'All Sources';
+                                  _clientTypeFilter = 'All Client Types';
+                                  _assigneeFilter = 'All Assignees';
+                                  _followupFilter = 'All Follow-ups';
+                                  _fromDate = null;
+                                  _toDate = null;
+                                  _resetPage();
+                                });
+                                Navigator.pop(context);
+                              },
+                              child: const Text("Reset"),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: () async {
+                                _resetPage();
+                                await leadCubit.fetchAllLeads();
+                                if (mounted) {
+                                  Navigator.pop(context);
+                                }
+                              },
+                              child: const Text("Apply"),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return BlocConsumer<LeadCubit, LeadState>(
@@ -455,249 +777,34 @@ debugPrint(
       builder: (context, state) {
         final allFiltered = state is LeadLoaded ? _filter(state.leads) : <Lead>[];
 
-      if (state is LeadLoaded && widget.selectedLeadId != null) {
-    final lead = state.leads.firstWhere(
-      (e) => e.id == widget.selectedLeadId,
-    );
+      if (state is LeadLoaded &&
+    widget.selectedLeadId != null &&
+    _autoOpenedLeadId != widget.selectedLeadId) {
+  _autoOpenedLeadId = widget.selectedLeadId;
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      openDetail(context, lead);
-    });
-  }
+  WidgetsBinding.instance.addPostFrameCallback((_) async {
+    if (!mounted) return;
+    try {
+      final leadCubit = context.read<LeadCubit>();
+      final lead = await leadCubit.fetchLeadById(widget.selectedLeadId!);
+      if (!mounted) return;
+      if (lead != null) {
+  openDetail(context, lead);
+
+  widget.onLeadOpened?.call();
+}
+    } catch (e, st) {
+      debugPrint('EXCEPTION IN AUTO-OPEN: $e');
+      debugPrint('$st');
+    }
+  });
+}
         final leads = allFiltered; // CHANGED — no more _paginate(); server already gave us one page
         final allCount = state is LeadLoaded ? (state.totalCount ?? state.leads.length) : 0;
         final totalPages = _totalPages(state);
 
         return Scaffold(
             key: _scaffoldKey,
-            drawer: Drawer(
-  width: 250,
-  child: SafeArea(
-    child: Column(
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 20,
-            vertical: 18,
-          ),
-          decoration: const BoxDecoration(
-            color: AppColors.primary,
-          ),
-          child: const Row(
-            children: [
-              Icon(
-                Icons.filter_alt,
-                color: Colors.white,
-              ),
-              SizedBox(width: 12),
-              Text(
-                "Filters",
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                _FilterDrop(
-  value: _statusFilter,
-  items: const [
-    'All Status',
-    ...AppConstants.leadStatuses,
-  ],
-  icon: Icons.flag_outlined,
-  onChanged: (v) {
-    setState(() {
-      _statusFilter = v!;
-    });
-  },
-),
-
-const SizedBox(height: 16),
-_FilterDrop(
-  value: _sourceFilter,
-  items: const [
-    'All Sources',
-    ...AppConstants.leadSources,
-  ],
-  icon: Icons.radar_outlined,
-  onChanged: (v) {
-    setState(() {
-      _sourceFilter = v!;
-    });
-  },
-),
-
-const SizedBox(height: 16),
-_FilterDrop(
-  value: _clientTypeFilter,
-  items: const [
-    'All Client Types',
-    'B2B',
-    'B2C',
-  ],
-  icon: Icons.business_outlined,
-  onChanged: (v) {
-    setState(() {
-      _clientTypeFilter = v!;
-    });
-  },
-),
-
-const SizedBox(height: 16),
-if (PermissionHelper.can('users_roles'))
-  _FilterDrop(
-    value: _assigneeFilter,
-    items: _assigneeDropdownItems,
-    icon: Icons.person_outline,
-    labelBuilder: (value) {
-      if (value == 'All Assignees') {
-        return value;
-      }
-      return _assigneeIdToName[value] ?? value;
-    },
-    onChanged: (v) {
-      setState(() {
-        _assigneeFilter = v!;
-      });
-    },
-  ),
-  
-
-if (PermissionHelper.can('users_roles'))
-  const SizedBox(height: 16),
-  _FilterDrop(
-  value: _followupFilter,
-  items: _followupItems,
-  icon: Icons.event_available_outlined,
-  onChanged: (value) async {
-  if (value == null) return;
-
-  setState(() {
-    _followupFilter = value;
-  });
-
-  await context.read<LeadCubit>().fetchAllLeads();
-},
-),
-
-const SizedBox(height: 16),
-InkWell(
-  onTap: () async {
-    final date = await showDatePicker(
-      context: context,
-      firstDate: DateTime(2023),
-      lastDate: DateTime(2100),
-      initialDate: _fromDate ?? DateTime.now(),
-    );
-
-    if (date != null) {
-      setState(() {
-        _fromDate = date;
-      });
-    }
-  },
-  child: InputDecorator(
-    decoration: const InputDecoration(
-      prefixIcon: Icon(Icons.calendar_today),
-      border: OutlineInputBorder(),
-    ),
-    child: Text(
-      _fromDate == null
-          ? "From Date"
-          : "${_fromDate!.day}/${_fromDate!.month}/${_fromDate!.year}",
-    ),
-  ),
-),
-
-const SizedBox(height: 16),
-
-InkWell(
-  onTap: () async {
-    final date = await showDatePicker(
-      context: context,
-      firstDate: DateTime(2023),
-      lastDate: DateTime(2100),
-      initialDate: _toDate ?? DateTime.now(),
-    );
-
-    if (date != null) {
-      setState(() {
-        _toDate = date;
-      });
-    }
-  },
-  child: InputDecorator(
-    decoration: const InputDecoration(
-      //labelText: "To Date",
-      prefixIcon: Icon(Icons.calendar_today),
-      border: OutlineInputBorder(),
-    ),
-    child: Text(
-      _toDate == null
-          ? "To Date"
-          : "${_toDate!.day}/${_toDate!.month}/${_toDate!.year}",
-    ),
-  ),
-),
-const SizedBox(height: 24),
-
-Row(
-  children: [
-    Expanded(
-      child: OutlinedButton(
-        onPressed: () {
-          setState(() {
-            _statusFilter = 'All Status';
-            _sourceFilter = 'All Sources';
-            _clientTypeFilter = 'All Client Types';
-            _assigneeFilter = 'All Assignees';
-            _followupFilter = 'All Follow-ups';
-
-            _fromDate = null;
-            _toDate = null;
-
-            _resetPage();
-          });
-
-          Navigator.pop(context);
-        },
-        child: const Text("Reset"),
-      ),
-    ),
-
-    const SizedBox(width: 12),
-
-    Expanded(
-      child: ElevatedButton(
-        onPressed: () async {
-  _resetPage();
-  await context.read<LeadCubit>().fetchAllLeads();
-  if (mounted) {
-    Navigator.pop(context);
-  }
-},
-        child: const Text("Apply"),
-      ),
-    ),
-  ],
-),
-              ],
-            ),
-          ),
-        ),
-      ],
-    ),
-  ),
-),
           backgroundColor: AppColors.background,
           appBar: AppBar(
             automaticallyImplyLeading: widget.showBackButton,
@@ -797,10 +904,13 @@ leading: widget.showBackButton
     const SizedBox(width: 8),
 
     IconButton(
-      icon: const Icon(Icons.filter_alt_outlined),
-      onPressed: () {
-        _scaffoldKey.currentState!.openDrawer();
-      },
+      tooltip: _hasActiveFilters ? 'Clear filters' : 'Filters',
+      icon: Icon(
+        _hasActiveFilters
+            ? Icons.filter_alt_off_outlined
+            : Icons.filter_alt_outlined,
+      ),
+      onPressed: _hasActiveFilters ? _clearAllFilters : _showFilterSheet,
     ),
     PopupMenuButton<String>(
       color: AppColors.surface,
@@ -1485,9 +1595,12 @@ Container(
         child: Scaffold(
           backgroundColor: Colors.transparent,
           resizeToAvoidBottomInset: true,
-          body: BlocProvider.value(
-            value: cubit,
-            child: LeadDetailSheet(lead: fullLead ?? lead),
+          body: MultiBlocProvider(
+            providers: [
+              BlocProvider.value(value: cubit),
+              BlocProvider(create: (_) => MeetingsCubit()..loadMeetings()),
+            ],
+            child: LeadDetailSheet(lead: fullLead ?? lead, leadCubit: cubit),
           ),
         ),
       ),
@@ -2290,15 +2403,22 @@ class _StatusPickerSheet extends StatelessWidget {
 // ══════════════════════════════════════════════════════════════
 class LeadDetailSheet extends StatefulWidget {
   final Lead lead;
-  const LeadDetailSheet({super.key, required this.lead});
+  final LeadCubit leadCubit;
+
+  const LeadDetailSheet({super.key, required this.lead,required this.leadCubit
+});
 
   @override
   State<LeadDetailSheet> createState() => LeadDetailSheetState();
 }
 
 class LeadDetailSheetState extends State<LeadDetailSheet> {
- late Lead _currentLead;           // ADD
+  
+  late Lead _currentLead;           // ADD
   Lead get lead => _currentLead;
+  List<LeadActivity> _activities = [];
+  bool _activityLoading = false;
+  
   String _getImageUrl(String path) {
   if (path.startsWith('http://') ||
       path.startsWith('https://')) {
@@ -2309,11 +2429,17 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
 }
   final AudioPlayer _player = AudioPlayer();
     final ScrollController _followUpsScrollController = ScrollController(); // ADD
+  final GlobalKey<ScaffoldMessengerState> _detailMessengerKey =
+      GlobalKey<ScaffoldMessengerState>();
 
  @override
   void initState() {               // ADD
     super.initState();
     _currentLead = widget.lead;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+    _loadLeadActivity();
+  });
+
   }
 
 
@@ -2329,10 +2455,17 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
 
 
   ScaffoldMessengerState? _snackMessenger(BuildContext context) {
+    // GlobalKey lookup first — immune to the passed-in context going
+    // stale (e.g. a list item's context deactivated by a rebuild that
+    // happened during an awaited call, like refreshing meetings after
+    // an edit).
+    final localSheet = _detailMessengerKey.currentState;
+    if (localSheet != null) return localSheet;
+    if (!context.mounted) return null;
     final local = ScaffoldMessenger.maybeOf(context);
     if (local != null) return local;
     final rootNav = Navigator.maybeOf(context, rootNavigator: true);
-    if (rootNav == null) return null;
+    if (rootNav == null || !rootNav.context.mounted) return null;
     return ScaffoldMessenger.maybeOf(rootNav.context);
   }
 
@@ -2362,6 +2495,107 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
     final clean = rawPath.startsWith('/') ? rawPath : '/$rawPath';
     return '$base$clean';
   }
+
+  Future<void> _loadLeadActivity() async {
+  if (!mounted) return;
+
+  setState(() {
+    _activityLoading = true;
+  });
+
+  final activities = await widget.leadCubit
+    .fetchLeadActivity(_currentLead.id);
+
+  if (!mounted) return;
+
+  setState(() {
+    _activities = activities;
+    _activityLoading = false;
+  });
+}
+
+  Future<void> _deleteLeadAttachment(dynamic attachment) async {
+  final confirm = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        title: const Text('Delete attachment?'),
+        content: Text(
+          'Are you sure you want to delete "${attachment.name}"?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext, false);
+            },
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext, true);
+            },
+            child: const Text(
+              'Delete',
+              style: TextStyle(color: Colors.red),
+            ),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (confirm != true || !mounted) return;
+
+  try {
+    final retainedAttachmentPaths = _currentLead.attachments
+        .where((file) => file.path != attachment.path)
+        .map((file) => file.path)
+        .where((path) => path.isNotEmpty)
+        .toList();
+
+    final error = await context.read<LeadCubit>().updateLead(
+      _currentLead.id,
+      _currentLead,
+      retainedAttachmentPaths: retainedAttachmentPaths,
+      retainedImagePaths: _currentLead.images
+          .map((image) => image.path)
+          .where((path) => path.isNotEmpty)
+          .toList(),
+    );
+
+    if (!mounted) return;
+
+    if (error != null) {
+      showApiSnack(
+        context,
+        error,
+        isError: true,
+      );
+      return;
+    }
+
+    setState(() {
+      _currentLead = _currentLead.copyWith(
+        attachments: _currentLead.attachments
+            .where((file) => file.path != attachment.path)
+            .toList(),
+      );
+    });
+
+    showApiSnack(
+      context,
+      'Attachment deleted successfully',
+    );
+  } catch (e) {
+    if (!mounted) return;
+
+    showApiSnack(
+      context,
+      'Failed to delete attachment: $e',
+      isError: true,
+    );
+  }
+}
   
   Future<void> _previewFile(BuildContext context, String rawPath) async {
   final prefs = await SharedPreferences.getInstance();
@@ -2591,8 +2825,12 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
 }
 
   @override
-  Widget build(BuildContext ctx) => DefaultTabController(
-        length: 3,
+  Widget build(BuildContext ctx) => ScaffoldMessenger(
+        key: _detailMessengerKey,
+        child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: DefaultTabController(
+        length: 7,
         child: DraggableScrollableSheet(
           initialChildSize: 0.75,
           maxChildSize: 0.95,
@@ -2645,29 +2883,1338 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
                 ]),
               ),
               const SizedBox(height: 10),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 20),
-                child: TabBar(
-                  labelColor: AppColors.primary,
-                  unselectedLabelColor: AppColors.textSecondary,
-                  indicatorColor: AppColors.primary,
-                  tabs: [Tab(text: 'Details'), Tab(text: 'Activity'), Tab(text: 'Follow-ups'),],
-                ),
-              ),
+            const  Padding(
+  padding: EdgeInsets.symmetric(horizontal: 20),
+  child: TabBar(
+    isScrollable: true,
+    tabAlignment: TabAlignment.start,
+    labelColor: AppColors.primary,
+    unselectedLabelColor: AppColors.textSecondary,
+    indicatorColor: AppColors.primary,
+    labelStyle: TextStyle(
+      fontSize: 13,
+      fontWeight: FontWeight.w600,
+    ),
+    unselectedLabelStyle: TextStyle(
+      fontSize: 13,
+      fontWeight: FontWeight.w400,
+    ),
+    tabs: [
+   Tab(
+    icon: Icon(Icons.info_outline, size: 18),
+    text: 'Details',
+  ),
+   Tab(
+    icon: Icon(Icons.timeline_outlined, size: 18),
+    text: 'Activity',
+  ),
+   Tab(
+    icon: Icon(Icons.event_note_outlined, size: 18),
+    text: 'Follow-ups',
+  ),
+   Tab(
+    icon: Icon(Icons.attach_file_outlined, size: 18),
+    text: 'Attachments',
+  ),
+   Tab(
+    icon: Icon(Icons.image_outlined, size: 18),
+    text: 'Images',
+  ),
+   Tab(
+    icon: Icon(Icons.notes_outlined, size: 18),
+    text: 'Notes',
+  ),
+   Tab(
+    icon: Icon(Icons.meeting_room_outlined, size: 18),
+    text: 'Meetings',
+  ),
+],
+  ),
+),
               const Divider(height: 16, color: AppColors.divider),
               Expanded(
-                child: TabBarView(
-                  children: [
-                    _buildDetailsTab(ctrl),
-                    _buildActivityTab(ctrl),
-                    _buildFollowUpsTab(), // ADD
-                  ],
-                ),
+  child: TabBarView(
+    children: [
+      // 1. Details
+      _buildDetailsTab(ctrl),
+
+      // 2. Activity
+      _buildActivityTab(ctrl),
+
+      // 3. Follow-ups
+      _buildFollowUpsTab(),
+
+      // 4. Attachments
+      Stack(
+        children: [
+          _buildAttachmentsTab(),
+
+          Positioned(
+            right: 20,
+            bottom: 20,
+            child: FloatingActionButton(
+              mini: true,
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              elevation: 4,
+              tooltip: 'Upload attachment',
+              onPressed: _uploadAttachment,
+              child: const Icon(
+                Icons.attach_file,
+                size: 20,
               ),
+            ),
+          ),
+        ],
+      ),
+
+      // 5. Images
+      Stack(
+        children: [
+          _buildImagesTab(),
+
+          Positioned(
+            right: 20,
+            bottom: 20,
+            child: FloatingActionButton(
+              mini: true,
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              elevation: 4,
+              tooltip: 'Upload image',
+              onPressed: _uploadImage,
+              child: const Icon(
+                Icons.upload_rounded,
+                size: 20,
+              ),
+            ),
+          ),
+        ],
+      ),
+
+      // 6. Notes
+      Stack(
+        children: [
+          _buildNotesTab(),
+
+          Positioned(
+            right: 20,
+            bottom: 20,
+            child: FloatingActionButton(
+              mini: true,
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              elevation: 4,
+              tooltip: 'Add note',
+              onPressed: _showAddNoteDialog,
+              child: const Icon(
+                Icons.note_add_outlined,
+                size: 20,
+              ),
+            ),
+          ),
+        ],
+      ),
+
+      // 7. Meetings
+      _buildMeetingsTab(),
+    ],
+  ),
+),
             ]),
           ),
         ),
+      )));
+      Widget _buildMeetingsTab() {
+  return Stack(
+    children: [
+      _buildLeadMeetings(),
+
+      Positioned(
+        right: 20,
+        bottom: 20,
+        child: BlocBuilder<MeetingsCubit, MeetingsState>(
+          builder: (context, state) {
+            final connected = switch (state) {
+              MeetingsLoaded(:final googleConnected) => googleConnected,
+              MeetingsCreating(:final googleConnected) => googleConnected,
+              _ => false,
+            };
+
+            return Opacity(
+              opacity: connected ? 1 : 0.45,
+              child: FloatingActionButton(
+                mini: true,
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                elevation: 4,
+                tooltip: connected
+                    ? 'Create meeting'
+                    : 'Connect Google to create meetings',
+                onPressed: connected ? _createMeetingForLead : null,
+                child: Icon(
+                  connected ? Icons.add : Icons.lock_outline,
+                  size: 20,
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    ],
+  );
+}
+Widget _buildLeadMeetings() {
+  return BlocBuilder<MeetingsCubit, MeetingsState>(
+    builder: (context, state) {
+      if (state is MeetingsLoading) {
+        return const Center(
+          child: CircularProgressIndicator(),
+        );
+      }
+
+      if (state is MeetingsError) {
+        return Center(
+          child: Text(
+            state.message,
+            style: const TextStyle(
+              color: Colors.red,
+            ),
+          ),
+        );
+      }
+
+      if (state is MeetingsLoaded) {
+        final leadMeetings = state.meetings.where((meeting) {
+          return meeting.leadId == lead.id;
+        }).toList();
+
+        if (leadMeetings.isEmpty) {
+          return const Center(
+            child: Text(
+              'No meetings for this lead',
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 14,
+              ),
+            ),
+          );
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.fromLTRB(
+            16,
+            16,
+            16,
+            90,
+          ),
+          itemCount: leadMeetings.length,
+          itemBuilder: (context, index) {
+            final meeting = leadMeetings[index];
+
+            return MeetingCard(
+              meeting: meeting,
+              meetingsCubit: context.read<MeetingsCubit>(),
+              onMeetingUpdated: (message) async {
+                _showSnack(
+                  context,
+                  SnackBar(
+                    content: Text(message),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              },
+            );
+          },
+        );
+      }
+
+      return const Center(
+        child: Text(
+          'No meetings for this lead',
+          style: TextStyle(
+            color: AppColors.textSecondary,
+          ),
+        ),
       );
+    },
+  );
+}
+
+void _createMeetingForLead() {
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) {
+      return CreateMeetingSheet(
+        leadId: lead.id,
+        checkZoomConnection: () =>
+            context.read<MeetingsCubit>().checkZoomConnection(),
+        onSubmit: ({
+          required title,
+          required description,
+          required startDateTime,
+          required endDateTime,
+          required attendees,
+          required reminderMinutes,
+          required provider,
+        }) async {
+          final success = await context
+              .read<MeetingsCubit>()
+              .createMeeting(
+                title: title,
+                description: description,
+                leadId: lead.id,
+                startDateTime: startDateTime,
+                endDateTime: endDateTime,
+                attendees: attendees,
+                reminderMinutes: reminderMinutes,
+                provider: provider,
+              );
+
+          if (!mounted) return;
+
+          if (success) {
+            Navigator.pop(context);
+
+            await context
+                .read<MeetingsCubit>()
+                .loadMeetings();
+
+            if (!mounted) return;
+
+            showApiSnack(context, 'Meeting created successfully');
+          }
+        },
+      );
+    },
+  );
+}Future<void> _uploadAttachment() async {
+  try {
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: true,
+      type: FileType.any,
+      withData: false,
+    );
+
+    if (result == null || result.files.isEmpty || !mounted) {
+      return;
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) {
+        return const Center(
+          child: CircularProgressIndicator(),
+        );
+      },
+    );
+
+    final List<MultipartFile> files = [];
+
+    for (final file in result.files) {
+      if (file.path == null || file.path!.isEmpty) {
+        continue;
+      }
+
+      files.add(
+        await MultipartFile.fromFile(
+          file.path!,
+          filename: file.name,
+        ),
+      );
+    }
+
+    if (!mounted) return;
+
+    if (files.isEmpty) {
+      Navigator.of(context).pop();
+
+      showApiSnack(
+        context,
+        'Unable to read selected files',
+        isError: true,
+      );
+      return;
+    }
+
+    final cubit = context.read<LeadCubit>();
+
+    final error = await cubit.updateLead(
+      _currentLead.id,
+      _currentLead,
+      attachments: files,
+      images: const [],
+      retainedAttachmentPaths: _currentLead.attachments
+          .map((a) => a.path)
+          .where((path) => path.isNotEmpty)
+          .toList(),
+      retainedImagePaths: _currentLead.images
+          .map((image) => image.path)
+          .where((path) => path.isNotEmpty)
+          .toList(),
+    );
+
+    if (!mounted) return;
+
+    Navigator.of(context).pop();
+
+    if (error != null) {
+      showApiSnack(
+        context,
+        error,
+        isError: true,
+      );
+      return;
+    }
+
+    showApiSnack(
+      context,
+      files.length == 1
+          ? 'Attachment uploaded successfully'
+          : '${files.length} attachments uploaded successfully',
+    );
+
+    await _refreshLead();
+  } catch (e) {
+    if (!mounted) return;
+
+    Navigator.of(context).pop();
+
+    showApiSnack(
+      context,
+      'Failed to upload attachment: $e',
+      isError: true,
+    );
+  }
+}
+Future<void> _showAddNoteDialog() async {
+  final notesController = TextEditingController();
+  bool saving = false;
+
+  await showDialog(
+    context: context,
+    builder: (dialogContext) {
+      return StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+            backgroundColor: AppColors.surface,
+
+            title: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(
+                    Icons.note_add_outlined,
+                    color: AppColors.primary,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  'Add Note',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+
+            content: TextField(
+              controller: notesController,
+              autofocus: true,
+              maxLines: 5,
+              enabled: !saving,
+              textInputAction: TextInputAction.newline,
+              decoration: InputDecoration(
+                hintText: 'Enter your note...',
+                filled: true,
+                fillColor: AppColors.background,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(
+                    color: AppColors.border,
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(
+                    color: AppColors.primary,
+                  ),
+                ),
+              ),
+            ),
+
+            actions: [
+              TextButton(
+                onPressed: saving
+                    ? null
+                    : () {
+                        Navigator.pop(dialogContext);
+                      },
+                child: const Text('Cancel'),
+              ),
+
+              ElevatedButton(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        final note =
+                            notesController.text.trim();
+
+                        if (note.isEmpty) {
+                          showApiSnack(
+                            context,
+                            'Please enter a note',
+                            isError: true,
+                          );
+                          return;
+                        }
+
+                        setDialogState(() {
+                          saving = true;
+                        });
+
+                        final error =
+                            await context
+                                .read<LeadCubit>()
+                                .addNote(
+                                  _currentLead.id,
+                                  note,
+                                );
+
+                        if (!dialogContext.mounted) {
+                          return;
+                        }
+
+                        if (error == null) {
+                          Navigator.pop(dialogContext);
+
+                          showApiSnack(
+                            context,
+                            'Note added successfully',
+                          );
+
+                          await _refreshLead();
+                        } else {
+                          setDialogState(() {
+                            saving = false;
+                          });
+
+                          showApiSnack(
+                            context,
+                            error,
+                            isError: true,
+                          );
+                        }
+                      },
+                child: saving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Text('Save'),
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+
+ 
+}
+Future<void> _uploadImage() async {
+  final source = await showModalBottomSheet<ImageSource>(
+    context: context,
+    backgroundColor: AppColors.surface,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(
+        top: Radius.circular(20),
+      ),
+    ),
+    builder: (context) {
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Upload Image',
+                style: TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+
+              const SizedBox(height: 16),
+
+              ListTile(
+                leading: const CircleAvatar(
+                  child: Icon(Icons.camera_alt_outlined),
+                ),
+                title: const Text('Camera'),
+                subtitle: const Text('Take a new photo'),
+                onTap: () {
+                  Navigator.pop(
+                    context,
+                    ImageSource.camera,
+                  );
+                },
+              ),
+
+              ListTile(
+                leading: const CircleAvatar(
+                  child: Icon(Icons.photo_library_outlined),
+                ),
+                title: const Text('Gallery'),
+                subtitle: const Text('Choose from gallery'),
+                onTap: () {
+                  Navigator.pop(
+                    context,
+                    ImageSource.gallery,
+                  );
+                },
+              ),
+
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+
+  if (source == null || !mounted) return;
+
+  try {
+    final picker = ImagePicker();
+
+    final image = await picker.pickImage(
+      source: source,
+      imageQuality: 85,
+    );
+
+    if (image == null || !mounted) return;
+
+    // Continue with your existing upload code
+    final multipartImage = await MultipartFile.fromFile(
+      image.path,
+      filename: image.name,
+    );
+
+    // Your existing updateLead() code here...
+  } catch (e) {
+    if (!mounted) return;
+
+    showApiSnack(
+      context,
+      'Failed to select image: $e',
+      isError: true,
+    );
+  }
+}
+
+Future<void> _refreshLead() async {
+  try {
+    final cubit = context.read<LeadCubit>();
+
+    final refreshedLead = await cubit.fetchLeadById(lead.id);
+
+    if (!mounted || refreshedLead == null) return;
+
+    setState(() {
+      _currentLead = refreshedLead;
+    });
+  } catch (e) {
+    debugPrint('Failed to refresh lead: $e');
+  }
+}
+
+Widget _buildNotesTab() {
+  final notes = _currentLead.notesList;
+
+  if (notes.isEmpty) {
+    return const Center(
+      child: Text(
+        'No notes',
+        style: TextStyle(
+          fontSize: 13,
+          color: AppColors.textSecondary,
+        ),
+      ),
+    );
+  }
+
+  return ListView.builder(
+    padding: const EdgeInsets.all(16),
+    itemCount: notes.length,
+    itemBuilder: (context, index) {
+      final note = notes[index];
+
+      final createdBy = note.createdBy?.fullName ?? 'Unknown';
+
+      return Card(
+  margin: const EdgeInsets.only(bottom: 10),
+  child: Padding(
+    padding: const EdgeInsets.all(14),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // NOTE TEXT
+            Expanded(
+              child: Text(
+                note.text,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+
+            // EDIT
+            IconButton(
+              tooltip: 'Edit',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(
+                minWidth: 32,
+                minHeight: 32,
+              ),
+              icon: const Icon(
+                Icons.edit_outlined,
+                size: 18,
+                color: AppColors.primary,
+              ),
+              onPressed: () {
+                _editNote(note);
+              },
+            ),
+
+            // DELETE
+            IconButton(
+              tooltip: 'Delete',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(
+                minWidth: 32,
+                minHeight: 32,
+              ),
+              icon: const Icon(
+                Icons.delete_outline,
+                size: 18,
+                color: Colors.red,
+              ),
+              onPressed: () {
+                _deleteNote(note);
+              },
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 8),
+
+        Text(
+          '$createdBy • ${note.createdAt != null ? DateFormat('dd MMM yyyy, hh:mm a').format(note.createdAt!) : ''}',
+          style: const TextStyle(
+            fontSize: 11,
+            color: AppColors.textSecondary,
+          ),
+        ),
+      ],
+    ),
+  ),
+);
+    },
+  );
+}
+
+Widget _buildImagesTab() {
+  if (lead.images.isEmpty) {
+    return const Center(
+      child: Text(
+        'No images',
+        style: TextStyle(
+          fontSize: 13,
+          color: AppColors.textSecondary,
+        ),
+      ),
+    );
+  }
+
+  return GridView.builder(
+    padding: const EdgeInsets.all(20),
+    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+      crossAxisCount: 3,
+      crossAxisSpacing: 10,
+      mainAxisSpacing: 10,
+    ),
+    itemCount: lead.images.length,
+    itemBuilder: (context, index) {
+      final image = lead.images[index];
+      final imageUrl = _getImageUrl(image.path);
+
+      return Stack(
+        children: [
+          GestureDetector(
+            onTap: () {
+              showDialog(
+                context: context,
+                barrierColor: Colors.black87,
+                builder: (dialogContext) {
+                  return Dialog(
+                    backgroundColor: Colors.transparent,
+                    insetPadding: const EdgeInsets.all(10),
+                    child: Stack(
+                      children: [
+                        Center(
+                          child: InteractiveViewer(
+                            minScale: 0.5,
+                            maxScale: 4.0,
+                            child: Image.network(
+                              imageUrl,
+                              fit: BoxFit.contain,
+                              errorBuilder: (_, __, ___) {
+                                return const Icon(
+                                  Icons.broken_image,
+                                  color: Colors.white,
+                                  size: 60,
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          top: 10,
+                          right: 10,
+                          child: IconButton(
+                            onPressed: () {
+                              Navigator.pop(dialogContext);
+                            },
+                            icon: const Icon(
+                              Icons.close,
+                              color: Colors.white,
+                              size: 30,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              );
+            },
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.network(
+                imageUrl,
+                width: double.infinity,
+                height: double.infinity,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) {
+                  return Container(
+                    color: AppColors.background,
+                    child: const Icon(
+                      Icons.broken_image,
+                      color: Colors.grey,
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+
+          Positioned(
+            right: 5,
+            bottom: 5,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: const BoxDecoration(
+                    color: Colors.black54,
+                    shape: BoxShape.circle,
+                  ),
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    tooltip: 'Download',
+                    iconSize: 18,
+                    onPressed: () {
+                      _downloadFile(
+                        context,
+                        image.path,
+                        image.path.split('/').last,
+                      );
+                    },
+                    icon: const Icon(
+                      Icons.download,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+
+                const SizedBox(width: 6),
+
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: const BoxDecoration(
+                    color: Colors.red,
+                    shape: BoxShape.circle,
+                  ),
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    tooltip: 'Delete',
+                    iconSize: 18,
+                    onPressed: () {
+                      _deleteLeadImage(image);
+                    },
+                    icon: const Icon(
+                      Icons.delete_outline,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+Future<void> _deleteNote(LeadNote note) async {
+  final confirm = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        title: const Text('Delete note?'),
+        content: const Text(
+          'Are you sure you want to delete this note?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext, false);
+            },
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext, true);
+            },
+            child: const Text(
+              'Delete',
+              style: TextStyle(color: Colors.red),
+            ),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (confirm != true || !mounted) return;
+
+  try {
+    final error = await context.read<LeadCubit>().deleteNote(
+      _currentLead.id,
+      note.id,
+    );
+
+    if (!mounted) return;
+
+    if (error != null) {
+      showApiSnack(
+        context,
+        error,
+        isError: true,
+      );
+      return;
+    }
+
+    // Remove the deleted note from the current UI immediately.
+    setState(() {
+      _currentLead = _currentLead.copyWith(
+        notesList: _currentLead.notesList
+            .where((n) => n.id != note.id)
+            .toList(),
+      );
+    });
+
+    showApiSnack(
+      context,
+      'Note deleted successfully',
+    );
+  } catch (e) {
+    if (!mounted) return;
+
+    showApiSnack(
+      context,
+      'Failed to delete note: $e',
+      isError: true,
+    );
+  }
+}
+Future<void> _editNote(LeadNote note) async {
+  final controller = TextEditingController(
+    text: note.text,
+  );
+
+  bool saving = false;
+
+  await showDialog(
+    context: context,
+    builder: (dialogContext) {
+      return StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+            title: const Text(
+              'Edit Note',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            content: TextField(
+              controller: controller,
+              autofocus: true,
+              maxLines: 5,
+              enabled: !saving,
+              decoration: InputDecoration(
+                hintText: 'Enter note...',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: saving
+                    ? null
+                    : () {
+                        Navigator.pop(dialogContext);
+                      },
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        final text = controller.text.trim();
+
+                        if (text.isEmpty) {
+                          showApiSnack(
+                            context,
+                            'Please enter a note',
+                            isError: true,
+                          );
+                          return;
+                        }
+
+                        setDialogState(() {
+                          saving = true;
+                        });
+
+                        final error =
+                            await context.read<LeadCubit>().updateNote(
+                                  _currentLead.id,
+                                  note.id,
+                                  text,
+                                );
+
+                        if (!dialogContext.mounted) return;
+
+                        if (error != null) {
+                          setDialogState(() {
+                            saving = false;
+                          });
+
+                          showApiSnack(
+                            context,
+                            error,
+                            isError: true,
+                          );
+                          return;
+                        }
+
+                        Navigator.pop(dialogContext);
+
+                        // Update UI immediately without DB.
+                        if (mounted) {
+                          setState(() {
+                            _currentLead = _currentLead.copyWith(
+                              notesList: _currentLead.notesList.map((n) {
+                                if (n.id == note.id) {
+                                  return LeadNote(
+                                    id: n.id,
+                                    text: text,
+                                    createdBy: n.createdBy,
+                                    createdAt: n.createdAt,
+                                    updatedAt: DateTime.now(),
+                                  );
+                                }
+
+                                return n;
+                              }).toList(),
+                            );
+                          });
+
+                          showApiSnack(
+                            context,
+                            'Note updated successfully',
+                          );
+                        }
+                      },
+                child: saving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : const Text('Save'),
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+
+  controller.dispose();
+}
+
+Future<void> _deleteLeadImage(dynamic image) async {
+  final confirm = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        title: const Text('Delete image?'),
+        content: const Text(
+          'Are you sure you want to delete this image?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext, false);
+            },
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext, true);
+            },
+            child: const Text(
+              'Delete',
+              style: TextStyle(color: Colors.red),
+            ),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (confirm != true || !mounted) return;
+
+  try {
+    // Keep all images except the one being deleted.
+    final retainedImagePaths = _currentLead.images
+        .where((img) => img.path != image.path)
+        .map((img) => img.path)
+        .where((path) => path.isNotEmpty)
+        .toList();
+
+    final cubit = context.read<LeadCubit>();
+
+    final error = await cubit.updateLead(
+      _currentLead.id,
+      _currentLead,
+      retainedAttachmentPaths: _currentLead.attachments
+          .map((a) => a.path)
+          .where((path) => path.isNotEmpty)
+          .toList(),
+      retainedImagePaths: retainedImagePaths,
+    );
+
+    if (!mounted) return;
+
+    if (error != null) {
+      showApiSnack(
+        context,
+        error,
+        isError: true,
+      );
+      return;
+    }
+
+    // Remove immediately from the UI.
+    setState(() {
+      _currentLead = _currentLead.copyWith(
+        images: _currentLead.images
+            .where((img) => img.path != image.path)
+            .toList(),
+      );
+    });
+
+    showApiSnack(
+      context,
+      'Image deleted successfully',
+    );
+  } catch (e) {
+    if (!mounted) return;
+
+    showApiSnack(
+      context,
+      'Failed to delete image: $e',
+      isError: true,
+    );
+  }
+}
+
+Widget _buildAttachmentsTab() {
+  if (lead.attachments.isEmpty) {
+    return const Center(
+      child: Text(
+        'No attachments',
+        style: TextStyle(
+          fontSize: 13,
+          color: AppColors.textSecondary,
+        ),
+      ),
+    );
+  }
+
+  return ListView.builder(
+    padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+    itemCount: lead.attachments.length,
+    itemBuilder: (context, index) {
+      final attachment = lead.attachments[index];
+
+      return Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 10,
+        ),
+        decoration: BoxDecoration(
+          color: AppColors.background,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: AppColors.border,
+          ),
+        ),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.insert_drive_file_outlined,
+              size: 22,
+              color: AppColors.primary,
+            ),
+
+            const SizedBox(width: 10),
+
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    attachment.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+
+                  const SizedBox(height: 3),
+
+                  Text(
+                    '${(attachment.size / 1024).toStringAsFixed(1)} KB',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppColors.textHint,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            IconButton(
+              icon: const Icon(
+                Icons.visibility_outlined,
+                size: 19,
+                color: AppColors.primary,
+              ),
+              onPressed: () {
+                _previewFile(
+                  context,
+                  attachment.path,
+                );
+              },
+            ),
+
+            IconButton(
+              icon: const Icon(
+                Icons.download_outlined,
+                size: 19,
+                color: AppColors.primary,
+              ),
+              onPressed: () {
+                _downloadFile(
+                  context,
+                  attachment.path,
+                  attachment.name,
+                );
+              },
+            ),
+
+             // DELETE
+    IconButton(
+      tooltip: 'Delete',
+      icon: const Icon(
+        Icons.delete_outline,
+        size: 19,
+        color: Colors.red,
+      ),
+      onPressed: () {
+        _deleteLeadAttachment(attachment);
+      },
+    )
+
+          ],
+        ),
+      );
+    },
+  );
+}
 Widget _buildFollowUpsTab() {
   final today = DateTime.now();
   final todayOnly = DateTime(today.year, today.month, today.day);
@@ -3563,91 +5110,203 @@ Future<void> _openAddFollowUpDialog(BuildContext context) async {
   }
 
   Widget _buildActivityTab(ScrollController ctrl) {
-    final activities = <Map<String, dynamic>>[
-      if (lead.createdAt != null)
-        {
-          'icon': Icons.add_circle_outline,
-          'label': 'Lead created',
-          'date': lead.createdAt!,
-        },
-      if (lead.updatedAt != null)
-        {
-          'icon': Icons.edit_calendar_outlined,
-          'label': 'Lead updated',
-          'date': lead.updatedAt!,
-        },
-      if (lead.followUpDate != null)
-        {
-          'icon': Icons.event_available_outlined,
-          'label': 'Last Follow-Up',
-          'date': lead.followUpDate!,
-        },
-      if (lead.lastReminderAt != null)
-        {
-          'icon': Icons.notifications_active_outlined,
-          'label': 'Last Reminder Sent',
-          'date': lead.lastReminderAt!,
-        },
-    ];
-
-    if (activities.isEmpty) {
-      return const Center(
-        child: Text('No activity available',
-            style: TextStyle(color: AppColors.textSecondary)),
-      );
-    }
-
-    return ListView.separated(
-      controller: ctrl,
-      padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-      itemBuilder: (_, i) {
-        final item = activities[i];
-        final icon = item['icon'] as IconData;
-        final label = item['label'] as String;
-        final date = item['date'] as DateTime;
-        return Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: AppColors.background,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: AppColors.border),
-          ),
-          child: Row(children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: AppColors.primaryLight,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(icon, size: 16, color: AppColors.primary),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label,
-                      style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textPrimary)),
-                  const SizedBox(height: 3),
-                  Text(
-                      DateFormat('dd MMM yyyy, hh:mm a').format(date.toLocal()),
-                      style: const TextStyle(
-                          fontSize: 12,
-                          color: AppColors.textSecondary,
-                          fontWeight: FontWeight.w500)),
-                ],
-              ),
-            ),
-          ]),
-        );
-      },
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemCount: activities.length,
+  if (_activityLoading) {
+    return const Center(
+      child: CircularProgressIndicator(),
     );
   }
+
+  if (_activities.isEmpty) {
+    return const Center(
+      child: Text(
+        'No activity available',
+        style: TextStyle(
+          color: AppColors.textSecondary,
+        ),
+      ),
+    );
+  }
+
+  return ListView.separated(
+    controller: ctrl,
+    padding: const EdgeInsets.fromLTRB(
+      20,
+      4,
+      20,
+      20,
+    ),
+    itemCount: _activities.length,
+    separatorBuilder: (_, __) {
+      return const SizedBox(height: 10);
+    },
+    itemBuilder: (_, index) {
+      final activity = _activities[index];
+
+      return _buildActivityItem(activity);
+    },
+  );
+}
+
+Widget _buildActivityItem(LeadActivity activity) {
+  return Container(
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: AppColors.background,
+      borderRadius: BorderRadius.circular(10),
+      border: Border.all(
+        color: AppColors.border,
+      ),
+    ),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: AppColors.primaryLight,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(
+            _activityIcon(activity.type),
+            size: 17,
+            color: AppColors.primary,
+          ),
+        ),
+
+        const SizedBox(width: 12),
+
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _activityTitle(activity.type),
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+
+              const SizedBox(height: 4),
+
+              Text(
+                activity.description,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+
+              if (activity.performedByName != null &&
+                  activity.performedByName!.isNotEmpty) ...[
+                const SizedBox(height: 6),
+
+                Text(
+                  'By ${activity.performedByName}',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+
+              if (activity.timestamp != null) ...[
+                const SizedBox(height: 3),
+
+                Text(
+                  DateFormat(
+                    'dd MMM yyyy, hh:mm a',
+                  ).format(
+                    activity.timestamp!.toLocal(),
+                  ),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textHint,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+IconData _activityIcon(String type) {
+  switch (type) {
+    case 'lead_created':
+      return Icons.person_add_outlined;
+
+    case 'lead_edited':
+      return Icons.edit_outlined;
+
+    case 'status_changed':
+      return Icons.sync_alt_outlined;
+
+    case 'lead_converted':
+      return Icons.swap_horiz_outlined;
+
+    case 'attachment_uploaded':
+      return Icons.attach_file_outlined;
+
+    case 'meeting_scheduled':
+      return Icons.event_outlined;
+
+    case 'notes_updated':
+      return Icons.note_alt_outlined;
+
+    case 'followup_rescheduled':
+      return Icons.event_repeat_outlined;
+
+    case 'target_linked':
+      return Icons.link_outlined;
+
+    case 'task_activity':
+      return Icons.task_alt_outlined;
+
+    default:
+      return Icons.history_outlined;
+  }
+}
+
+String _activityTitle(String type) {
+  switch (type) {
+    case 'lead_created':
+      return 'Lead Created';
+
+    case 'lead_edited':
+      return 'Lead Updated';
+
+    case 'status_changed':
+      return 'Status Changed';
+
+    case 'lead_converted':
+      return 'Lead Converted';
+
+    case 'attachment_uploaded':
+      return 'Attachment Uploaded';
+
+    case 'meeting_scheduled':
+      return 'Meeting Scheduled';
+
+    case 'notes_updated':
+      return 'Notes Updated';
+
+    case 'followup_rescheduled':
+      return 'Follow-up Rescheduled';
+
+    case 'target_linked':
+      return 'Target Linked';
+
+    case 'task_activity':
+      return 'Task Activity';
+
+    default:
+      return 'Activity';
+  }
+}
 
   Widget _row(IconData icon, String lbl, String val) => Padding(
         padding: const EdgeInsets.only(bottom: 14),

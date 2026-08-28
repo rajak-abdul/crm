@@ -76,12 +76,16 @@ import 'package:flutter/services.dart';
   final String title;
   final IconData icon;
   final VoidCallback? onAddField;
+  final String actionLabel;
+  final IconData actionIcon;
 
   const SectionHeader({
     super.key,
     required this.title,
     required this.icon,
     this.onAddField,
+    this.actionLabel = 'Add Field',
+    this.actionIcon = Icons.add_circle_outline,
   });
 
   @override
@@ -139,13 +143,13 @@ import 'package:flutter/services.dart';
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 visualDensity: VisualDensity.compact,
               ),
-              icon: const Icon(
-                Icons.add_circle_outline,
+              icon: Icon(
+                actionIcon,
                 size: 16,
               ),
-              label: const Text(
-                "Add Field",
-                style: TextStyle(
+              label: Text(
+                actionLabel,
+                style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                 ),

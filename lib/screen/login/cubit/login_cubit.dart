@@ -234,64 +234,73 @@ debugPrint("After updateLocation");
     }
   }
 
-  /// POST /users/forgot-password
-  Future<ForgotPasswordResult> requestPasswordReset(String email) async {
-    final cleanEmail = email.trim();
-    if (cleanEmail.isEmpty) {
-      return const ForgotPasswordResult(
-        success: false,
-        message: 'Email is required',
-      );
-    }
+  Future<ForgotPasswordResult> requestPasswordReset(
+  String email,
+  String tenantSlug,
+) async {
+  final cleanEmail = email.trim();
+  final cleanTenantSlug = tenantSlug.trim();
 
-    try {
-      final res = await _dio.post(
-        '/users/forgot-password',
-        data: {'email': cleanEmail},
-      );
-
-      final body = res.data;
-      if (body is Map) {
-        final success = body['success'];
-        final message = body['message'] as String?;
-
-        if (success == false) {
-          return ForgotPasswordResult(
-            success: false,
-            message: message ?? 'Failed to send reset link',
-          );
-        }
-
-        return ForgotPasswordResult(
-          success: true,
-          message: message ?? 'Reset link sent successfully',
-        );
-      }
-      return const ForgotPasswordResult(
-        success: true,
-        message: 'Reset link sent successfully',
-      );
-    } on DioException catch (e) {
-      final body = e.response?.data;
-      if (body is Map) {
-        return ForgotPasswordResult(
-          success: false,
-          message: (body['message'] as String?) ??
-              (body['error'] as String?) ??
-              'Failed to send reset link',
-        );
-      }
-      return const ForgotPasswordResult(
-        success: false,
-        message: 'Failed to send reset link',
-      );
-    } catch (_) {
-      return const ForgotPasswordResult(
-        success: false,
-        message: 'Failed to send reset link',
-      );
-    }
+  if (cleanTenantSlug.isEmpty) {
+    return const ForgotPasswordResult(
+      success: false,
+      message: 'Tenant slug is required',
+    );
   }
+
+  if (cleanEmail.isEmpty) {
+    return const ForgotPasswordResult(
+      success: false,
+      message: 'Email is required',
+    );
+  }
+
+  try {
+    final response = await _dio.post(
+      'https://crm-backend-api.techzarinfo.cloud/'
+      '$cleanTenantSlug/api/users/forgot-password',
+      data: {
+        'email': cleanEmail,
+      },
+    );
+
+    final body = response.data;
+
+    if (body is Map) {
+      return ForgotPasswordResult(
+        success: body['success'] == true,
+        message: body['message']?.toString() ??
+            'Failed to send reset link',
+      );
+    }
+
+    return const ForgotPasswordResult(
+      success: false,
+      message: 'Invalid response from server',
+    );
+  } on DioException catch (e) {
+    final body = e.response?.data;
+
+    if (body is Map) {
+      return ForgotPasswordResult(
+        success: false,
+        message: body['message']?.toString() ??
+            body['error']?.toString() ??
+            'Failed to send reset link',
+      );
+    }
+
+    return const ForgotPasswordResult(
+      success: false,
+      message: 'Failed to send reset link',
+    );
+  } catch (e) {
+    return const ForgotPasswordResult(
+      success: false,
+      message: 'Failed to send reset link',
+    );
+  }
+}
 
   /// POST /users/forgot-password/:token
   Future<String?> resetPasswordWithToken({

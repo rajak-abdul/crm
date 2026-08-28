@@ -15,6 +15,7 @@ import 'package:crm_app/screen/deals/ui/deal_form_modal.dart';
 import 'package:crm_app/screen/deals/ui/deals_shared_widget.dart';
 import 'package:crm_app/screen/deals/ui/rejected_deals.dart';
 import 'package:crm_app/screen/invoice/cubit/invoice_cubit.dart';
+import 'package:crm_app/screen/meeting/cubit/meeting_cubit.dart';
 import 'package:crm_app/shareWidgets/date_time.dart';
 import 'package:crm_app/shareWidgets/missed_followup.dart';
 import 'package:crm_app/screen/deals/cubit/deals_cubit.dart';
@@ -27,20 +28,6 @@ import 'package:flutter/material.dart' hide SearchBar;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-bool _isSessionExpiredMessage(String msg) {
-  final m = msg.toLowerCase();
-
-  return m.contains('session expired') ||
-      m.contains('unauthorized') ||
-      m.contains('401') ||
-      m.contains('login again') ||
-      m.contains('token failed') ||
-      m.contains('invalid token') ||
-      m.contains('jwt expired') ||
-      m.contains('token expired') ||
-      m.contains('authentication failed');
-}
 
 // ── UI-only helpers ───────────────────────────────────────────
 Color stageColor(String s) => switch (DealConstants.canonicalStage(s)) {
@@ -73,7 +60,21 @@ class DealsScreen extends StatefulWidget {
   final int initialTab;
   final String? initialStageFilter;
   final bool showBackButton;
-  const DealsScreen({super.key, this.initialTab = 0,this.initialStageFilter, this.showBackButton = true});
+
+  // Dashboard period filter
+  final String filterRange;
+  final int? filterMonth;
+  final int? filterYear;
+
+  const DealsScreen({
+    super.key,
+    this.initialTab = 0,
+    this.initialStageFilter,
+    this.showBackButton = true,
+    this.filterRange = 'all',
+    this.filterMonth,
+    this.filterYear,
+  });
   @override
   State<DealsScreen> createState() => _DealsScreenState();
 }
@@ -100,20 +101,31 @@ Widget build(BuildContext context) => MultiBlocProvider(
         BlocProvider(create: (_) => DealsTemplateCubit(_cubit)),
         BlocProvider(create: (_) => FollowUpsTemplateCubit()),
       ],
-      child: _DealsShell(
+child: _DealsShell(
   initialTab: widget.initialTab,
   initialStageFilter: widget.initialStageFilter,
   showBackButton: widget.showBackButton,
-),
-    );
+  filterRange: widget.filterRange,
+  filterMonth: widget.filterMonth,
+  filterYear: widget.filterYear,
+),    );
 }
 
 class _DealsShell extends StatefulWidget {
   final int initialTab;
   final String? initialStageFilter;
   final bool showBackButton;
-  const _DealsShell({required this.initialTab, this.initialStageFilter,  this.showBackButton = true});
-  @override
+  final String filterRange;
+  final int? filterMonth;
+  final int? filterYear;
+const _DealsShell({
+  required this.initialTab,
+  this.initialStageFilter,
+  this.showBackButton = true,
+  this.filterRange = 'all',
+  this.filterMonth,
+  this.filterYear,
+});  @override
   State<_DealsShell> createState() => _DealsShellState();
 }
 
@@ -125,7 +137,112 @@ class _DealsShellState extends State<_DealsShell> {
     ('stages', 'Deal Stages'),
     ('alldeals', 'All Deals'),
   ];
+DateTimeRange? _dashboardDateRange() {
+  final now = DateTime.now();
 
+  switch (widget.filterRange) {
+    case 'today':
+      final start = DateTime(
+        now.year,
+        now.month,
+        now.day,
+      );
+
+      final end = DateTime(
+        now.year,
+        now.month,
+        now.day,
+        23,
+        59,
+        59,
+        999,
+      );
+
+      return DateTimeRange(
+        start: start,
+        end: end,
+      );
+
+    case 'last7':
+      final today = DateTime(
+        now.year,
+        now.month,
+        now.day,
+      );
+
+      final start = today.subtract(
+        const Duration(days: 6),
+      );
+
+      final end = DateTime(
+        now.year,
+        now.month,
+        now.day,
+        23,
+        59,
+        59,
+        999,
+      );
+
+      return DateTimeRange(
+        start: start,
+        end: end,
+      );
+
+    case 'month':
+      if (widget.filterMonth == null ||
+          widget.filterYear == null) {
+        return null;
+      }
+
+      final start = DateTime(
+        widget.filterYear!,
+        widget.filterMonth!,
+        1,
+      );
+
+      final end = DateTime(
+        widget.filterYear!,
+        widget.filterMonth! + 1,
+        0,
+        23,
+        59,
+        59,
+        999,
+      );
+
+      return DateTimeRange(
+        start: start,
+        end: end,
+      );
+
+    case 'year':
+      if (widget.filterYear == null) {
+        return null;
+      }
+
+      return DateTimeRange(
+        start: DateTime(
+          widget.filterYear!,
+          1,
+          1,
+        ),
+        end: DateTime(
+          widget.filterYear!,
+          12,
+          31,
+          23,
+          59,
+          59,
+          999,
+        ),
+      );
+
+    case 'all':
+    default:
+      return null;
+  }
+}
   @override
   void initState() {
     super.initState();
@@ -145,21 +262,27 @@ void dispose() {
 
   
 
-  void _openCreate(List<String> users) => showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => BlocProvider.value(
-          value: context.read<DealsCubit>(),
-          child: DealFormModal(users: users)));
+  void _openCreate(List<String> users) async {
+    final message = await showModalBottomSheet<String>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (ctx) => BlocProvider.value(
+            value: context.read<DealsCubit>(),
+            child: DealFormModal(users: users)));
+    if (message != null && mounted) showApiSnack(context, message);
+  }
 
-  void _openEdit(Deal deal, List<String> users) => showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => BlocProvider.value(
-          value: context.read<DealsCubit>(),
-          child: DealFormModal(users: users, editDeal: deal)));
+  void _openEdit(Deal deal, List<String> users) async {
+    final message = await showModalBottomSheet<String>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (ctx) => BlocProvider.value(
+            value: context.read<DealsCubit>(),
+            child: DealFormModal(users: users, editDeal: deal)));
+    if (message != null && mounted) showApiSnack(context, message);
+  }
 
   void openDetail(Deal deal) => showModalBottomSheet(
       context: context,
@@ -179,7 +302,12 @@ void dispose() {
             create: (_) => InvoiceCubit()..load(),
           ),
         ],
-        child: DealDetailSheet(deal: deal),
+        child: BlocProvider(
+  create: (_) => MeetingsCubit()..loadMeetings(),
+  child: DealDetailSheet(
+    deal: deal,
+  ),
+)
       ),
     );
       
@@ -191,6 +319,7 @@ void dispose() {
               deals: loaded.allDeals,
               pendingDeals: loaded.pendingDeals,
               lostDeals: loaded.lostDeals,
+              initialDateRange: _dashboardDateRange(),
               onCreateDeal: () => _openCreate(loaded.salesUsers),
               onViewDeal: (d) => openDetail(d),
               onEditDeal: (d) => _openEdit(d, loaded.salesUsers),
@@ -200,6 +329,7 @@ void dispose() {
     deals: loaded.allDeals,
     salesUsers: loaded.salesUsers,
     initialStageFilter: widget.initialStageFilter,
+    initialDateRange: _dashboardDateRange(),
     onCreateDeal: () => _openCreate(loaded.salesUsers),
     onViewDeal: (d) => openDetail(d),
     onEditDeal: (d) => _openEdit(d, loaded.salesUsers),
@@ -247,11 +377,6 @@ void dispose() {
             if (route != null && !route.isCurrent) return;
             if (state is DealsActionSuccess) showApiSnack(ctx, state.message);
             if (state is DealsError) {
-              if (_isSessionExpiredMessage(state.message)) {
-                Navigator.of(ctx, rootNavigator: true)
-                    .pushNamedAndRemoveUntil('/login', (route) => false);
-                return;
-              }
               showApiSnack(ctx, state.message, isError: true);
             }
           },
@@ -330,6 +455,7 @@ class _ViewDropdown extends StatelessWidget {
 // ══════════════════════════════════════════════════════════════
 class _StagesView extends StatefulWidget {
   final List<Deal> deals, pendingDeals, lostDeals;
+    final DateTimeRange? initialDateRange;
   final VoidCallback onCreateDeal;
   final void Function(Deal) onViewDeal;
   final void Function(Deal) onEditDeal;
@@ -339,6 +465,7 @@ class _StagesView extends StatefulWidget {
       required this.deals,
       required this.pendingDeals,
       required this.lostDeals,
+      this.initialDateRange,
       required this.onCreateDeal,
       required this.onViewDeal,
       required this.onEditDeal,
@@ -357,6 +484,13 @@ class _StagesViewState extends State<_StagesView> {
   bool get _hasPipelineFilter =>
       _pipelineDateRange != null ||
       _selectedPipelineStages.isNotEmpty;
+
+      @override
+void initState() {
+  super.initState();
+  _pipelineDateRange = widget.initialDateRange;
+}
+
       
   @override
   void dispose() {
@@ -444,17 +578,14 @@ const SizedBox(width: 4),
           final dealDate = d.createdAt;
 
           final matchesDate =
-              _pipelineDateRange == null ||
-              (dealDate != null &&
-                  !dealDate.isBefore(
-                    _pipelineDateRange!.start,
-                  ) &&
-                  !dealDate.isAfter(
-                    _pipelineDateRange!.end.add(
-                      const Duration(days: 1),
-                    ),
-                  ));
-
+    _pipelineDateRange == null ||
+    (dealDate != null &&
+        !dealDate.isBefore(_pipelineDateRange!.start) &&
+        !dealDate.isAfter(
+          _pipelineDateRange!.end.add(
+            const Duration(days: 1),
+          ),
+        ));
           return canonicalStage == stage &&
               matchesSearch &&
               matchesDate;
@@ -915,6 +1046,7 @@ class _AllDealsView extends StatefulWidget {
   final List<Deal> deals;
   final List<String> salesUsers;
   final String? initialStageFilter;
+  final DateTimeRange? initialDateRange;
   final VoidCallback onCreateDeal;
   final void Function(Deal) onViewDeal;
   final void Function(Deal) onEditDeal;
@@ -924,6 +1056,7 @@ class _AllDealsView extends StatefulWidget {
       required this.deals,
       required this.salesUsers,
       this.initialStageFilter,
+      this.initialDateRange,
       required this.onCreateDeal,
       required this.onViewDeal,
       required this.onEditDeal,
@@ -951,6 +1084,8 @@ static const int _pageSize = 10;
 @override
 void initState() {
   super.initState();
+    _dateRange = widget.initialDateRange;
+
   if (widget.initialStageFilter != null) {
     _stageFilter = widget.initialStageFilter!;
   }
@@ -1425,18 +1560,6 @@ Container(
           Icon(Icons.upload_file_rounded, color: Colors.green),
           SizedBox(width: 10),
           Text('Import Deals'),
-        ],
-      ),
-    ),
-      PopupMenuDivider(),
-
-    PopupMenuItem(
-      value: 'rejected',
-      child: Row(
-        children: [
-          Icon(Icons.cancel_outlined, color: Colors.red),
-          SizedBox(width: 10),
-          Text('Rejected Deals'),
         ],
       ),
     ),

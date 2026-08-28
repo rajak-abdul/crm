@@ -2,7 +2,6 @@
 // ║           lib/screen/deals/cubit/deals_cubit.dart            ║
 // ╚══════════════════════════════════════════════════════════════╝
 
-import 'package:crm_app/main.dart';
 import 'package:crm_app/screen/deals/cubit/deals_sheet_state.dart';
 import 'package:crm_app/screen/deals/modal/deal_modal.dart';
 import 'package:crm_app/screen/invoice/modal/invoice_model.dart';
@@ -10,11 +9,13 @@ import 'package:dio/dio.dart'
     show Dio, BaseOptions, InterceptorsWrapper, DioException, DioExceptionType, MultipartFile, FormData, Options, Response, ResponseType;
 import 'package:equatable/equatable.dart';
 import 'package:file_picker/file_picker.dart' show PlatformFile;
+import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:flutter/material.dart' show debugPrint, ScaffoldMessenger, SnackBar, Text;
 import 'package:flutter_bloc/flutter_bloc.dart' show Cubit;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart'
     show SharedPreferences;
+import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:crm_app/database/local_db.dart';
 
@@ -97,7 +98,6 @@ class DealsCubit extends Cubit<DealsState> {
 
   late final Dio _dio;
   String? _cachedToken;
-  bool _handlingSessionExpiry = false;
 
   DealsCubit() : super(DealsInitial()) {
     // ── FIX: Do NOT set Content-Type globally. ─────────────────
@@ -127,43 +127,15 @@ class DealsCubit extends Cubit<DealsState> {
       onError: (err, handler) {
   if (err.response?.statusCode == 401) {
     _cachedToken = null;
-    _handleSessionExpired(); // CHANGED: only on actual 401
   }
   handler.next(err);
 },
     ));
+    _dio.interceptors.add(AuthInterceptor());
 
     _initToken();
   }
-   Future<void> _handleSessionExpired() async {
-    if (_handlingSessionExpiry) return;
-    _handlingSessionExpiry = true;
 
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('token');
-      await prefs.remove('user_id');
-      await prefs.remove('permissions');
-      await prefs.remove('user_name');
-      await prefs.remove('email');
-      await prefs.remove('profileImage');
-      await prefs.remove('tenant_slug');
-      await LocalDb.instance.clearAll();
-      PermissionHelper.clear();
-
-      final ctx = navigatorKey.currentContext;
-      if (ctx != null && ctx.mounted) {
-        ScaffoldMessenger.of(ctx).showSnackBar(
-          const SnackBar(content: Text('Session expired. Please log in again.')),
-        );
-        navigatorKey.currentState?.pushNamedAndRemoveUntil('/login', (_) => false);
-      }
-    } catch (_) {
-    } finally {
-      _handlingSessionExpiry = false;
-    }
-  }
-  
   Future<void> _initToken() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -285,6 +257,7 @@ class DealsCubit extends Cubit<DealsState> {
 
   Future<Deal?> getDealById(String id) async {
   try {
+    if (_cachedToken == null || _cachedToken!.isEmpty) await _initToken();
     final res = await _dio.get('/deals/getAll/$id');
     final data = res.data;
 
@@ -301,7 +274,8 @@ class DealsCubit extends Cubit<DealsState> {
     }
 
     return Deal.fromJson(map);
-  } catch (_) {
+  } catch (e) {
+    debugPrint('[DealsCubit] getDealById error: $e');
     return null;
   }
 }
@@ -338,6 +312,102 @@ class DealsCubit extends Cubit<DealsState> {
         .toList();
   }
 
+  /// GET /{tenantSlug}/api/users/me
+/// Returns the tenant's configured currency, e.g. USD.
+Future<String> getTenantCurrency() async {
+  try {
+    if (_cachedToken == null || _cachedToken!.isEmpty) {
+      await _initToken();
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final tenantSlug = prefs.getString('tenant_slug') ?? '';
+
+    if (tenantSlug.isEmpty) {
+      throw Exception('Missing tenant slug');
+    }
+
+    final response = await _dio.get(
+      'https://crm-backend-api.techzarinfo.cloud/'
+      '$tenantSlug/api/users/me',
+    );
+
+    final data = response.data;
+
+    if (data is Map) {
+      final currency = data['currency']?.toString().trim().toUpperCase();
+
+      if (currency != null && currency.isNotEmpty) {
+        debugPrint(
+          '[DealsCubit] Tenant currency: $currency',
+        );
+
+        return currency;
+      }
+    }
+  } catch (e) {
+    debugPrint(
+      '[DealsCubit] getTenantCurrency error: $e',
+    );
+  }
+
+  // Safe fallback
+  return 'USD';
+}
+
+/// Gets exchange rate from [fromCurrency] to [toCurrency].
+///
+/// Example:
+/// latest/INR
+/// rates["USD"]
+Future<double?> getExchangeRate({
+  required String fromCurrency,
+  required String toCurrency,
+}) async {
+  final from = fromCurrency.trim().toUpperCase();
+  final to = toCurrency.trim().toUpperCase();
+
+  if (from.isEmpty || to.isEmpty) {
+    return null;
+  }
+
+  if (from == to) {
+    return 1.0;
+  }
+
+  try {
+    final exchangeDio = Dio();
+
+    final response = await exchangeDio.get(
+      'https://open.er-api.com/v6/latest/$from',
+    );
+
+    final data = response.data;
+
+    if (data is Map) {
+      final rates = data['rates'];
+
+      if (rates is Map) {
+        final rawRate = rates[to];
+
+        if (rawRate is num) {
+          return rawRate.toDouble();
+        }
+
+        return double.tryParse(
+          rawRate?.toString() ?? '',
+        );
+      }
+    }
+  } catch (e) {
+    debugPrint(
+      '[DealsCubit] getExchangeRate error: $e',
+    );
+  }
+
+  return null;
+}
+
   // ── CREATE ────────────────────────────────────────────────────
 
   /// POST /deals/createManual  (multipart — attachments included at create time)
@@ -350,8 +420,9 @@ class DealsCubit extends Cubit<DealsState> {
   /// FIX 3: ID extracted from response['deal']['_id'] matching the actual API shape.
   Future<String?> createDeal(
     Map<String, dynamic> payload,
-    List<PlatformFile> files,
-  ) async {
+    List<PlatformFile> files, {
+    List<XFile> images = const [],
+  }) async {
     if (isClosed) return null;
     final prev = state;
 
@@ -383,6 +454,16 @@ class DealsCubit extends Cubit<DealsState> {
           debugPrint("✅ Added file: ${f.name}");
         } catch (e) {
           debugPrint("❌ Error adding file: ${f.name} → $e");
+        }
+      }
+
+      // Add image files
+      for (final img in images) {
+        try {
+          final mf = await MultipartFile.fromFile(img.path, filename: img.name);
+          formData.files.add(MapEntry('images', mf));
+        } catch (e) {
+          debugPrint("❌ Error adding image: ${img.name} → $e");
         }
       }
       debugPrint(
@@ -573,6 +654,7 @@ Future<bool> deleteRejectedDeal(
   /// can run follow-up + attachments before closing the modal.
   Future<void> updateDeal(String id, Map<String, dynamic> payload,{
   List<PlatformFile> attachments = const [],
+  List<XFile> images = const [],
 }) async {
     if (isClosed) return;
     final prev = state;
@@ -615,6 +697,16 @@ for (final file in attachments) {
     formData.files.add(
       MapEntry('attachments', mf),
     );
+  }
+}
+
+// Add images
+for (final img in images) {
+  try {
+    final mf = await MultipartFile.fromFile(img.path, filename: img.name);
+    formData.files.add(MapEntry('images', mf));
+  } catch (e) {
+    debugPrint("❌ Error adding image: ${img.name} → $e");
   }
 }
 

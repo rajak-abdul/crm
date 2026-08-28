@@ -164,6 +164,7 @@ class Deal {
   final String? followUpComment;
   final List<FollowUpHistoryItem> followUpHistory;
   final List<Attachment> attachments;
+  final List<Attachment> images;
 
   // ── new fields ──────────────────────────────────────────────
   final String alternativeNumber;
@@ -174,6 +175,39 @@ class Deal {
   final String lossNotes;
   final DateTime? stageLostAt;
   final List<StageHistoryItem> stageHistory;
+  final DateTime? lostDate;
+
+  // Location
+final String city;
+final String state;
+final String pincode;
+final double? latitude;
+final double? longitude;
+
+// Currency conversion
+final String preferredCurrency;
+final double preferredCurrencyValue;
+
+// Company
+final String? companyId;
+
+// Status / trash
+final bool isActive;
+final bool trash;
+final DateTime? trashedAt;
+
+// Notes tracking
+final String? notesUpdatedBy;
+final DateTime? notesUpdatedAt;
+
+// Admin activity
+final bool taskAdminActivityDismissed;
+final bool targetAdminActivityDismissed;
+
+// Other API data
+final List<dynamic> assignmentHistory;
+final List<dynamic> leadStatusHistory;
+final List<dynamic> customFields;
 
   // ── rejection fields ────────────────────────────────────────
   final String rejectionReason;
@@ -213,6 +247,7 @@ class Deal {
     this.followUpComment,
     this.followUpHistory = const [],
     this.attachments = const [],
+    this.images = const [],
     this.alternativeNumber = '',
     this.alternativeEmail = '',
     this.companySize = '',
@@ -231,6 +266,26 @@ class Deal {
     this.wonByName = '',
     this.leadCreatedAt,
     this.discountGiven = 0,
+    this.city = '',
+this.state = '',
+this.pincode = '',
+this.latitude,
+this.longitude,
+this.preferredCurrency = '',
+this.preferredCurrencyValue = 0,
+this.companyId,
+this.isActive = true,
+this.trash = false,
+this.trashedAt,
+this.notesUpdatedBy,
+this.notesUpdatedAt,
+this.taskAdminActivityDismissed = false,
+this.targetAdminActivityDismissed = false,
+this.assignmentHistory = const [],
+this.leadStatusHistory = const [],
+this.customFields = const [],
+this.lostDate,
+
   });
 
   /// True when this deal was rejected — [Deal.stage] will be the raw
@@ -269,20 +324,34 @@ class Deal {
     // since `value` on the API can be a formatted string like
     // "10,000 INR"; fall back to stripping non-numeric chars from
     // whichever value/dealValue/amount field is available.
-    double val = 0;
-    if (j['preferredCurrencyValue'] != null) {
-      val = (j['preferredCurrencyValue'] as num?)?.toDouble() ??
-          double.tryParse(j['preferredCurrencyValue'].toString()) ??
-          0;
-    } else {
-      final rv = j['value'] ?? j['dealValue'] ?? j['amount'];
-      if (rv != null) {
-        val = double.tryParse(
-                rv.toString().replaceAll(RegExp(r'[^\d.\-]'), '')) ??
-            0;
-      }
-    }
+// Deal value — API returns value like "2,000 INR".
+// Keep the original deal value separate from the
+// converted preferred-currency value.
+double val = 0;
 
+final rawValue = j['value'] ?? j['dealValue'] ?? j['amount'];
+
+if (rawValue != null) {
+  if (rawValue is num) {
+    val = rawValue.toDouble();
+  } else {
+    val = double.tryParse(
+          rawValue
+              .toString()
+              .replaceAll(',', '')
+              .replaceAll(RegExp(r'[^\d.\-]'), ''),
+        ) ??
+        0;
+  }
+}
+
+// Preferred currency conversion is stored separately.
+final preferredValue = j['preferredCurrencyValue'] is num
+    ? (j['preferredCurrencyValue'] as num).toDouble()
+    : double.tryParse(
+          j['preferredCurrencyValue']?.toString() ?? '',
+        ) ??
+        0;
     // currency — API sends bare "INR"; map to display string "₹ INR"
     final rawCur = _s(j['currency'], 'INR')
         .replaceAll(RegExp(r'[₹$€£¥\s]'), '')
@@ -304,6 +373,25 @@ class Deal {
         }
       }
     }
+
+    // images
+    final List<Attachment> images = [];
+
+final rawImages = j['images'];
+
+if (rawImages is List) {
+  for (final image in rawImages) {
+    if (image is Map) {
+      try {
+        images.add(
+          Attachment.fromJson(
+            Map<String, dynamic>.from(image),
+          ),
+        );
+      } catch (_) {}
+    }
+  }
+}
 
     // followUpHistory — used by Deal details "Follow-up history" tab.
     final List<FollowUpHistoryItem> followUpHistory = [];
@@ -354,6 +442,11 @@ class Deal {
         ));
       }
     }
+    if (j['preferredCurrencyValue'] != null) {
+  val = (j['preferredCurrencyValue'] as num?)?.toDouble() ??
+      double.tryParse(j['preferredCurrencyValue'].toString()) ??
+      0;
+}
 
     // discountGiven — API sends a plain number.
     final discountGiven = (j['discountGiven'] is num)
@@ -375,7 +468,7 @@ class Deal {
       assignTo: assignTo,
       notes: _s(j['notes']),
       currency: currency,
-      countryCode: _s(j['countryCode'], '+91 IN'),
+      countryCode: _s(j['countryCode']),
       value: val,
       createdAt: j['createdAt'] != null
           ? DateTime.tryParse(j['createdAt'].toString()) ?? DateTime.now()
@@ -390,6 +483,7 @@ class Deal {
       followUpComment: j['followUpComment']?.toString(),
       followUpHistory: followUpHistory,
       attachments: attachments,
+      images: images,
       alternativeNumber: _s(j['alternativeNumber']),
       alternativeEmail: _s(j['alternativeEmail']),
       companySize: _s(j['companySize']),
@@ -420,12 +514,63 @@ class Deal {
           ? DateTime.tryParse(j['leadCreatedAt'].toString())
           : null,
       discountGiven: discountGiven,
+      city: _s(j['city']),
+state: _s(j['state']),
+pincode: _s(j['pincode']),
+
+latitude: (j['latitude'] as num?)?.toDouble(),
+longitude: (j['longitude'] as num?)?.toDouble(),
+
+preferredCurrency: _s(j['preferredCurrency']),
+preferredCurrencyValue:
+    (j['preferredCurrencyValue'] as num?)?.toDouble() ?? 0,
+
+companyId: j['companyId']?.toString(),
+
+isActive: j['isActive'] ?? true,
+trash: j['trash'] ?? false,
+
+trashedAt: j['trashedAt'] != null
+    ? DateTime.tryParse(j['trashedAt'].toString())
+    : null,
+
+notesUpdatedBy: j['notesUpdatedBy']?.toString(),
+
+notesUpdatedAt: j['notesUpdatedAt'] != null
+    ? DateTime.tryParse(j['notesUpdatedAt'].toString())
+    : null,
+
+taskAdminActivityDismissed:
+    j['taskAdminActivityDismissed'] ?? false,
+
+targetAdminActivityDismissed:
+    j['targetAdminActivityDismissed'] ?? false,
+
+assignmentHistory:
+    j['assignmentHistory'] is List
+        ? List<dynamic>.from(j['assignmentHistory'])
+        : const [],
+
+leadStatusHistory:
+    j['leadStatusHistory'] is List
+        ? List<dynamic>.from(j['leadStatusHistory'])
+        : const [],
+
+customFields:
+    j['customFields'] is List
+        ? List<dynamic>.from(j['customFields'])
+        : const [],
+
+lostDate: j['lostDate'] != null
+    ? DateTime.tryParse(j['lostDate'].toString())
+    : null,
     );
   }
 
   Deal copyWith({
     String? stage,
     List<Attachment>? attachments,
+    List<Attachment>? images,
     List<FollowUpHistoryItem>? followUpHistory,
     List<StageHistoryItem>? stageHistory,
   }) =>
@@ -453,6 +598,7 @@ class Deal {
         followUpComment: followUpComment,
         followUpHistory: followUpHistory ?? this.followUpHistory,
         attachments: attachments ?? this.attachments,
+        images: images ?? this.images,
         alternativeNumber: alternativeNumber,
         alternativeEmail: alternativeEmail,
         companySize: companySize,
@@ -471,6 +617,35 @@ class Deal {
         wonByName: wonByName,
         leadCreatedAt: leadCreatedAt,
         discountGiven: discountGiven,
+        city: city,
+state: state,
+pincode: pincode,
+latitude: latitude,
+longitude: longitude,
+
+preferredCurrency: preferredCurrency,
+preferredCurrencyValue: preferredCurrencyValue,
+
+companyId: companyId,
+
+isActive: isActive,
+trash: trash,
+trashedAt: trashedAt,
+
+notesUpdatedBy: notesUpdatedBy,
+notesUpdatedAt: notesUpdatedAt,
+
+taskAdminActivityDismissed:
+    taskAdminActivityDismissed,
+
+targetAdminActivityDismissed:
+    targetAdminActivityDismissed,
+
+assignmentHistory: assignmentHistory,
+leadStatusHistory: leadStatusHistory,
+customFields: customFields,
+
+lostDate: lostDate,
       );
 
   Map<String, dynamic> toPayload() => {
@@ -492,6 +667,14 @@ class Deal {
         'alternativeEmail': alternativeEmail,
         'companySize': companySize,
         'requirement': requirement,
+        'city': city,
+'state': state,
+'pincode': pincode,
+'latitude': latitude,
+'longitude': longitude,
+'preferredCurrency': preferredCurrency,
+'preferredCurrencyValue': preferredCurrencyValue,
+'companyId': companyId,
       };
 }
 
@@ -544,7 +727,6 @@ class DealConstants {
     '€ EUR',
     '£ GBP',
     '¥ JPY',
-    '¥ CNY',
     'A\$ AUD',
     'C\$ CAD',
     'CHF CHF',
@@ -554,6 +736,40 @@ class DealConstants {
     'R ZAR',
     '﷼ SAR',
   ];
+
+  /// Flag emoji per currency code, for the richer currency-picker rows.
+  static const currencyFlags = {
+    'INR': '🇮🇳',
+    'USD': '🇺🇸',
+    'EUR': '🇪🇺',
+    'GBP': '🇬🇧',
+    'JPY': '🇯🇵',
+    'AUD': '🇦🇺',
+    'CAD': '🇨🇦',
+    'CHF': '🇨🇭',
+    'MYR': '🇲🇾',
+    'AED': '🇦🇪',
+    'SGD': '🇸🇬',
+    'ZAR': '🇿🇦',
+    'SAR': '🇸🇦',
+  };
+
+  /// Full display name per currency code, for the richer currency-picker rows.
+  static const currencyNames = {
+    'INR': 'Indian Rupee',
+    'USD': 'US Dollar',
+    'EUR': 'Euro',
+    'GBP': 'British Pound',
+    'JPY': 'Japanese Yen',
+    'AUD': 'Australian Dollar',
+    'CAD': 'Canadian Dollar',
+    'CHF': 'Swiss Franc',
+    'MYR': 'Malaysian Ringgit',
+    'AED': 'UAE Dirham',
+    'SGD': 'Singapore Dollar',
+    'ZAR': 'South African Rand',
+    'SAR': 'Saudi Riyal',
+  };
   static const countryCodes = [
     '+91 IN',
     '+1 US',
@@ -566,6 +782,7 @@ class DealConstants {
     '+49 DE',
     '+33 FR',
   ];
+  
   static const industries = [
     'IT',
     'Finance',
@@ -573,8 +790,17 @@ class DealConstants {
     'Education',
     'Manufacturing',
     'Retail',
-    'Others',
+    'Energy & Utilities',
+    'Construction',
+    'Telecommunications',
+    'Automotive',
+    'Fashion & Apparel',
+    'Food & Beverage',
+    'Media  & Advertising',
+    'Non-profit',
+    'Other',
   ];
+
 
   static String currencySymbol(String s) => s.split(' ').first;
 }

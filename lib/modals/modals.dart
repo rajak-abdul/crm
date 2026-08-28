@@ -117,6 +117,47 @@ class FollowUpNote {
       };
 }
 
+// Lead activity
+
+class LeadActivity {
+  final String type;
+  final String description;
+  final String? performedById;
+  final String? performedByName;
+  final String? dealId;
+  final DateTime? timestamp;
+
+  const LeadActivity({
+    required this.type,
+    required this.description,
+    this.performedById,
+    this.performedByName,
+    this.dealId,
+    this.timestamp,
+  });
+
+  factory LeadActivity.fromJson(Map<String, dynamic> json) {
+    final performedBy = json['performedBy'];
+
+    return LeadActivity(
+      type: (json['type'] ?? '').toString(),
+      description: (json['description'] ?? '').toString(),
+      performedById: performedBy is Map
+          ? performedBy['id']?.toString()
+          : null,
+      performedByName: performedBy is Map
+          ? performedBy['name']?.toString()
+          : null,
+      dealId: json['dealId']?.toString(),
+      timestamp: json['timestamp'] != null
+          ? DateTime.tryParse(
+              json['timestamp'].toString(),
+            )
+          : null,
+    );
+  }
+}
+
 /// Admin-configured dynamic field on a lead, grouped for display by [cardTitle].
 class CustomField {
   final String id;
@@ -186,6 +227,46 @@ class LeadMeta {
       };
 }
 
+class LeadNote {
+  final String id;
+  final String text;
+  final UserRef? createdBy;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+
+  const LeadNote({
+    required this.id,
+    required this.text,
+    this.createdBy,
+    this.createdAt,
+    this.updatedAt,
+  });
+
+  factory LeadNote.fromJson(Map<String, dynamic> json) {
+    return LeadNote(
+      id: (json['_id'] ?? json['id'] ?? '').toString(),
+      text: (json['text'] ?? '').toString(),
+      createdBy: UserRef.tryParse(json['createdBy']),
+      createdAt: json['createdAt'] != null
+          ? DateTime.tryParse(json['createdAt'].toString())
+          : null,
+      updatedAt: json['updatedAt'] != null
+          ? DateTime.tryParse(json['updatedAt'].toString())
+          : null,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      '_id': id,
+      'text': text,
+      'createdBy': createdBy?.toJson(),
+      'createdAt': createdAt?.toIso8601String(),
+      'updatedAt': updatedAt?.toIso8601String(),
+    };
+  }
+}
+
 class Lead {
   final String id;
   final String name;
@@ -248,6 +329,7 @@ class Lead {
   final List<CustomField> customFields;
   final List<Map<String, dynamic>> assignmentHistory;
   final List<Map<String, dynamic>> notesHistory;
+  final List<LeadNote> notesList;
   final List<Map<String, dynamic>> followUpNotesHistory;
   final LeadMeta? meta;
   final UserRef? createdBy;
@@ -310,6 +392,7 @@ class Lead {
     this.customFields = const [],
     this.assignmentHistory = const [],
     this.notesHistory = const [],
+    this.notesList = const [],
     this.followUpNotesHistory = const [],
     this.meta,
     this.createdBy,
@@ -467,6 +550,15 @@ class Lead {
                 .map((e) => Map<String, dynamic>.from(e))
                 .toList() ??
             const [],
+        notesList: (j['notesList'] as List?)
+        ?.whereType<Map>()
+        .map(
+          (e) => LeadNote.fromJson(
+            Map<String, dynamic>.from(e),
+          ),
+        )
+        .toList() ??
+           const [],
         followUpNotesHistory: (j['followUpNotesHistory'] as List?)
                 ?.whereType<Map>()
                 .map((e) => Map<String, dynamic>.from(e))
@@ -812,6 +904,7 @@ class Lead {
     List<Map<String, dynamic>>? assignmentHistory,
     List<Map<String, dynamic>>? notesHistory,
     List<Map<String, dynamic>>? followUpNotesHistory,
+    List<LeadNote>? notesList,
     LeadMeta? meta,
     UserRef? createdBy,
     UserRef? lastUpdatedBy,
@@ -875,6 +968,7 @@ class Lead {
         customFields: customFields ?? this.customFields,
         assignmentHistory: assignmentHistory ?? this.assignmentHistory,
         notesHistory: notesHistory ?? this.notesHistory,
+        notesList: notesList ?? this.notesList,
         followUpNotesHistory: followUpNotesHistory ?? this.followUpNotesHistory,
         meta: meta ?? this.meta,
         createdBy: createdBy ?? this.createdBy,
@@ -1175,7 +1269,7 @@ class AppRole {
 // APP CONSTANTS
 // ══════════════════════════════════════════════════════════════
 class AppConstants {
-  static const leadStatuses = ['Hot', 'Cold', 'Warm', 'Junk', 'Converted'];
+  static const leadStatuses = ['New','Hot', 'Cold', 'Warm', 'Junk', 'Converted'];
   static const leadSources = [
     'Website',
     'Referral',
@@ -1191,6 +1285,14 @@ class AppConstants {
     'Education',
     'Manufacturing',
     'Retail',
+    'Energy & Utilities',
+    'Construction',
+    'Telecommunications',
+    'Automotive',
+    'Fashion & Apparel',
+    'Food & Beverage',
+    'Media  & Advertising',
+    'Non-profit',
     'Other',
   ];
   static const permissions = [

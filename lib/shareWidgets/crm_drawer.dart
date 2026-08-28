@@ -20,6 +20,7 @@ class CrmDrawer extends StatefulWidget {
 class _CrmDrawerState extends State<CrmDrawer> {
   String _active = '/dashboard';
   bool _dealsExpanded = false;
+  bool _documentsExpanded = false;
 
   Future<void> _logout() async {
     final prefs = await SharedPreferences.getInstance();
@@ -113,6 +114,46 @@ class _CrmDrawerState extends State<CrmDrawer> {
                     _setActive('/invoice');
                     widget.onNavigate('/invoice');
                   }),
+                  _Item(
+  icon: Icons.calendar_month_outlined,
+  activeIcon: Icons.calendar_month_rounded,
+  label: 'Meetings',
+  active: _active == '/meetings',
+  activeColor: const Color(0xFF3B82F6),
+  onTap: () {
+    _setActive('/meetings');
+    widget.onNavigate('/meetings');
+  },
+),
+              _ExpandItem(
+                icon: Icons.folder_outlined,
+                activeIcon: Icons.folder_rounded,
+                label: 'Documents',
+                expanded: _documentsExpanded,
+                active: _active == '/lead-documents' ||
+                    _active == '/deal-documents',
+                activeColor: AppColors.success,
+                onToggle: () => setState(
+                    () => _documentsExpanded = !_documentsExpanded),
+                children: [
+                  _SubItem(
+                      icon: Icons.description_outlined,
+                      label: 'Lead Documents',
+                      active: _active == '/lead-documents',
+                      onTap: () {
+                        _setActive('/lead-documents');
+                        widget.onNavigate('/lead-documents');
+                      }),
+                  _SubItem(
+                      icon: Icons.folder_copy_outlined,
+                      label: 'Deal Documents',
+                      active: _active == '/deal-documents',
+                      onTap: () {
+                        _setActive('/deal-documents');
+                        widget.onNavigate('/deal-documents');
+                      }),
+                ],
+              ),
               _Item(
                   icon: Icons.leaderboard_outlined,
                   activeIcon: Icons.leaderboard_outlined,

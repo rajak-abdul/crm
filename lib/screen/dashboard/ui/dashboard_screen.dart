@@ -4,16 +4,26 @@
 
 // ignore_for_file: unnecessary_cast
 
+import 'dart:async';
+
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:crm_app/modals/followup_model.dart';
 import 'package:crm_app/screen/LeaderBoard/ui/leader_board.dart';
 import 'package:crm_app/screen/dashboard/cubit/dashboard.dart';
 import 'package:crm_app/screen/dashboard/cubit/notification_cubit.dart';
 import 'package:crm_app/screen/dashboard/ui/dashboard_followup_page.ui.dart';
-import 'package:crm_app/screen/dashboard/ui/dashboard_today_followup_ui.dart';
+import 'package:crm_app/screen/dashboard/ui/meeting_summary_card.dart';
+import 'package:crm_app/screen/document/deal/cubit/deal_doc_cubit.dart';
+import 'package:crm_app/screen/document/deal/ui/deal_doc_ui.dart' show DealDocumentScreen;
+import 'package:crm_app/screen/document/lead/cubit/leads_document_cubit.dart';
+import 'package:crm_app/screen/document/lead/ui/lead_document_ui.dart';
 import 'package:crm_app/screen/leads/ui/lead_screen.dart';
+import 'package:crm_app/screen/meeting/UI/meeting.dart';
+import 'package:crm_app/screen/meeting/cubit/meeting_cubit.dart';
 import 'package:crm_app/screen/users/user_cubit.dart';
+import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:crm_app/shareWidgets/crm_header.dart';
+import 'package:crm_app/utils/missed_followup_timer.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -28,19 +38,6 @@ import 'package:crm_app/screen/profile/ui/profile_screen.dart'
 import '../../invoice/ui/invoice_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
-
-bool _isSessionExpiredMessage(String msg) {
-  final m = msg.toLowerCase();
-  return m.contains('session expired') ||
-      m.contains('unauthorized') ||
-      m.contains('401') ||
-      m.contains('login again') ||
-      m.contains('token failed') ||
-      m.contains('invalid token') ||
-      m.contains('jwt expired') ||
-      m.contains('token expired') ||
-      m.contains('authentication failed');
-}
 
 String? _resolveProfileImageUrl(String? rawInput) {
   final raw = rawInput?.trim() ?? '';
@@ -142,59 +139,148 @@ class DashboardSummary extends Equatable {
   final double paidRevenue; // in INR — shown as "Total Revenue" on card 3
   final double unpaidRevenue; // in INR
   final double totalRevenue; // in INR
+  final String preferredCurrency;
+  final int pendingInvoices;
 
   const DashboardSummary({
     this.totalLeads = 0,
     this.totalDeals = 0,
     this.dealsWon = 0,
     this.pendingLeads = 0,
+    this.pendingInvoices = 0,
     this.leadsChange = 0,
     this.dealsChange = 0,
     this.paidRevenue = 0,
     this.unpaidRevenue = 0,
     this.totalRevenue = 0,
+    this.preferredCurrency = 'INR',
   });
 
   static int _i(dynamic v) => v == null ? 0 : int.tryParse(v.toString()) ?? 0;
   static double _d(dynamic v) =>
       v == null ? 0 : double.tryParse(v.toString()) ?? 0;
 
-  factory DashboardSummary.fromSummaryJson(Map<String, dynamic> j) {
-    Map<String, dynamic> d = j;
-    for (final k in ['data', 'summary', 'stats', 'overview', 'result']) {
-      if (j[k] is Map) {
-        d = Map<String, dynamic>.from(j[k] as Map);
-        break;
+factory DashboardSummary.fromSummaryJson(
+    Map<String, dynamic> j) {
+  Map<String, dynamic> d = j;
+
+  for (final k in [
+    'data',
+    'summary',
+    'stats',
+    'overview',
+    'result',
+  ]) {
+    if (j[k] is Map) {
+      d = Map<String, dynamic>.from(j[k] as Map);
+      break;
+    }
+  }
+
+// ─────────────────────────────────────────────
+// TOTAL REVENUE
+// Sum preferredCurrencyValue from every currency
+// ─────────────────────────────────────────────
+double totalRevenue = 0;
+String preferredCurrency = 'INR';
+
+final revenueByCurrency =
+    d['revenueByCurrency'];
+
+if (revenueByCurrency is Map) {
+  for (final value in revenueByCurrency.values) {
+    if (value is Map) {
+      final currency =
+          value['preferredCurrency']?.toString();
+
+      if (currency != null &&
+          currency.trim().isNotEmpty) {
+        preferredCurrency = currency.trim();
+      }
+
+      final preferredValue =
+          double.tryParse(
+            value['preferredCurrencyValue']?.toString() ?? '0',
+          ) ??
+          0;
+
+      totalRevenue += preferredValue;
+    }
+  }
+}
+  // ─────────────────────────────────────────────
+  // PENDING INVOICES
+  // Sum count from every currency
+  // ─────────────────────────────────────────────
+  int pendingInvoiceCount = 0;
+
+  final pendingByCurrency =
+      d['pendingInvoicesByCurrency'];
+
+  if (pendingByCurrency is Map) {
+    for (final value in pendingByCurrency.values) {
+      if (value is Map) {
+        pendingInvoiceCount += _i(
+          value['count'],
+        );
       }
     }
-    return DashboardSummary(
-      totalLeads: _i(d['totalLeads'] ??
+  }
+
+  return DashboardSummary(
+    totalLeads: _i(
+      d['totalLeads'] ??
           d['total_leads'] ??
           d['leads'] ??
           d['leadsCount'] ??
-          d['leadCount']),
-      totalDeals: _i(d['totalDeals'] ??
+          d['leadCount'],
+    ),
+
+    totalDeals: _i(
+      d['totalDeals'] ??
           d['total_deals'] ??
           d['deals'] ??
           d['dealsCount'] ??
-          d['dealCount']),
-      dealsWon: _i(d['totalDealsWon'] ??
+          d['dealCount'],
+    ),
+
+    dealsWon: _i(
+      d['totalDealsWon'] ??
           d['dealsWon'] ??
           d['won'] ??
           d['closedWon'] ??
           d['wonDeals'] ??
-          d['deals_won']),
-      pendingLeads: _i(d['pendingLeads'] ??
+          d['deals_won'],
+    ),
+
+    pendingLeads: _i(
+      d['pendingLeads'] ??
           d['pending_leads'] ??
           d['pending'] ??
           d['openLeads'] ??
-          d['activeLeads']),
-      leadsChange:
-          _d(d['leadsChange'] ?? d['leads_change'] ?? d['leadsGrowth']),
-      dealsChange:
-          _d(d['dealsChange'] ?? d['deals_change'] ?? d['dealsGrowth']),
-    );
-  }
+          d['activeLeads'],
+    ),
+
+    // NEW
+    pendingInvoices: pendingInvoiceCount,
+
+    leadsChange: _d(
+      d['leadsChange'] ??
+          d['leads_change'] ??
+          d['leadsGrowth'],
+    ),
+
+    dealsChange: _d(
+      d['dealsChange'] ??
+          d['deals_change'] ??
+          d['dealsGrowth'],
+    ),
+
+    // NEW
+    totalRevenue: totalRevenue,
+    preferredCurrency: preferredCurrency,
+  );
+}
 
   @override
   List<Object?> get props => [
@@ -202,6 +288,7 @@ class DashboardSummary extends Equatable {
         totalDeals,
         dealsWon,
         pendingLeads,
+        pendingInvoices,
         paidRevenue,
         unpaidRevenue,
         totalRevenue,
@@ -330,6 +417,7 @@ class DashboardScreen extends StatelessWidget {
           BlocProvider(create: (_) => DashboardCubit()..loadDashboard()),
           BlocProvider(create: (_) => NotificationCubit()),
           BlocProvider(create: (_) => UserCubit()..loadUser()),
+          BlocProvider(create: (_) => MeetingsCubit()..loadMeetings())
         ],
         child: const _DashboardShell(),
       );
@@ -349,6 +437,8 @@ class _DashboardShellState extends State<_DashboardShell>
   late final Animation<double> _anim;
   bool _isOpen = false;
   bool _isOffline = false;
+  Timer? _notifAutoRefreshTimer;
+  static const _notifAutoRefreshInterval = Duration(seconds: 15);
 
   @override
   void initState() {
@@ -358,8 +448,18 @@ class _DashboardShellState extends State<_DashboardShell>
     _anim = CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic);
     _loadAuthToken(); // ✅ add this
     _loadNotifications();
+    _notifAutoRefreshTimer = Timer.periodic(
+        _notifAutoRefreshInterval, (_) => _autoRefreshNotifications());
     _checkInternet();
     _listenInternet();
+  }
+
+  Future<void> _autoRefreshNotifications() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    final uid = prefs.getString('user_id') ?? '';
+    if (uid.isEmpty) return;
+    context.read<NotificationCubit>().refresh(userId: uid, silent: true);
   }
 
   Future<void> _checkInternet() async {
@@ -409,6 +509,7 @@ Future<void> _loadAuthToken() async {
 
   @override
   void dispose() {
+    _notifAutoRefreshTimer?.cancel();
     _ctrl.dispose();
     super.dispose();
   }
@@ -459,9 +560,36 @@ Future<void> _loadAuthToken() async {
         Navigator.of(context, rootNavigator: true)
             .push(_slide(DealsScreen(initialTab: tab)));
       } else if (route == '/invoice') {
-        Navigator.of(context, rootNavigator: true)
-            .push(_slide(const InvoiceScreen()));
-      } else if (route == '/LeaderboardPage') {
+  Navigator.of(context, rootNavigator: true)
+      .push(_slide(const InvoiceScreen()));
+
+} else if (route == '/meetings') {
+  Navigator.of(context, rootNavigator: true)
+      .push(_slide(const MeetingsScreen()));
+
+} else if (route == '/lead-documents') {
+  Navigator.of(context, rootNavigator: true).push(
+    _slide(
+      BlocProvider(
+        create: (_) => LeadsCubit(),
+        child: const LeadsDoc(),
+      ),
+    ),
+  );
+}  else if (route == '/deal-documents') {
+  Navigator.of(context, rootNavigator: true).push(
+    _slide(
+      BlocProvider(
+        create: (_) => DealDocCubit(
+          Dio(),
+        ),
+        child: const DealDocumentScreen(),
+      ),
+    ),
+  );
+}
+
+ else if (route == '/LeaderboardPage') {
         Navigator.of(context, rootNavigator: true)
             .push(_slide(LeaderboardPage(authToken: _authToken)));
       }
@@ -622,6 +750,7 @@ class _CrmDrawer extends StatefulWidget {
 class _CrmDrawerState extends State<_CrmDrawer> {
   String _active = '/dashboard';
   bool _dealsExpanded = false;
+  bool _documentsExpanded = false;
   String _drawerName = 'CRM User';
   String _drawerEmail = 'crm.stagingzar.com';
   String? _drawerImage;
@@ -663,7 +792,8 @@ class _CrmDrawerState extends State<_CrmDrawer> {
         baseUrl: 'https://crm-backend-api.techzarinfo.cloud/api',
         connectTimeout: const Duration(seconds: 20),
         receiveTimeout: const Duration(seconds: 20),
-      ));
+      ))
+        ..interceptors.add(AuthInterceptor());
       final res = await dio.get(
         '/users/me',
         options: Options(headers: {'Authorization': 'Bearer $token'}),
@@ -757,7 +887,11 @@ class _CrmDrawerState extends State<_CrmDrawer> {
   }
 
   Future<void> _logout() async {
-    final prefs = await SharedPreferences.getInstance();
+      final prefs = await SharedPreferences.getInstance();
+
+    MissedFollowupTimer.instance.stop();
+
+    await prefs.remove('global_missed_followup_last_shown');
     await prefs.remove('token');
     await prefs.remove('user_id');
     await prefs.remove('user_name');
@@ -844,6 +978,44 @@ class _CrmDrawerState extends State<_CrmDrawer> {
                 setState(() => _active = '/invoice');
                 widget.onNavigate('/invoice');
               }),
+              _Item(
+    icon: Icons.calendar_month_outlined,
+    activeIcon: Icons.calendar_month_rounded,
+    label: 'Meetings',
+    active: _active == '/meetings',
+    activeColor: const Color(0xFF3B82F6),
+    onTap: () {
+      setState(() => _active = '/meetings');
+      widget.onNavigate('/meetings');
+    }),
+    _ExpandItem(
+      icon: Icons.folder_outlined,
+      activeIcon: Icons.folder_rounded,
+      label: 'Documents',
+      expanded: _documentsExpanded,
+      active: _active == '/lead-documents' || _active == '/deal-documents',
+      activeColor: AppColors.success,
+      onToggle: () =>
+          setState(() => _documentsExpanded = !_documentsExpanded),
+      children: [
+        _SubItem(
+            icon: Icons.description_outlined,
+            label: 'Lead Documents',
+            active: _active == '/lead-documents',
+            onTap: () {
+              setState(() => _active = '/lead-documents');
+              widget.onNavigate('/lead-documents');
+            }),
+        _SubItem(
+            icon: Icons.folder_copy_outlined,
+            label: 'Deal Documents',
+            active: _active == '/deal-documents',
+            onTap: () {
+              setState(() => _active = '/deal-documents');
+              widget.onNavigate('/deal-documents');
+            }),
+      ],
+    ),
           _Item(
               icon: Icons.leaderboard_outlined,
               activeIcon: Icons.leaderboard_outlined,
@@ -1069,22 +1241,39 @@ Future<bool> _canNavigate(BuildContext context) async {
   }
   return true;
 } 
-Widget _buildHeroCard(BuildContext context, DashboardLoaded s) {
+Widget _buildHeroCard(
+  BuildContext context,
+  DashboardLoaded s,
+) {
   final sm = s.summary;
+
   final totalLeads = sm.totalLeads;
+
+  final totalRev = sm.totalRevenue;
+
   final pendingInvoiceCount =
-      s.invoices.where((inv) => inv.status == 'unpaid').length;
+      sm.pendingInvoices;
+
   return _HeroOverviewCard(
     s: s,
     totalLeads: totalLeads,
-    paidRev: sm.paidRevenue,
+    paidRev: totalRev,
     pendingInvoiceCount: pendingInvoiceCount,
     onTodayFollowUpsTap: () async {
       if (!await _canNavigate(context)) return;
-      Navigator.of(context, rootNavigator: true).push(
-        _slide(FollowUpsScreen(items: s.todaysFollowUps)),
+
+      Navigator.of(
+        context,
+        rootNavigator: true,
+      ).push(
+        _slide(
+          FollowUpsScreen(
+            items: s.todaysFollowUps,
+          ),
+        ),
       );
     },
+
     onTotalLeadsTap: () async {
       if (!await _canNavigate(context)) return;
       Navigator.of(context, rootNavigator: true).push(
@@ -1110,13 +1299,7 @@ onPendingInvoicesTap: () async {
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: AppColors.background,
         body: BlocConsumer<DashboardCubit, DashboardState>(
-          listener: (context, state) {
-            if (state is DashboardError &&
-                _isSessionExpiredMessage(state.message)) {
-              Navigator.of(context, rootNavigator: true)
-                  .pushNamedAndRemoveUntil('/login', (route) => false);
-            }
-          },
+          listener: (context, state) {},
           builder: (context, state) => RefreshIndicator(
             color: AppColors.primary,
             onRefresh: () async {
@@ -1266,17 +1449,12 @@ class _DashboardBody extends StatelessWidget {
     final totalLeads = sm.totalLeads;
 
     // Revenue values
-    final paidRev = sm.paidRevenue; // card 3 shows this as "Total Revenue"
-    final unpaidRev = sm.unpaidRevenue;
     final totalRev = sm.totalRevenue;
-
     // Pending leads: prefer API value; fallback = count leads that aren'9t 'Converted'
-    final pendingInvoiceCount =
-        s.invoices.where((inv) => inv.status == 'unpaid').length;
+final pendingInvoiceCount =
+    sm.pendingInvoices;
 
-    final paidPct = totalRev > 0
-        ? '${(paidRev / totalRev * 100).toStringAsFixed(0)}% of total'
-        : '—';
+   
 
     final topUser = s.topPerformer ??
         {
@@ -1296,7 +1474,7 @@ class _DashboardBody extends StatelessWidget {
   _HeroOverviewCard(
     s: s,
     totalLeads: totalLeads,
-    paidRev: paidRev,
+    paidRev: totalRev,
     pendingInvoiceCount: pendingInvoiceCount,
   ),
   const SizedBox(height: 20),
@@ -1310,36 +1488,132 @@ class _DashboardBody extends StatelessWidget {
             : Column(
                 children: s.recentLeads
                     .take(5)
-                    .map((l) => _MiniLeadCard(lead: l))
+                    .map(
+  (l) => _MiniLeadCard(
+    lead: l,
+    onTap: () async {
+      if (!await _canNavigate(context)) return;
+
+      Navigator.of(context, rootNavigator: true).push(
+        _slide(
+          LeadsScreen(
+            selectedLeadId: l.id,
+            showBackButton: true,
+          ),
+        ),
+      );
+    },
+  ),
+)
                     .toList()),
 
         const SizedBox(height: 20),
         
         // ── Deal Pipeline ─────────────────────────────────────
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          const _SectionTitle('Deal Pipeline'),
-          if (s.hasPipeline)
-            _Pill(
-                label: '${s.pipeline.fold(0, (a, b) => a + b.count)} deals',
-                color: AppColors.primary,
-                bg: AppColors.primaryLight),
-        ]),
+        Row(
+  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+  children: [
+    const _SectionTitle('Deal Pipeline'),
+
+    if (s.hasPipeline)
+      Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () async {
+            final result =
+                await Connectivity().checkConnectivity();
+
+            if (result == ConnectivityResult.none) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'You are offline. Only Dashboard is available.',
+                  ),
+                ),
+              );
+              return;
+            }
+
+            if (!context.mounted) return;
+
+            Navigator.of(
+              context,
+              rootNavigator: true,
+            ).push(
+              MaterialPageRoute(
+                builder: (_) =>  DealsScreen(
+                  initialTab: 1,
+                  showBackButton: true,
+                    filterRange: s.filterRange,
+                    filterMonth: s.filterMonth,
+                    filterYear: s.filterYear,
+
+                ),
+              ),
+            );
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 10,
+              vertical: 7,
+            ),
+            decoration: BoxDecoration(
+              color: AppColors.primaryLight,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'View Deals',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.primary,
+                  ),
+                ),
+                SizedBox(width: 4),
+                Icon(
+                  Icons.arrow_forward_ios_rounded,
+                  size: 12,
+                  color: AppColors.primary,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+  ],
+),
         const SizedBox(height: 12),
         _PipelineCard(s: s),
 
         const SizedBox(height: 24),
 
-        // ── Top Performer ─────────────────────────────────────
-        const _SectionTitle('Top Performer'),
-
+                // ── Meetings ────────────────────────────────────────
+        const _SectionTitle('Meetings'),
+ 
         const SizedBox(height: 12),
-
-        _TopPerformerCard(user: topUser),
-
+ 
+        MeetingsCard(
+  filterRange: s.filterRange,
+  filterMonth: s.filterMonth,
+  filterYear: s.filterYear,
+),           
+ 
         const SizedBox(height: 24),
+
+        // // ── Top Performer ─────────────────────────────────────
+        // const _SectionTitle('Top Performer'),
+
+        // const SizedBox(height: 12),
+
+        // _TopPerformerCard(user: topUser),
+
+        // const SizedBox(height: 24),
   
-        const SizedBox(height: 32),
-      ]),
+            ]),
     );
   }
 }
@@ -1373,9 +1647,106 @@ class _HeroOverviewCard extends StatelessWidget {
     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
   ];
 
-  static String _inr(double v) => NumberFormat.currency(
-      locale: 'en_IN', symbol: '₹', decimalDigits: 0)
-      .format(v);
+String _formatRevenue(
+  double value,
+  String currency,
+) {
+  switch (currency.toUpperCase()) {
+    case 'USD':
+      return NumberFormat.currency(
+        locale: 'en_US',
+        symbol: '\$',
+        decimalDigits: 2,
+      ).format(value);
+
+    case 'EUR':
+      return NumberFormat.currency(
+        locale: 'de_DE',
+        symbol: '€',
+        decimalDigits: 2,
+      ).format(value);
+
+    case 'INR':
+      return NumberFormat.currency(
+        locale: 'en_IN',
+        symbol: '₹',
+        decimalDigits: 2,
+      ).format(value);
+
+    case 'GBP':
+      return NumberFormat.currency(
+        locale: 'en_GB',
+        symbol: '£',
+        decimalDigits: 2,
+      ).format(value);
+
+    case 'JPY':
+      return NumberFormat.currency(
+        locale: 'ja_JP',
+        symbol: '¥',
+        decimalDigits: 0,
+      ).format(value);
+
+    case 'AUD':
+      return NumberFormat.currency(
+        locale: 'en_AU',
+        symbol: 'A\$',
+        decimalDigits: 2,
+      ).format(value);
+
+    case 'CAD':
+      return NumberFormat.currency(
+        locale: 'en_CA',
+        symbol: 'C\$',
+        decimalDigits: 2,
+      ).format(value);
+
+    case 'CHF':
+      return NumberFormat.currency(
+        locale: 'de_CH',
+        symbol: 'CHF ',
+        decimalDigits: 2,
+      ).format(value);
+
+    case 'MYR':
+      return NumberFormat.currency(
+        locale: 'ms_MY',
+        symbol: 'RM ',
+        decimalDigits: 2,
+      ).format(value);
+
+    case 'AED':
+      return NumberFormat.currency(
+        locale: 'ar_AE',
+        symbol: 'د.إ ',
+        decimalDigits: 2,
+      ).format(value);
+
+    case 'SGD':
+      return NumberFormat.currency(
+        locale: 'en_SG',
+        symbol: 'S\$',
+        decimalDigits: 2,
+      ).format(value);
+
+    case 'ZAR':
+      return NumberFormat.currency(
+        locale: 'en_ZA',
+        symbol: 'R ',
+        decimalDigits: 2,
+      ).format(value);
+
+    case 'SAR':
+      return NumberFormat.currency(
+        locale: 'ar_SA',
+        symbol: 'ر.س ',
+        decimalDigits: 2,
+      ).format(value);
+
+    default:
+      return '$currency ${value.toStringAsFixed(2)}';
+  }
+}
 
   String _rangeLabel() {
   if (s.filterRange == 'all') return 'All';
@@ -1564,15 +1935,21 @@ class _HeroOverviewCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      paidRev > 0 ? _inr(paidRev) : '₹0',
+  paidRev > 0
+      ? _formatRevenue(
+          paidRev,
+          s.summary.preferredCurrency,
+        )
+      : '0',
                       style: const TextStyle(
-                          fontSize: 30,
+                          fontSize: 25,
                           fontWeight: FontWeight.w800,
                           color: AppColors.primary),
                     ),
                     const SizedBox(height: 2),
-                    const Text('Total Revenue (INR)',
-                        style: TextStyle(
+                     Text(
+  'Total Revenue (${s.summary.preferredCurrency})',
+                        style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w500,
                             color: AppColors.textSecondary)),
@@ -2108,7 +2485,7 @@ class _PipelineCard extends StatelessWidget {
             ),
             const SizedBox(height: 14),
             s.hasPipeline
-                ? _buildFromApi()
+                ? _buildFromApi(context)
                 : const Padding(
                     padding: EdgeInsets.symmetric(vertical: 8),
                     child: Text(
@@ -2124,66 +2501,152 @@ class _PipelineCard extends StatelessWidget {
         ),
       );
 
-  Widget _buildFromApi() {
-    final maxCount =
-        s.pipeline.map((e) => e.count).fold(1, (a, b) => a > b ? a : b);
-    return Column(
-      children: s.pipeline.map((stage) {
-        final color = _stageColor(stage.stage);
-        final percent = stage.count / maxCount;
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 14),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Expanded(
-                  child: Text(stage.stage,
-                      style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textPrimary))),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: AppColors.background,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: AppColors.border),
+  Widget _buildFromApi(BuildContext context) {
+  final maxCount =
+      s.pipeline.map((e) => e.count).fold(
+            1,
+            (a, b) => a > b ? a : b,
+          );
+
+  return Column(
+    children: s.pipeline.map((stage) {
+      final color = _stageColor(stage.stage);
+      final percent = stage.count / maxCount;
+
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+
+            onTap: () async {
+              final result =
+                  await Connectivity().checkConnectivity();
+
+              if (result == ConnectivityResult.none) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'You are offline. Only Dashboard is available.',
+                    ),
+                  ),
+                );
+                return;
+              }
+
+              if (!context.mounted) return;
+
+              Navigator.of(
+                context,
+                rootNavigator: true,
+              ).push(
+                MaterialPageRoute(
+                  builder: (_) => DealsScreen(
+                    initialStageFilter: stage.stage,
+                    showBackButton: true,
+                  ),
                 ),
-                child: Text('${stage.count} deal${stage.count != 1 ? "s" : ""}',
-                    style: const TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textSecondary)),
+              );
+            },
+
+            child: Padding(
+              padding: const EdgeInsets.all(6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          stage.stage,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                      ),
+
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.background,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: AppColors.border,
+                          ),
+                        ),
+                        child: Text(
+                          '${stage.count} deal${stage.count != 1 ? "s" : ""}',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ),
+
+                      if (stage.value > 0) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: color.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            _fmtVal(
+                              stage.value,
+                              stage.currency,
+                            ),
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: color,
+                            ),
+                          ),
+                        ),
+                      ],
+
+                      const SizedBox(width: 4),
+
+                      Icon(
+                        Icons.chevron_right_rounded,
+                        size: 18,
+                        color: color,
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 7),
+
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: LinearProgressIndicator(
+                      value: percent,
+                      minHeight: 10,
+                      backgroundColor: AppColors.divider,
+                      valueColor:
+                          AlwaysStoppedAnimation<Color>(color),
+                    ),
+                  ),
+                ],
               ),
-              if (stage.value > 0) ...[
-                const SizedBox(width: 8),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                  decoration: BoxDecoration(
-                      color: color.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(20)),
-                  child: Text(_fmtVal(stage.value, stage.currency),
-                      style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: color)),
-                ),
-              ],
-            ]),
-            const SizedBox(height: 7),
-            ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: LinearProgressIndicator(
-                    value: percent,
-                    minHeight: 10,
-                    backgroundColor: AppColors.divider,
-                    valueColor: AlwaysStoppedAnimation(color))),
-          ]),
-        );
-      }).toList(),
-    );
-  }
+            ),
+          ),
+        ),
+      );
+    }).toList(),
+  );
+}
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -2236,9 +2699,13 @@ class _QuickCard extends StatelessWidget {
 
 class _MiniLeadCard extends StatelessWidget {
   final Lead lead;
-  const _MiniLeadCard({required this.lead});
+  final VoidCallback? onTap;
+  const _MiniLeadCard({required this.lead, this.onTap});
   @override
-  Widget build(BuildContext ctx) => Container(
+  Widget build(BuildContext ctx) => InkWell(
+  onTap: onTap,
+  borderRadius: BorderRadius.circular(14),
+  child: Container(
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -2287,6 +2754,7 @@ class _MiniLeadCard extends StatelessWidget {
                     fontSize: 11, color: AppColors.textSecondary)),
           ]),
         ]),
+  ),
       );
 }
 

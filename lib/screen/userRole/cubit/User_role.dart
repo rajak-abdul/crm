@@ -1,6 +1,7 @@
 import 'package:crm_app/database/local_db.dart' show LocalDb;
 import 'package:crm_app/modals/modals.dart' show AppUser, AppRole;
 import 'package:crm_app/screen/userRole/cubit/user_role_state.dart';
+import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:dio/dio.dart'
     show
         DioExceptionType,
@@ -44,6 +45,7 @@ class UserRoleCubit extends Cubit<UserRoleState> {
         handler.next(e);
       },
     ));
+    _dio.interceptors.add(AuthInterceptor());
   }
 
   UserRoleLoaded? get _loaded =>

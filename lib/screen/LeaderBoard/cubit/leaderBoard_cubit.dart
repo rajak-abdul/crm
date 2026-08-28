@@ -11,6 +11,7 @@
 import 'package:crm_app/database/local_db.dart';
 import 'package:dio/dio.dart';
 import 'package:crm_app/screen/LeaderBoard/modal/leaderBoard_modal.dart';
+import 'package:crm_app/services/auth_interceptor.dart';
 
 const String _baseUrl = 'https://crm-backend-api.techzarinfo.cloud/api';
 const String _leaderboardEndpoint = '/streak/leaderboard';
@@ -22,7 +23,7 @@ class LeaderboardService {
       connectTimeout: const Duration(seconds: 10),
       receiveTimeout: const Duration(seconds: 10),
     ),
-  );
+  )..interceptors.add(AuthInterceptor());
 
   // ── Public API ──────────────────────────────────────────────────────────────
 

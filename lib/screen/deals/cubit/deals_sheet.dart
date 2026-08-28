@@ -9,10 +9,36 @@ import 'package:excel/excel.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:file_saver/file_saver.dart';
 import 'package:flutter/material.dart' hide BorderStyle, Border;
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
-import 'package:open_file/open_file.dart';
-import 'package:path_provider/path_provider.dart';
+
+// Same channel Lead's export uses — the native Android side already
+// inserts into the public Downloads collection via MediaStore, which
+// getApplicationDocumentsDirectory() (the app's private sandbox) can't
+// do.
+final MethodChannel _dealsDownloadsChannel = MethodChannel('crm/downloads');
+
+Future<String> _saveXlsxToDownloads(String fileName, List<int> bytes) async {
+  if (Platform.isAndroid) {
+    final path = await _dealsDownloadsChannel.invokeMethod<String>(
+      'saveToDownloads',
+      <String, dynamic>{
+        'fileName': fileName,
+        'bytes': Uint8List.fromList(bytes),
+        'mimeType':
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      },
+    );
+    return path ?? '';
+  }
+  return FileSaver.instance.saveFile(
+    name: fileName.replaceAll('.xlsx', ''),
+    bytes: Uint8List.fromList(bytes),
+    ext: 'xlsx',
+    mimeType: MimeType.microsoftExcel,
+  );
+}
 
 class DealsTemplateCubit extends Cubit<DealsTemplateState> {
   final DealsCubit dealsCubit;
@@ -107,17 +133,7 @@ class DealsTemplateCubit extends Cubit<DealsTemplateState> {
         return;
       }
 
-      final directory = await getApplicationDocumentsDirectory();
-
-      final file = File(
-        "${directory.path}/Deals_Template.xlsx",
-      );
-
-      await file.writeAsBytes(
-        bytes,
-        flush: true,
-      );
-      await OpenFile.open(file.path);
+      await _saveXlsxToDownloads('Deals_Template.xlsx', bytes);
 
       emit(
         const DealsTemplateSuccess(
@@ -342,18 +358,10 @@ cell.cellStyle = rowStyle;
       return;
     }
 
-    final directory = await getApplicationDocumentsDirectory();
+    final fileName =
+        "Deals_Export_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.xlsx";
 
-    final file = File(
-      "${directory.path}/Deals_Export_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.xlsx",
-    );
-
-    await file.writeAsBytes(
-      bytes,
-      flush: true,
-    );
-
-    await OpenFile.open(file.path);
+    await _saveXlsxToDownloads(fileName, bytes);
 
     emit(
       DealsTemplateSuccess(

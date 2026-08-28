@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:crm_app/services/auth_guard.dart';
+import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:dio/dio.dart';
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -193,6 +195,7 @@ class ProfileCubit extends Cubit<ProfileState> {
       receiveTimeout: const Duration(seconds: 20),
       headers: const {'Content-Type': 'application/json'},
     ));
+    _dio.interceptors.add(AuthInterceptor());
   }
 
   Future<void> _initToken() async {
@@ -207,6 +210,7 @@ class ProfileCubit extends Cubit<ProfileState> {
       final token = _token;
       if (token == null || token.isEmpty) {
         emit(const ProfileError('Session expired. Please login again.'));
+        AuthGuard.forceLogout();
         return;
       }
 

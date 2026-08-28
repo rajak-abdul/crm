@@ -5,7 +5,9 @@
 import 'dart:io';
 
 import 'package:crm_app/database/local_db.dart';
+import 'package:crm_app/screen/currency/modal/account_currency_modal.dart';
 import 'package:crm_app/screen/invoice/modal/invoice_model.dart';
+import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:crm_app/screen/invoice/ui/dealOption.dart'
     show DealOption, SalesUser;
 import 'package:crm_app/screen/invoice/ui/invoice_screen.dart'
@@ -71,12 +73,40 @@ Future<void> _initDio() async {
       },
     ),
   );
+  _dio.interceptors.add(AuthInterceptor());
 
   _dioReady = true;
 
   debugPrint("Invoice Base URL => ${_dio.options.baseUrl}");
 }
 
+  // ================
+  // get currency through me 
+  // ================
+  Future<String> getAccountCurrency() async {
+  try {
+    await _ensureDio();
+
+    final response = await _dio.get('/users/me');
+
+    final data = Map<String, dynamic>.from(response.data);
+
+    final accountCurrency = AccountCurrency.fromJson(data);
+
+    return accountCurrency.currency.isNotEmpty
+        ? accountCurrency.currency
+        : 'INR';
+  } on DioException catch (e) {
+    debugPrint('GET ACCOUNT CURRENCY ERROR');
+    debugPrint('Status: ${e.response?.statusCode}');
+    debugPrint('Response: ${e.response?.data}');
+
+    return 'INR';
+  } catch (e) {
+    debugPrint('ACCOUNT CURRENCY ERROR: $e');
+    return 'INR';
+  }
+}
 
   // ─────────────────────────────────────────────────────────────
   // LOAD
@@ -320,80 +350,194 @@ debugPrint("FULL URL: ${_dio.options.baseUrl}/invoices/download/$id");
     }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // UPDATE
-  // ─────────────────────────────────────────────────────────────
-  Future<String?> updateInvoice(String id, Map<String, dynamic> data) async {
-    await _ensureDio();
-    final prevState = state;
 
+//
+/// Updates ONLY payment information.
+/// Does NOT recalculate or overwrite tax, discount, or total.
+Future<String?> recordPayment(
+  String id, {
+  required double amountPaid,
+  DateTime? paidAt,
+}) async {
+  await _ensureDio();
+
+  final prevState = state;
+
+  try {
+    final paymentData = <String, dynamic>{
+      'amountPaid': amountPaid,
+      if (paidAt != null)
+        'paidAt': paidAt.toUtc().toIso8601String(),
+    };
+
+    debugPrint('========== RECORD PAYMENT ==========');
+    debugPrint('Invoice ID: $id');
+    debugPrint('Payment Body: $paymentData');
+
+    // IMPORTANT:
+    // Do NOT use _toApiBody() here.
+    // _toApiBody() recalculates tax/discount/total.
+    await _dio.put(
+      '/Invoices/updateInvoice/$id',
+      data: paymentData,
+    );
+
+    // Update UI immediately.
     if (state is InvoiceLoaded) {
       final s = state as InvoiceLoaded;
 
-      String? displayName = data['assignTo']?.toString();
-      final assignToId = data['assignToId']?.toString() ?? '';
-      if (assignToId.isNotEmpty) {
-        try {
-          displayName = s.salesUsers.firstWhere((u) => u.id == assignToId).name;
-        } catch (_) {}
-      }
-
-      final uiStatus =
-          Invoice.normaliseStatus(data['status']?.toString() ?? 'Unpaid');
-
-      emit(s.copyWithInvoices(s.invoices.map((inv) {
+      final updatedInvoices = s.invoices.map((inv) {
         if (inv.id != id) return inv;
+
+        final newAmountPaid = amountPaid;
+
+        final newStatus = newAmountPaid >= inv.total && inv.total > 0
+            ? 'Paid'
+            : newAmountPaid > 0
+                ? 'Partially Paid'
+                : 'Unpaid';
+
         return inv.copyWith(
-          assignTo: displayName,
-          issueDate: data['issueDate']?.toString(),
-          dueDate: data['dueDate']?.toString(),
-          status: uiStatus,
-          taxType: data['taxType']?.toString(),
-          taxValue: (data['taxValue'] as num?)?.toDouble(),
-          discountType: data['discountType']?.toString(),
-          discountValue: (data['discountValue'] as num?)?.toDouble(),
-          dealId: data['dealId']?.toString(),
-          dealName: data['dealName']?.toString(),
-          price: (data['price'] as num?)?.toDouble(),
-          notes: data['notes']?.toString(),
-          currency: data['currency']?.toString(),
-          amountPaid: (data['amountPaid'] as num?)?.toDouble(),
-          paidAt: _parseDateField(data['paidAt']),
-          emailSentAt: _parseDateField(data['emailSentAt']),
-          preferredCurrency: data['preferredCurrency']?.toString(),
-          preferredCurrencyValue:
-              (data['preferredCurrencyValue'] as num?)?.toDouble(),
-          billingAddress: data['billingAddress']?.toString(),
-          clientTaxId: data['clientTaxId']?.toString(),
-          poNumber: data['poNumber']?.toString(),
-          clientState: data['clientState']?.toString(),
-          customFields: data['customFields'] is List
-              ? data['customFields'] as List
-              : null,
+          amountPaid: newAmountPaid,
+          paidAt: paidAt ?? inv.paidAt,
+          status: newStatus,
         );
-      }).toList()));
+      }).toList();
+
+      emit(s.copyWithInvoices(updatedInvoices));
     }
 
-    // ✅ FIX 7: Always write to SQLite first (optimistic) — works online AND offline.
+    return null;
+  } on DioException catch (e) {
+    debugPrint('========== RECORD PAYMENT ERROR ==========');
+    debugPrint('Status: ${e.response?.statusCode}');
+    debugPrint('Response: ${e.response?.data}');
+    debugPrint('URL: ${e.requestOptions.uri}');
+    debugPrint('Body: ${e.requestOptions.data}');
 
-    try {
-      await _ensureDio();
-      await _dio.put('/Invoices/updateInvoice/$id', data: _toApiBody(data));
-      return null;
-    } on DioException catch (e) {
-  debugPrint('Status Code: ${e.response?.statusCode}');
-  debugPrint('Response: ${e.response?.data}');
-  debugPrint('Request URL: ${e.requestOptions.uri}');
-  debugPrint('Request Body: ${e.requestOptions.data}');
-  debugPrint('Headers: ${e.requestOptions.headers}');
-      if (_isOfflineError(e)) return null;
-      emit(prevState);
-      return _dioMsg(e);
-    } catch (e) {
-      emit(prevState);
-      return e.toString();
-    }
+    emit(prevState);
+    return _dioMsg(e);
+  } catch (e) {
+    emit(prevState);
+    return e.toString();
   }
+}
+  // ─────────────────────────────────────────────────────────────
+  // UPDATE
+  // ─────────────────────────────────────────────────────────────
+  Future<String?> updateInvoice(
+  String id,
+  Map<String, dynamic> data,
+) async {
+  await _ensureDio();
+
+  final prevState = state;
+
+  if (state is InvoiceLoaded) {
+    final s = state as InvoiceLoaded;
+
+    String? displayName = data['assignTo']?.toString();
+
+    final assignToId = data['assignToId']?.toString() ?? '';
+
+    if (assignToId.isNotEmpty) {
+      try {
+        displayName = s.salesUsers
+            .firstWhere((u) => u.id == assignToId)
+            .name;
+      } catch (_) {}
+    }
+
+    final uiStatus = Invoice.normaliseStatus(
+      data['status']?.toString() ?? 'Unpaid',
+    );
+
+    emit(
+      s.copyWithInvoices(
+        s.invoices.map((inv) {
+          if (inv.id != id) return inv;
+
+          return inv.copyWith(
+            assignTo: displayName,
+            issueDate: data['issueDate']?.toString(),
+            dueDate: data['dueDate']?.toString(),
+            status: uiStatus,
+
+            taxType: data['taxType']?.toString(),
+            taxValue: (data['taxValue'] as num?)?.toDouble(),
+
+            discountType: data['discountType']?.toString(),
+            discountValue:
+                (data['discountValue'] as num?)?.toDouble(),
+
+            dealId: data['dealId']?.toString(),
+            dealName: data['dealName']?.toString(),
+
+            price: (data['price'] as num?)?.toDouble(),
+
+            notes: data['notes']?.toString(),
+            currency: data['currency']?.toString(),
+
+            amountPaid:
+                (data['amountPaid'] as num?)?.toDouble(),
+
+            paidAt: _parseDateField(data['paidAt']),
+
+            emailSentAt:
+                _parseDateField(data['emailSentAt']),
+
+            preferredCurrency:
+                data['preferredCurrency']?.toString(),
+
+            preferredCurrencyValue:
+                (data['preferredCurrencyValue'] as num?)?.toDouble(),
+
+            billingAddress:
+                data['billingAddress']?.toString(),
+
+            clientTaxId:
+                data['clientTaxId']?.toString(),
+
+            poNumber:
+                data['poNumber']?.toString(),
+
+            clientState:
+                data['clientState']?.toString(),
+
+            customFields: data['customFields'] is List
+                ? data['customFields'] as List
+                : null,
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  try {
+    await _ensureDio();
+
+    await _dio.put(
+      '/Invoices/updateInvoice/$id',
+      data: _toApiBody(data), // ✅ IMPORTANT
+    );
+
+    return null;
+  } on DioException catch (e) {
+    debugPrint('Status Code: ${e.response?.statusCode}');
+    debugPrint('Response: ${e.response?.data}');
+    debugPrint('Request URL: ${e.requestOptions.uri}');
+    debugPrint('Request Body: ${e.requestOptions.data}');
+    debugPrint('Headers: ${e.requestOptions.headers}');
+
+    if (_isOfflineError(e)) return null;
+
+    emit(prevState);
+    return _dioMsg(e);
+  } catch (e) {
+    emit(prevState);
+    return e.toString();
+  }
+}
 
   // ─────────────────────────────────────────────────────────────
   // DELETE
@@ -510,7 +654,6 @@ debugPrint("FULL URL: ${_dio.options.baseUrl}/invoices/download/$id");
       'discountValue': amounts.discountValueApi,
       'discount': amounts.discountAmount,
       'taxType': amounts.taxTypeApi,
-      'taxValue': amounts.taxValueApi,
       'tax': amounts.taxAmount,
       'total': amounts.total,
       'notes': data['notes']?.toString() ?? '',
@@ -578,7 +721,6 @@ debugPrint("FULL URL: ${_dio.options.baseUrl}/invoices/download/$id");
     double taxAmount,
     double total,
     double discountValueApi,
-    double taxValueApi,
     String discountTypeApi,
     String taxTypeApi,
   }) _computeInvoiceAmounts(Map<String, dynamic> data, double price) {
@@ -613,14 +755,12 @@ debugPrint("FULL URL: ${_dio.options.baseUrl}/invoices/download/$id");
 
     final discountValueApi =
         discountType == 'No Discount' ? 0.0 : discountValueInput;
-    final taxValueApi = taxType == 'Zero Tax' ? 0.0 : taxValueInput;
 
     return (
       discountAmount: discountAmount,
       taxAmount: taxAmount,
       total: total,
       discountValueApi: discountValueApi,
-      taxValueApi: taxValueApi,
       discountTypeApi: discountTypeApi,
       taxTypeApi: taxTypeApi,
     );

@@ -201,7 +201,6 @@ class MissedFollowupDialog extends StatelessWidget {
                               Alignment.centerRight,
                           child: TextButton.icon(
                             onPressed: () {
-                              Navigator.pop(context);
 
                               onViewLead(lead);
                             },

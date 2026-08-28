@@ -1,5 +1,36 @@
 import 'package:intl/intl.dart';
 
+/// One entry from the API's `statusHistory` — tracks each status change
+/// (e.g. unpaid → partially_paid) along with who made it and when.
+class InvoiceStatusHistoryItem {
+  final String id;
+  final String status;
+  final double amountPaid;
+  final DateTime? changedAt;
+  final String changedBy;
+
+  const InvoiceStatusHistoryItem({
+    required this.id,
+    required this.status,
+    required this.amountPaid,
+    this.changedAt,
+    required this.changedBy,
+  });
+
+  factory InvoiceStatusHistoryItem.fromJson(Map<String, dynamic> j) =>
+      InvoiceStatusHistoryItem(
+        id: (j['_id'] ?? '').toString(),
+        status: Invoice.normaliseStatus((j['status'] ?? '').toString()),
+        amountPaid: (j['amountPaid'] is num)
+            ? (j['amountPaid'] as num).toDouble()
+            : double.tryParse((j['amountPaid'] ?? '0').toString()) ?? 0,
+        changedAt: j['changedAt'] != null
+            ? DateTime.tryParse(j['changedAt'].toString())
+            : null,
+        changedBy: (j['changedBy'] ?? '').toString(),
+      );
+}
+
 class Invoice {
   final String id,
       invoiceNo,
@@ -38,6 +69,14 @@ class Invoice {
   final String companyName;
   final String dealAddress;
   final String dealCountry;
+  final String dealValue;
+  final String dealStage;
+
+  final List<InvoiceStatusHistoryItem> statusHistory;
+  final DateTime? lastReminderAt;
+  final double totalPreferredCurrencyValue;
+  final String createdBy;
+  final String lastUpdatedBy;
 
   const Invoice({
     required this.id,
@@ -75,6 +114,13 @@ class Invoice {
     required this.companyName,
     required this.dealAddress,
     required this.dealCountry,
+    this.dealValue = '',
+    this.dealStage = '',
+    this.statusHistory = const [],
+    this.lastReminderAt,
+    this.totalPreferredCurrencyValue = 0,
+    this.createdBy = '',
+    this.lastUpdatedBy = '',
   });
 
   // ── UI display values (Title case) ──────────────────────────────
@@ -102,54 +148,77 @@ class Invoice {
   /// "fixed" → "Fixed Amount", "percentage" → "Percentage",
   /// "none"/"zero"/"" → fallback
   static String _normaliseTaxType(String s, String fallback) {
-    switch (s.toLowerCase().trim()) {
-      case 'percentage':
-        return 'Percentage';
-      case 'fixed':
-        return 'Fixed Amount';
-      case 'none':
-      case 'zero':
-      case 'no discount':
-      case 'nodiscount':
-      case '':
-        return fallback;
-      default:
-        return s;
-    }
+  switch (s.toLowerCase().trim()) {
+    case 'percentage':
+    case 'percent':
+      return 'Percentage';
+
+    case 'fixed':
+    case 'fixed amount':
+    case 'fixed_amount':
+      return 'Fixed Amount';
+
+    case 'none':
+    case 'zero':
+    case 'zero tax':
+    case '':
+      return fallback;
+
+    default:
+      return fallback;
   }
+}
 
-  /// For [Percentage], prefer explicit rate fields; if API only returns a computed
-  /// amount in [amountKeys], convert it back to a percentage rate.
   static double _parseTaxOrDiscountValue({
-    required Map<String, dynamic> j,
-    required String type,
-    required double price,
-    required List<String> valueKeys,
-    required List<String> amountKeys,
-  }) {
-    if (type != 'Percentage' && type != 'Fixed Amount') return 0;
-
-    for (final k in valueKeys) {
-      final v = _d(j[k]);
-      if (v != null) return v;
-    }
-
-    for (final k in amountKeys) {
-      final v = _d(j[k]);
-      if (v == null || v == 0) continue;
-      if (type == 'Percentage' && price > 0) {
-        // API may return computed amount (e.g. 500) instead of rate (e.g. 10).
-        if (v > 100 || v >= price * 0.5) {
-          return (v / price * 100).clamp(0, 100);
-        }
-        return v;
-      }
-      return v;
-    }
-
+  required Map<String, dynamic> j,
+  required String type,
+  required double price,
+  required List<String> valueKeys,
+  required List<String> amountKeys,
+}) {
+  if (type != 'Percentage' && type != 'Fixed Amount') {
     return 0;
   }
 
+  // IMPORTANT:
+  // Always prefer the actual API value field.
+  //
+  // Percentage:
+  //   taxValue = 18  -> 18%
+  //
+  // Fixed Amount:
+  //   taxValue = 30488.64 -> ₹30,488.64
+  //
+  // Do NOT convert it using price or tax amount.
+  double? fromValueKeys;
+  for (final key in valueKeys) {
+    final value = _d(j[key]);
+
+    if (value != null) {
+      fromValueKeys = value;
+      break;
+    }
+  }
+
+  // The API has been observed to persist taxValue/discountValue as 0
+  // even when a real rate was set on that invoice, while the sibling
+  // amount field (tax/discount) still carries the true figure — so a
+  // zero from valueKeys isn't trusted outright when amountKeys has a
+  // nonzero signal to fall back on.
+  if (fromValueKeys != null && fromValueKeys != 0) {
+    return fromValueKeys;
+  }
+
+  for (final key in amountKeys) {
+    final value = _d(j[key]);
+
+    if (value != null && value != 0) {
+      return value;
+    }
+  }
+
+  return fromValueKeys ?? 0;
+}
   // ── Computed totals (tax on amount after discount, per API) ─────
   double get discountAmount {
     if (discountType == 'Percentage') return price * discountValue / 100;
@@ -164,16 +233,9 @@ class Invoice {
     return 0;
   }
 
-  double get total =>
-      (price - discountAmount + taxAmount).clamp(0, double.infinity);
+  double get total => totalPreferredCurrencyValue;
 
-  double get totalInInr {
-    final ccy = currency.toUpperCase().trim();
-    if (ccy == 'INR') return total;
-    if (exchangeRate != null && exchangeRate! > 0) return total * exchangeRate!;
-    if (inrAmount != null && inrAmount! > 0) return inrAmount!;
-    return 0;
-  }
+  double get totalInInr => totalPreferredCurrencyValue;
 
   bool get hasBackendConversion =>
       (exchangeRate != null && exchangeRate! > 0) ||
@@ -242,6 +304,13 @@ class Invoice {
         companyName: _s(m['companyName']),
         dealAddress: _s(m['dealAddress']),
         dealCountry: _s(m['dealCountry']),
+        dealValue: _s(m['dealValue']),
+        dealStage: _s(m['dealStage']),
+        lastReminderAt: _dt(m['lastReminderAt']),
+        totalPreferredCurrencyValue:
+            _d(m['totalPreferredCurrencyValue']) ?? 0,
+        createdBy: _s(m['createdBy']),
+        lastUpdatedBy: _s(m['lastUpdatedBy']),
       );
 
   // ── fromJson (API response) ──────────────────────────────────────
@@ -265,6 +334,8 @@ class Invoice {
     String companyName = '';
     String dealAddress = '';
     String dealCountry = '';
+    String dealValue = '';
+    String dealStage = '';
 
     final items = j['items'];
     if (items is List && items.isNotEmpty && items.first is Map) {
@@ -279,6 +350,8 @@ class Invoice {
         companyName = _s(rawDeal['companyName'] ?? rawDeal['company']);
         dealAddress = _s(rawDeal['address']);
         dealCountry = _s(rawDeal['country']);
+        dealValue = _s(rawDeal['value']);
+        dealStage = _s(rawDeal['stage']);
       } else if (rawDeal != null) {
         dealId = rawDeal.toString();
       }
@@ -295,6 +368,8 @@ class Invoice {
         companyName = _s(rawDeal['companyName'] ?? rawDeal['company']);
         dealAddress = _s(rawDeal['address']);
         dealCountry = _s(rawDeal['country']);
+        dealValue = _s(rawDeal['value']);
+        dealStage = _s(rawDeal['stage']);
       } else {
         dealId = _s(j['dealId'] ?? j['deal_id'] ?? '');
         dealName = _s(j['dealName'] ?? j['deal_name'] ?? '');
@@ -345,13 +420,6 @@ class Invoice {
     );
 
     // tax / discount values — parse type first so % rate is not confused with amount
-    final taxVal = _parseTaxOrDiscountValue(
-      j: j,
-      type: taxType,
-      price: price,
-      valueKeys: ['taxValue', 'tax_value'],
-      amountKeys: ['tax'],
-    );
     final disVal = _parseTaxOrDiscountValue(
       j: j,
       type: discountType,
@@ -359,6 +427,27 @@ class Invoice {
       valueKeys: ['discountValue', 'discount_value'],
       amountKeys: ['discount'],
     );
+
+    // The API only persists the computed 'tax' amount, not the rate the
+    // user entered — so for a Percentage tax type, back the rate out of
+    // the amount using the same inverse math the cubit uses to compute
+    // it (tax = taxableBase * rate / 100).
+    final rawTax = _d(j['tax']) ?? 0;
+    double taxVal;
+    if (taxType == 'Percentage') {
+      final discountAmountForTax = discountType == 'Percentage'
+          ? price * disVal / 100
+          : discountType == 'Fixed Amount'
+              ? disVal
+              : 0.0;
+      final taxableBase =
+          (price - discountAmountForTax).clamp(0, double.infinity);
+      taxVal = taxableBase > 0 ? (rawTax / taxableBase * 100) : 0;
+    } else if (taxType == 'Fixed Amount') {
+      taxVal = rawTax;
+    } else {
+      taxVal = 0;
+    }
 
     // ── invoicenumber — API uses lowercase 'invoicenumber' ──
     final invoiceNo = _s(
@@ -418,6 +507,20 @@ class Invoice {
       companyName: companyName,
       dealAddress: dealAddress,
       dealCountry: dealCountry,
+      dealValue: dealValue,
+      dealStage: dealStage,
+      statusHistory: (j['statusHistory'] is List)
+          ? (j['statusHistory'] as List)
+              .whereType<Map>()
+              .map((m) =>
+                  InvoiceStatusHistoryItem.fromJson(Map<String, dynamic>.from(m)))
+              .toList()
+          : const [],
+      lastReminderAt: _dt(j['lastReminderAt']),
+      totalPreferredCurrencyValue:
+          _d(j['totalPreferredCurrencyValue']) ?? 0,
+      createdBy: _s(j['createdBy']),
+      lastUpdatedBy: _s(j['lastUpdatedBy']),
     );
   }
 
@@ -450,6 +553,12 @@ class Invoice {
         'companyName': companyName,
         'dealAddress': dealAddress,
         'dealCountry': dealCountry,
+        'dealValue': dealValue,
+        'dealStage': dealStage,
+        'lastReminderAt': lastReminderAt?.toIso8601String(),
+        'totalPreferredCurrencyValue': totalPreferredCurrencyValue,
+        'createdBy': createdBy,
+        'lastUpdatedBy': lastUpdatedBy,
       };
 
   Invoice copyWith({
@@ -484,6 +593,13 @@ class Invoice {
     String? companyName,
     String? dealAddress,
     String? dealCountry,
+    String? dealValue,
+    String? dealStage,
+    List<InvoiceStatusHistoryItem>? statusHistory,
+    DateTime? lastReminderAt,
+    double? totalPreferredCurrencyValue,
+    String? createdBy,
+    String? lastUpdatedBy,
   }) =>
       Invoice(
         id: id,
@@ -522,6 +638,14 @@ class Invoice {
         companyName: companyName ?? this.companyName,
         dealAddress: dealAddress ?? this.dealAddress,
         dealCountry: dealCountry ?? this.dealCountry,
+        dealValue: dealValue ?? this.dealValue,
+        dealStage: dealStage ?? this.dealStage,
+        statusHistory: statusHistory ?? this.statusHistory,
+        lastReminderAt: lastReminderAt ?? this.lastReminderAt,
+        totalPreferredCurrencyValue:
+            totalPreferredCurrencyValue ?? this.totalPreferredCurrencyValue,
+        createdBy: createdBy ?? this.createdBy,
+        lastUpdatedBy: lastUpdatedBy ?? this.lastUpdatedBy,
       );
 }
 

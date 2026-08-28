@@ -60,6 +60,7 @@ class _LoginViewState extends State<_LoginView> {
   bool _showPass = false;
   final _forgotEmailCtrl = TextEditingController();
   final _tenantSlugCtrl = TextEditingController();
+  final _forgotTenantSlugCtrl = TextEditingController();
 
   @override
   void dispose() {
@@ -67,6 +68,7 @@ class _LoginViewState extends State<_LoginView> {
     _tenantSlugCtrl.dispose();
     _passwordCtrl.dispose();
     _forgotEmailCtrl.dispose();
+    _forgotTenantSlugCtrl.dispose();
     super.dispose();
   }
 
@@ -108,13 +110,20 @@ class _LoginViewState extends State<_LoginView> {
                         boxShadow: [
                           BoxShadow(
                             color: AppColors.primary.withOpacity(0.35),
-                            blurRadius: 20,
-                            offset: const Offset(0, 8),
+                            blurRadius: 15,
+                            offset: const Offset(0, 5),
                           )
                         ],
                       ),
-                      child: const Icon(Icons.business_center_rounded,
-                          color: Colors.white, size: 36),
+                      child: ClipRRect(
+  borderRadius: BorderRadius.circular(20),
+  child: Image.asset(
+  'assets/icon/logo.png',
+  
+    height: 72,
+  fit: BoxFit.cover,
+)
+),
                     ),
                     const SizedBox(height: 16),
                     const Text('Welcome Back',
@@ -325,7 +334,7 @@ class _LoginViewState extends State<_LoginView> {
 
                   // ── Footer ────────────────────────────────
                   const Center(
-                      child: Text('© 2025 TZI. All rights reserved.',
+                      child: Text('Powered by TZI CRM SaaS Platform',
                           style: TextStyle(
                               fontSize: 12, color: AppColors.textHint))),
 
@@ -357,6 +366,7 @@ class _LoginViewState extends State<_LoginView> {
   Future<void> _showForgotPasswordDialog(BuildContext context) async {
     final loginCubit = context.read<LoginCubit>();
     _forgotEmailCtrl.text = _emailCtrl.text.trim();
+    _tenantSlugCtrl.text = _tenantSlugCtrl.text.trim().toLowerCase();
 
     String? localError;
     bool sending = false;
@@ -375,29 +385,72 @@ class _LoginViewState extends State<_LoginView> {
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
               ),
               content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Enter your email address. We will send you a password reset link.',
-                    style: TextStyle(color: AppColors.textSecondary),
-                  ),
-                  const SizedBox(height: 14),
-                  TextField(
-                    controller: _forgotEmailCtrl,
-                    enabled: !sending,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: InputDecoration(
-                      hintText: 'Enter your email address',
-                      errorText: localError,
-                      prefixIcon: const Icon(Icons.email_outlined),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+  mainAxisSize: MainAxisSize.min,
+  crossAxisAlignment: CrossAxisAlignment.start,
+  children: [
+    const Text(
+      'Enter your workspace and email address to receive a password reset link.',
+      style: TextStyle(
+        color: AppColors.textSecondary,
+      ),
+    ),
+
+    const SizedBox(height: 14),
+
+    const Text(
+      'Workspace',
+      style: TextStyle(
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+
+    const SizedBox(height: 8),
+
+    TextField(
+      controller: _tenantSlugCtrl,
+      enabled: !sending,
+      keyboardType: TextInputType.text,
+      autocorrect: false,
+      textCapitalization: TextCapitalization.none,
+      decoration: InputDecoration(
+        hintText: 'e.g. kishore',
+        prefixIcon: const Icon(
+          Icons.apartment_outlined,
+        ),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+    ),
+
+    const SizedBox(height: 14),
+
+    const Text(
+      'Email Address',
+      style: TextStyle(
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+
+    const SizedBox(height: 8),
+
+    TextField(
+      controller: _forgotEmailCtrl,
+      enabled: !sending,
+      keyboardType: TextInputType.emailAddress,
+      decoration: InputDecoration(
+        hintText: 'Enter your email address',
+        errorText: localError,
+        prefixIcon: const Icon(
+          Icons.email_outlined,
+        ),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+    ),
+  ],
+),
               actions: [
                 TextButton(
                   onPressed:
@@ -420,8 +473,22 @@ class _LoginViewState extends State<_LoginView> {
                             sending = true;
                           });
 
-                          final result =
-                              await loginCubit.requestPasswordReset(email);
+                          final tenantSlug =
+    _tenantSlugCtrl.text.trim().toLowerCase();
+
+if (tenantSlug.isEmpty) {
+  setState(() {
+    localError = 'Workspace is required';
+    sending = false;
+  });
+  return;
+}
+
+final result =
+    await loginCubit.requestPasswordReset(
+  email,
+  tenantSlug,
+);
 
                           if (!mounted) return;
                           if (!result.success) {
