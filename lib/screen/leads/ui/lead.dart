@@ -11,16 +11,21 @@ Future<void> showExportFollowUpsDialog(
 
   final startController = TextEditingController();
   final endController = TextEditingController();
+  bool exporting = false;
+  String? dateError;
+  final screenContext = context;
 
   await showDialog(
     context: context,
+    barrierDismissible: false,
     builder: (context) {
       return StatefulBuilder(
         builder: (context, setState) {
           Future<void> pickDate(bool isStart) async {
             final picked = await showDatePicker(
               context: context,
-              initialDate: DateTime.now(),
+              initialDate:
+                  (isStart ? startDate : endDate) ?? DateTime.now(),
               firstDate: DateTime(2020),
               lastDate: DateTime(2100),
             );
@@ -81,7 +86,7 @@ Future<void> showExportFollowUpsDialog(
                     const Align(
                       alignment: Alignment.centerLeft,
                       child: Text(
-                        "Exports Lead, Company, Assign To, Follow-up Date and Follow-up History for leads matching the current filters.",
+                        "Exports Lead, Company, Assign To, Follow-up Date and Follow-up History. Leave both dates blank to export all leads, or pick a start and end date to export leads whose follow-up date is in that range.",
                         style: TextStyle(
                           color: Colors.grey,
                           height: 1.5,
@@ -170,6 +175,19 @@ Future<void> showExportFollowUpsDialog(
                       ],
                     ),
 
+                    if (dateError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            dateError!,
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.red),
+                          ),
+                        ),
+                      ),
+
                     const SizedBox(height: 32),
 
                     Row(
@@ -177,9 +195,9 @@ Future<void> showExportFollowUpsDialog(
                       children: [
 
                         OutlinedButton(
-                          onPressed: () {
-                            Navigator.pop(context);
-                          },
+                          onPressed: exporting
+                              ? null
+                              : () => Navigator.pop(context),
                           style: OutlinedButton.styleFrom(
                             minimumSize:
                                 const Size(100, 46),
@@ -194,16 +212,50 @@ Future<void> showExportFollowUpsDialog(
                         const SizedBox(width: 12),
 
                         ElevatedButton.icon(
-                          onPressed: () async {
-                            Navigator.pop(context);
-
-                            await cubit.exportFollowUps(
-                              startDate: startDate,
-                              endDate: endDate,
-                            );
-                          },
-                          icon: const Icon(Icons.download),
-                          label: const Text("Export"),
+                          onPressed: exporting
+                              ? null
+                              : () async {
+                                  if ((startDate == null) != (endDate == null)) {
+                                    setState(() => dateError =
+                                        'Please select both start and end date');
+                                    return;
+                                  }
+                                  if (startDate != null &&
+                                      endDate != null &&
+                                      startDate!.isAfter(endDate!)) {
+                                    setState(() => dateError =
+                                        'Start date must be before end date');
+                                    return;
+                                  }
+                                  setState(() {
+                                    dateError = null;
+                                    exporting = true;
+                                  });
+                                  final err = await cubit.exportFollowUps(
+                                    startDate: startDate,
+                                    endDate: endDate,
+                                  );
+                                  if (!context.mounted) return;
+                                  Navigator.pop(context);
+                                  if (screenContext.mounted) {
+                                    ScaffoldMessenger.of(screenContext)
+                                        .showSnackBar(SnackBar(
+                                      content: Text(err ??
+                                          'Follow-ups exported to Downloads'),
+                                      backgroundColor:
+                                          err != null ? Colors.red : null,
+                                    ));
+                                  }
+                                },
+                          icon: exporting
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white),
+                                )
+                              : const Icon(Icons.download),
+                          label: Text(exporting ? "Exporting..." : "Export"),
                           style: ElevatedButton.styleFrom(
                             minimumSize:
                                 const Size(120, 46),

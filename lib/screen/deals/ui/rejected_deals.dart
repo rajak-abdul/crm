@@ -20,8 +20,9 @@ class _RejectedDealsScreenState extends State<RejectedDealsScreen> {
 
   String _search = '';
   int _currentPage = 1;
-  final int _pageSize = 10;
-
+int _pageSize = 5;
+final List<int> _pageSizeOptions = [5, 10, 25];
+  
   @override
   void initState() {
     super.initState();
@@ -163,13 +164,24 @@ class _RejectedDealsScreenState extends State<RejectedDealsScreen> {
                 ),
 
                 if (state.totalDeals > _pageSize)
-                  PaginationWidget(
-                    currentPage: state.currentPage,
-                    totalItems: state.totalDeals,
-                    pageSize: _pageSize,
-                    onPageChanged: _goToPage,
-                  ),
-              ],
+PaginationWidget(
+  currentPage: state.currentPage,
+  totalItems: state.totalDeals,
+  pageSize: _pageSize,
+  pageSizeOptions: _pageSizeOptions,
+  onPageChanged: _goToPage,
+  onPageSizeChanged: (size) {
+    setState(() {
+      _pageSize = size;
+      _currentPage = 1;
+    });
+
+    context.read<DealsCubit>().loadRejectedDeals(
+      page: 1,
+      limit: size,
+    );
+  },
+),              ],
             ),
           );
         },

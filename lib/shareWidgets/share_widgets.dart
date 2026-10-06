@@ -175,9 +175,11 @@ import 'package:flutter/services.dart';
    final void Function(String)? onChanged;
    final List<TextInputFormatter>? inputFormatters;
    final String? errorText;
- 
+   final bool enableInteractiveSelection;
+
    const CrmTextField({
      this.errorText,
+     this.enableInteractiveSelection = false,
      super.key,
      required this.label,
      this.required = false,
@@ -212,7 +214,7 @@ import 'package:flutter/services.dart';
          TextFormField(
            controller: controller, keyboardType: keyboardType,
            inputFormatters: inputFormatters, // 👈 ADD THIS LINE
-           enableInteractiveSelection: false,
+           enableInteractiveSelection: enableInteractiveSelection,
            maxLines: maxLines, obscureText: obscureText, onChanged: onChanged,
            style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
            decoration: InputDecoration(

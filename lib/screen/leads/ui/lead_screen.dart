@@ -18,12 +18,13 @@ import 'package:crm_app/modals/modals.dart'
         CustomField,
         LeadActivity,
         LeadNote;
-import 'package:crm_app/screen/deals/modal/deal_modal.dart' show DealConstants;
 import 'package:crm_app/screen/leads/cubit/call_cubit.dart';
 import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
 import 'package:crm_app/screen/leads/ui/lead.dart';
 import 'package:crm_app/screen/leads/ui/meeting.dart';
 import 'package:crm_app/screen/leads/ui/reject_lead_screen.dart';
+import 'package:crm_app/screen/leads/ui/convert_lead_dialog.dart';
+import 'package:crm_app/screen/leads/ui/status_reason_sheet.dart';
 import 'package:crm_app/screen/meeting/UI/meeting.dart';
 import 'package:crm_app/screen/meeting/cubit/meeting_cubit.dart';
 import 'package:crm_app/screen/meeting/cubit/meeting_state.dart';
@@ -1082,9 +1083,13 @@ leading: widget.showBackButton
 Future<void> showExportLeadsDialog(BuildContext context,LeadCubit leadCubit) async {
   DateTime? startDate;
   DateTime? endDate;
+  bool exporting = false;
+  String? dateError;
+  final screenContext = context;
 
   await showDialog(
     context: context,
+    barrierDismissible: false,
     builder: (context) {
       return StatefulBuilder(
         builder: (context, setState) {
@@ -1123,7 +1128,7 @@ Future<void> showExportLeadsDialog(BuildContext context,LeadCubit leadCubit) asy
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    "Optionally filter by date range. Leave both blank to export all leads.",
+                    "Leave both dates blank to export all leads, or pick a start and end date to export leads created in that range.",
                     style: TextStyle(
                       color: Colors.grey,
                     ),
@@ -1199,30 +1204,66 @@ Future<void> showExportLeadsDialog(BuildContext context,LeadCubit leadCubit) asy
                       ),
                     ),
                   ),
+                  if (dateError != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        dateError!,
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.danger),
+                      ),
+                    ),
                 ],
               ),
             ),
             actions: [
               OutlinedButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                },
+                onPressed: exporting ? null : () => Navigator.pop(context),
                 child: const Text("Cancel"),
               ),
               ElevatedButton.icon(
-                icon: const Icon(Icons.download,color: Colors.white,),
-                label: const Text("Export"),
-                onPressed: ()async {
-
-                  // Call Export API here
-                  await leadCubit.exportLeads(
-  startDate: startDate,
-  endDate: endDate,
-);
-debugPrint("exportLeads called");
-                  Navigator.pop(context);
-
-                },
+                icon: exporting
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.download, color: Colors.white),
+                label: Text(exporting ? "Exporting..." : "Export"),
+                onPressed: exporting
+                    ? null
+                    : () async {
+                        if ((startDate == null) != (endDate == null)) {
+                          setState(() => dateError =
+                              'Please select both start and end date');
+                          return;
+                        }
+                        if (startDate != null &&
+                            endDate != null &&
+                            startDate!.isAfter(endDate!)) {
+                          setState(() => dateError =
+                              'Start date must be before end date');
+                          return;
+                        }
+                        setState(() {
+                          dateError = null;
+                          exporting = true;
+                        });
+                        final err = await leadCubit.exportLeads(
+                          startDate: startDate,
+                          endDate: endDate,
+                        );
+                        if (!context.mounted) return;
+                        Navigator.pop(context);
+                        if (screenContext.mounted) {
+                          showApiSnack(
+                            screenContext,
+                            err ?? 'Leads exported to Downloads',
+                            isError: err != null,
+                          );
+                        }
+                      },
               )
             ],
           );
@@ -1607,25 +1648,35 @@ Container(
     );
   }
 
-  void _openConvert(BuildContext ctx, Lead lead) {
+  Future<void> _openConvert(BuildContext ctx, Lead lead) async {
     final isConverted = lead.status.trim().toLowerCase() == 'converted';
     if (isConverted) {
       showApiSnack(ctx, 'This lead is already converted to a deal.');
       return;
     }
-    showModalBottomSheet(
+    final cubit = ctx.read<LeadCubit>();
+
+    // Default currency = "currency" from GET /users/me
+    showDialog(
       context: ctx,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => ScaffoldMessenger(
-        child: Scaffold(
-          backgroundColor: Colors.transparent,
-          resizeToAvoidBottomInset: true,
-          body: BlocProvider.value(
-            value: ctx.read<LeadCubit>(),
-            child: _ConvertLeadSheet(lead: lead),
-          ),
-        ),
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    final currency = await cubit.getAccountCurrency();
+    if (!ctx.mounted) return;
+    Navigator.of(ctx).pop(); // close loader
+
+    await showConvertLeadDialog(
+      ctx,
+      leadName: lead.name,
+      companyName: lead.companyName,
+      initialCurrency: currency,
+      onConvert: (r) => cubit.convertToDeal(
+        lead.id,
+        r.dealValue,
+        r.currency,
+        stage: r.stage,
+        notes: r.notes,
       ),
     );
   }
@@ -2335,8 +2386,18 @@ content: lead.followUpNotes.isEmpty
                 currentStatus: lead.status,
                 onStatusSelected: (s) async {
                   Navigator.pop(ctx);
-                  final err =
-                      await ctx.read<LeadCubit>().updateStatus(lead.id, s);
+                  if (s == lead.status) return;
+                  final cubit = ctx.read<LeadCubit>();
+                  String? err;
+                  if (s == 'Cold') {
+                    final reason = await showStatusReasonSheet(ctx,
+                        status: s, leadName: lead.name);
+                    if (reason == null) return; // cancelled
+                    err = await cubit.updateStatusWithReason(
+                        lead.id, s, reason);
+                  } else {
+                    err = await cubit.updateStatus(lead.id, s);
+                  }
                   if (err != null && ctx.mounted) {
                     showApiSnack(ctx, err, isError: true);
                   }
@@ -5338,265 +5399,6 @@ String _activityTitle(String type) {
       );
 }
 
-/// Narrow currency dropdown aligned with deal create/edit forms.
-class _ConvertSheetCompactDrop extends StatelessWidget {
-  final String value;
-  final List<String> items;
-  final double width;
-  final void Function(String) onChanged;
-
-  const _ConvertSheetCompactDrop({
-    required this.value,
-    required this.items,
-    required this.width,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) => Container(
-        width: width,
-        height: 48,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.border)),
-        child: DropdownButtonHideUnderline(
-          child: DropdownButton<String>(
-            value: items.contains(value) ? value : items.first,
-            isDense: true,
-            isExpanded: true,
-            icon: const Icon(Icons.keyboard_arrow_down_rounded,
-                size: 16, color: AppColors.textSecondary),
-            style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textPrimary),
-            items: items
-                .map((e) => DropdownMenuItem(
-                    value: e, child: Text(e, overflow: TextOverflow.ellipsis)))
-                .toList(),
-            onChanged: (v) {
-              if (v != null) onChanged(v);
-            },
-          ),
-        ),
-      );
-}
-
-// ─── Convert Lead Sheet ───────────────────────────────────────
-class _ConvertLeadSheet extends StatefulWidget {
-  final Lead lead;
-  const _ConvertLeadSheet({required this.lead});
-  @override
-  State<_ConvertLeadSheet> createState() => _ConvertLeadSheetState();
-}
-
-class _ConvertLeadSheetState extends State<_ConvertLeadSheet> {
-  final _dealValue = TextEditingController();
-  DateTime? _closeDate;
-  String _currency = '₹ INR';
-  bool _loading = false;
-
-  @override
-  void dispose() {
-    _dealValue.dispose();
-    super.dispose();
-  }
-
-  Future<void> _submit() async {
-    final value = double.tryParse(_dealValue.text.trim());
-    if (value == null || value <= 0) {
-      showApiSnack(context, 'Enter a valid deal value', isError: true);
-      return;
-    }
-    if (_closeDate == null) {
-      showApiSnack(context, 'Select expected close date', isError: true);
-      return;
-    }
-    setState(() => _loading = true);
-    final currencyCode = _currency.split(' ').last;
-    final err = await context
-        .read<LeadCubit>()
-        .convertToDeal(widget.lead.id, value, _closeDate!, currencyCode);
-    if (!mounted) return;
-    setState(() => _loading = false);
-    if (err == null) {
-      Navigator.pop(context);
-    } else {
-      showApiSnack(context, err, isError: true);
-    }
-  }
-
-  @override
-  Widget build(BuildContext ctx) => Container(
-        decoration: const BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-        padding: EdgeInsets.only(
-            left: 20,
-            right: 20,
-            top: 20,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 24),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                  color: AppColors.border,
-                  borderRadius: BorderRadius.circular(2))),
-          const SizedBox(height: 16),
-          Row(children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                  color: AppColors.primaryLight,
-                  borderRadius: BorderRadius.circular(10)),
-              child: const Icon(Icons.swap_horiz_outlined,
-                  color: AppColors.primary, size: 20),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                  const Text('Convert to Deal',
-                      style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.textPrimary)),
-                  Text(widget.lead.name,
-                      style: const TextStyle(
-                          fontSize: 13, color: AppColors.textSecondary)),
-                ])),
-          ]),
-          const SizedBox(height: 20),
-          const Align(
-            alignment: Alignment.centerLeft,
-            child: Text('Deal Value',
-                style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textSecondary)),
-          ),
-          const SizedBox(height: 6),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _ConvertSheetCompactDrop(
-                value: _currency,
-                items: DealConstants.currencies,
-                width: 110,
-                onChanged: (v) => setState(() => _currency = v),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: TextField(
-                  controller: _dealValue,
-                  keyboardType: TextInputType.number,
-                  style: const TextStyle(
-                      fontSize: 14, color: AppColors.textPrimary),
-                  decoration: InputDecoration(
-                    hintText: '0.00',
-                    contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 13),
-                    filled: true,
-                    fillColor: AppColors.surface,
-                    border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: AppColors.border)),
-                    enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: AppColors.border)),
-                    focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                            color: AppColors.primary, width: 1.5)),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          const Align(
-            alignment: Alignment.centerLeft,
-            child: Text('Expected Close Date',
-                style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textSecondary)),
-          ),
-          const SizedBox(height: 6),
-          GestureDetector(
-            onTap: () async {
-              final firstDate = _dateOnly(DateTime.now());
-              final lastDate = firstDate.add(const Duration(days: 730));
-              final initialDate = _clampPickerDate(
-                firstDate,
-                firstDate: firstDate,
-                lastDate: lastDate,
-              );
-
-              final p = await showDatePicker(
-                context: ctx,
-                initialDate: initialDate,
-                firstDate: firstDate,
-                lastDate: lastDate,
-                builder: (c, child) => Theme(
-                  data: Theme.of(c).copyWith(
-                      colorScheme:
-                          const ColorScheme.light(primary: AppColors.primary)),
-                  child: child!,
-                ),
-              );
-              if (p != null) setState(() => _closeDate = p);
-            },
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-              decoration: BoxDecoration(
-                  color: AppColors.background,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.border)),
-              child: Row(children: [
-                const Icon(Icons.event_outlined,
-                    size: 18, color: AppColors.primary),
-                const SizedBox(width: 10),
-                Text(
-                    _closeDate != null
-                        ? DateFormat('dd MMM yyyy').format(_closeDate!)
-                        : 'Pick close date',
-                    style: TextStyle(
-                        fontSize: 14,
-                        color: _closeDate != null
-                            ? AppColors.textPrimary
-                            : AppColors.textHint)),
-                const Spacer(),
-                const Icon(Icons.keyboard_arrow_down_rounded,
-                    color: AppColors.textSecondary),
-              ]),
-            ),
-          ),
-          const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _loading ? null : _submit,
-              icon: _loading
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.white))
-                  : const Icon(Icons.swap_horiz_outlined, size: 16),
-              label: Text(_loading ? 'Converting...' : 'Convert to Deal'),
-              style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 13)),
-            ),
-          ),
-        ]),
-      );
-}
-
 // ══════════════════════════════════════════════════════════════
 // VALIDATION HELPERS
 // ══════════════════════════════════════════════════════════════
@@ -5622,7 +5424,7 @@ class _PhoneInputFormatter extends TextInputFormatter {
 
 String? _validateEmail(String value) {
   final v = value.trim();
-  if (v.isEmpty) return 'Email required';
+  if (v.isEmpty) return null;
   final atCount = '@'.allMatches(v).length;
   if (atCount != 1) return 'Invalid email format';
   if (!RegExp(r'^[^@]+@[^@]+\.com$', caseSensitive: false).hasMatch(v)) {
@@ -5631,11 +5433,17 @@ String? _validateEmail(String value) {
   return null;
 }
 
+String? _validateName(String value) =>
+    value.trim().isEmpty ? 'Lead name is required' : null;
+
+String? _validateCompany(String value) =>
+    value.trim().isEmpty ? 'Company name is required' : null;
+
 String? _validatePhone(String value) {
   final v = value.trim().replaceAll(RegExp(r'[^0-9]'), '');
 
   if (v.isEmpty) {
-    return 'Phone required';
+    return 'Phone number is required';
   }
 
   if (v.length > 12) {
@@ -5684,6 +5492,8 @@ class _LeadFormModalState extends State<_LeadFormModal> {
     _req,
     _notes;
 
+  String? _nameError;
+  String? _companyError;
   String? _phoneError;
   String? _emailError;
 
@@ -6012,46 +5822,26 @@ _notes = TextEditingController(text: l?.notes);
   }
 
   bool _validateStep0() {
-    bool valid = true;
-    if (_name.text.isEmpty) {
-      showApiSnack(context, 'Lead name required', isError: true);
-      valid = false;
-    }
-    if (_company.text.trim().isEmpty) {
-      showApiSnack(context, 'Company name required', isError: true);
-      valid = false;
-    }
+    final nameErr = _validateName(_name.text);
+    final companyErr = _validateCompany(_company.text);
     final phoneErr = _validatePhone(_phone.text);
     final emailErr = _validateEmail(_email.text);
     setState(() {
+      _nameError = nameErr;
+      _companyError = companyErr;
       _phoneError = phoneErr;
       _emailError = emailErr;
     });
-    if (phoneErr != null || emailErr != null) valid = false;
-    return valid;
+    return nameErr == null &&
+        companyErr == null &&
+        phoneErr == null &&
+        emailErr == null;
   }
 
   Future<void> _submit() async {
-    final phoneErr = _validatePhone(_phone.text);
-    final emailErr = _validateEmail(_email.text);
-    setState(() {
-      _phoneError = phoneErr;
-      _emailError = emailErr;
-    });
-    if (_name.text.isEmpty) {
-      showApiSnack(context, 'Lead name required', isError: true);
-      return;
-    }
-    if (_company.text.trim().isEmpty) {
-      showApiSnack(context, 'Company name required', isError: true);
-      return;
-    }
-    if (phoneErr != null) {
-      showApiSnack(context, phoneErr, isError: true);
-      return;
-    }
-    if (emailErr != null) {
-      showApiSnack(context, emailErr, isError: true);
+    if (!_validateStep0()) {
+      // Errors are shown under the fields on the first step
+      setState(() => _step = 0);
       return;
     }
     setState(() => _saving = true);
@@ -6290,7 +6080,7 @@ if (err == null) {
       ? 'Saving...'
       : (_step < 4
           ? 'Next'
-          : (_isEdit ? 'Update' : 'Save to Server')),
+          : (_isEdit ? 'Update' : 'Save')),
 ),
                       style: ElevatedButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 13)),
@@ -6301,6 +6091,114 @@ if (err == null) {
           ]),
         ),
       );
+
+  Widget _brokenImage({double? size}) => Container(
+        width: size,
+        height: size,
+        color: AppColors.background,
+        alignment: Alignment.center,
+        child: const Icon(Icons.broken_image, color: Colors.grey),
+      );
+
+  // Thumbnail: tap to preview full screen, × to remove
+  Widget _imageThumb(ImageProvider provider, {required VoidCallback onRemove}) =>
+      SizedBox(
+        width: 90,
+        height: 90,
+        child: Stack(
+          children: [
+            GestureDetector(
+              onTap: () => _previewImage(provider, onRemove: onRemove),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Image(
+                  image: provider,
+                  width: 90,
+                  height: 90,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => _brokenImage(size: 90),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: GestureDetector(
+                onTap: onRemove,
+                child: Container(
+                  width: 24,
+                  height: 24,
+                  decoration: const BoxDecoration(
+                    color: Colors.red,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.close, color: Colors.white, size: 16),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+
+  void _previewImage(ImageProvider provider, {required VoidCallback onRemove}) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => Dialog.fullscreen(
+        backgroundColor: Colors.black,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: InteractiveViewer(
+                maxScale: 5,
+                child: Center(
+                  child: Image(
+                    image: provider,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => _brokenImage(size: 120),
+                  ),
+                ),
+              ),
+            ),
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Row(
+                  children: [
+                    IconButton(
+                      tooltip: 'Close',
+                      icon: const Icon(Icons.close, color: Colors.white),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      tooltip: 'Remove image',
+                      icon: const Icon(Icons.delete_outline,
+                          color: Colors.redAccent),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        onRemove();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _fieldError(String? error) => error == null
+      ? const SizedBox.shrink()
+      : Padding(
+          padding: const EdgeInsets.only(top: 4, left: 2),
+          child: Text(
+            error,
+            style: const TextStyle(fontSize: 11, color: AppColors.danger),
+          ),
+        );
 
   Widget _basicStep() =>
       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -6313,13 +6211,23 @@ if (err == null) {
             label: 'Lead Name',
             required: true,
             hint: 'Full name',
-            controller: _name),
+            controller: _name,
+            onChanged: (v) {
+              final err = _validateName(v);
+              if (_nameError != err) setState(() => _nameError = err);
+            }),
+        _fieldError(_nameError),
         const SizedBox(height: 14),
         CrmTextField(
             label: 'Company Name',
             required: true,
             hint: 'Organisation',
-            controller: _company),
+            controller: _company,
+            onChanged: (v) {
+              final err = _validateCompany(v);
+              if (_companyError != err) setState(() => _companyError = err);
+            }),
+        _fieldError(_companyError),
         const SizedBox(height: 14),
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -6374,24 +6282,14 @@ if (err == null) {
                 }
               },
             ),
-            if (_phoneError != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 4, left: 2),
-                child: Text(
-                  _phoneError!,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: AppColors.danger,
-                  ),
-                ),
-              ),
+            _fieldError(_phoneError),
             const SizedBox(height: 6),
             CrmTextField(
               label: 'Email',
-              required: true,
               hint: 'name@gmail.com',
               controller: _email,
               keyboardType: TextInputType.emailAddress,
+              enableInteractiveSelection: true,
               onChanged: (v) {
                 final err = _validateEmail(v);
                 if (_emailError != err) {
@@ -6399,17 +6297,7 @@ if (err == null) {
                 }
               },
             ),
-            if (_emailError != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 4, left: 2),
-                child: Text(
-                  _emailError!,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: AppColors.danger,
-                  ),
-                ),
-              ),
+            _fieldError(_emailError),
           ],
         ),
         const SizedBox(height: 14),
@@ -6548,6 +6436,94 @@ if (err == null) {
         label: 'Longitude',
         controller: _longitude,
       ),
+
+      const SizedBox(height: 20),
+
+        // =========================
+// IMAGE SECTION
+// =========================
+Container(
+  padding: const EdgeInsets.all(16),
+  decoration: BoxDecoration(
+    color: AppColors.primaryLight,
+    borderRadius: BorderRadius.circular(14),
+    border: Border.all(
+      color: AppColors.primary.withOpacity(0.2),
+    ),
+  ),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        children: [
+          const Icon(
+            Icons.image_outlined,
+            size: 18,
+            color: AppColors.primary,
+          ),
+          const SizedBox(width: 8),
+
+          const Text(
+            'Images',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: AppColors.primary,
+            ),
+          ),
+
+          const Spacer(),
+
+          IconButton(
+            tooltip: 'Upload image',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            icon: const Icon(
+              Icons.add_photo_alternate_outlined,
+              color: AppColors.primary,
+            ),
+            onPressed: _pickLeadImage,
+          ),
+        ],
+      ),
+
+      const SizedBox(height: 12),
+
+      // Existing + newly selected images
+      if ((widget.existingLead?.images.isNotEmpty ?? false) ||
+          _selectedImages.isNotEmpty)
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            // Existing images
+            if (widget.existingLead != null)
+              ...widget.existingLead!.images.map((image) => _imageThumb(
+                    NetworkImage(_getImageUrl(image.path)),
+                    onRemove: () => setState(
+                        () => widget.existingLead!.images.remove(image)),
+                  )),
+
+            // Newly selected images
+            ..._selectedImages.map((image) => _imageThumb(
+                  FileImage(File(image.path)),
+                  onRemove: () =>
+                      setState(() => _selectedImages.remove(image)),
+                )),
+          ],
+        )
+      else
+        const Text(
+          'No images uploaded',
+          style: TextStyle(
+            fontSize: 12,
+            color: AppColors.textSecondary,
+          ),
+        ),
+    ],
+  ),
+),
+
     ],
   );
 }
@@ -6747,167 +6723,6 @@ if (err == null) {
     .toList(),
         const SizedBox(height: 20),
 
-        // =========================
-// IMAGE SECTION
-// =========================
-Container(
-  padding: const EdgeInsets.all(16),
-  decoration: BoxDecoration(
-    color: AppColors.primaryLight,
-    borderRadius: BorderRadius.circular(14),
-    border: Border.all(
-      color: AppColors.primary.withOpacity(0.2),
-    ),
-  ),
-  child: Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Row(
-        children: [
-          const Icon(
-            Icons.image_outlined,
-            size: 18,
-            color: AppColors.primary,
-          ),
-          const SizedBox(width: 8),
-
-          const Text(
-            'Images',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: AppColors.primary,
-            ),
-          ),
-
-          const Spacer(),
-
-          IconButton(
-            tooltip: 'Upload image',
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-            icon: const Icon(
-              Icons.add_photo_alternate_outlined,
-              color: AppColors.primary,
-            ),
-            onPressed: _pickLeadImage,
-          ),
-        ],
-      ),
-
-      const SizedBox(height: 12),
-
-      // Existing + newly selected images
-      if ((widget.existingLead?.images.isNotEmpty ?? false) ||
-          _selectedImages.isNotEmpty)
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
-            // Existing images
-            if (widget.existingLead != null)
-              ...widget.existingLead!.images.map((image) {
-                return Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: Image.network(
-                        _getImageUrl(image.path),
-                        width: 90,
-                        height: 90,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-
-                    Positioned(
-                      top: -7,
-                      right: -7,
-                      child: GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            widget.existingLead!.images.remove(image);
-                          });
-                        },
-                        child: Container(
-                          width: 24,
-                          height: 24,
-                          decoration: const BoxDecoration(
-                            color: Colors.red,
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(
-                            Icons.close,
-                            color: Colors.white,
-                            size: 16,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                );
-              }),
-
-            // Newly selected images
-            ..._selectedImages.asMap().entries.map((entry) {
-              final index = entry.key;
-              final image = entry.value;
-
-              return Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: Image.file(
-                      File(image.path),
-                      width: 90,
-                      height: 90,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-
-                  Positioned(
-                    top: -7,
-                    right: -7,
-                    child: GestureDetector(
-                      onTap: () {
-                        setState(() {
-                          _selectedImages.removeAt(index);
-                        });
-                      },
-                      child: Container(
-                        width: 24,
-                        height: 24,
-                        decoration: const BoxDecoration(
-                          color: Colors.red,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(
-                          Icons.close,
-                          color: Colors.white,
-                          size: 16,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              );
-            }),
-          ],
-        )
-      else
-        const Text(
-          'No images uploaded',
-          style: TextStyle(
-            fontSize: 12,
-            color: AppColors.textSecondary,
-          ),
-        ),
-    ],
-  ),
-),
-
-const SizedBox(height: 16),
         Container(
           
           padding: const EdgeInsets.all(16),
@@ -6933,136 +6748,6 @@ const SizedBox(height: 16),
                       TextStyle(fontSize: 11, color: AppColors.textSecondary)),
             ]),
             const SizedBox(height: 12),
- if ((widget.existingLead?.images.isNotEmpty ?? false) ||
-    _selectedImages.isNotEmpty)
-  Padding(
-    padding: const EdgeInsets.only(top: 12),
-    child: Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: [
-        // =========================
-        // EXISTING SERVER IMAGES
-        // =========================
-                          
-
-        if (widget.existingLead != null)
-          ...widget.existingLead!.images.map((image) {
-              final imageUrl = _getImageUrl(image.path);
-
-  debugPrint('IMAGE PATH FROM API: ${image.path}');
-  debugPrint('IMAGE URL: $imageUrl');
-
-            return Stack(
-              clipBehavior: Clip.none,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-
-
-                  
-                  child: Image.network(
-                    _getImageUrl(image.path),
-                    width: 90,
-                    height: 90,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) {
-                      return Container(
-                        width: 90,
-                        height: 90,
-                        decoration: BoxDecoration(
-                          color: AppColors.background,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: const Icon(
-                          Icons.broken_image,
-                          color: Colors.grey,
-                        ),
-                      );
-                    },
-                  ),
-                ),
-
-                // X button
-                Positioned(
-                  top: -8,
-                  right: -8,
-                  child: GestureDetector(
-                    onTap: () {
-                      setState(() {
-                        widget.existingLead!.images.remove(image);
-                      });
-                    },
-                    child: Container(
-                      width: 24,
-                      height: 24,
-                      decoration: const BoxDecoration(
-                        color: Colors.red,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.close,
-                        color: Colors.white,
-                        size: 16,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            );
-          }),
-
-        // =========================
-        // NEWLY UPLOADED IMAGES
-        // =========================
-        ..._selectedImages.asMap().entries.map((entry) {
-          final index = entry.key;
-          final image = entry.value;
-
-          return Stack(
-            clipBehavior: Clip.none,
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: Image.file(
-                  File(image.path),
-                  width: 90,
-                  height: 90,
-                  fit: BoxFit.cover,
-                ),
-              ),
-
-              // X button
-              Positioned(
-                top: -8,
-                right: -8,
-                child: GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _selectedImages.removeAt(index);
-                    });
-                  },
-                  child: Container(
-                    width: 24,
-                    height: 24,
-                    decoration: const BoxDecoration(
-                      color: Colors.red,
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.close,
-                      color: Colors.white,
-                      size: 16,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          );
-        }),
-      ],
-    ),
-  ),
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(

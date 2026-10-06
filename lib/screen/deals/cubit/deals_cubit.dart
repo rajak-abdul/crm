@@ -714,6 +714,9 @@ final res = await _dio.patch(
   '/deals/update-deal/$id',
   data: formData,
 );
+debugPrint('[updateDeal] sent: ${formData.fields}');
+debugPrint('[updateDeal] ${res.statusCode} → ${res.data}');
+
 
       await LocalDb.instance.updateLocalDeal(id, payload);
       final body = res.data;
@@ -926,6 +929,7 @@ Future<BulkImportResult?> bulkImportDeals(PlatformFile file) async {
 
     final res = await _dio.post('/deals/bulk-import', data: formData);
     final body = res.data;
+    debugPrint('[DealsCubit] bulkImportDeals ← ${res.statusCode} $body');
 
     if (body is! Map) {
       debugPrint('[DealsCubit] bulkImportDeals: unexpected response shape');

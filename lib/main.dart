@@ -21,6 +21,7 @@ import 'package:crm_app/screen/profile/ui/profile_screen.dart'
     show ProfileScreen;
 import 'package:crm_app/screen/invoice/ui/invoice_screen.dart';
 import 'package:crm_app/screen/LeaderBoard/ui/leader_board.dart';
+import 'package:crm_app/screen/splash_screen/splash_screen.dart';
 import 'package:crm_app/shareWidgets/crm_drawer.dart';
 import 'package:crm_app/shareWidgets/crm_header.dart';
 import 'package:crm_app/shareWidgets/missed_followup.dart';
@@ -60,16 +61,22 @@ class CRMApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      navigatorKey: navigatorKey,
-      title: 'CRM',
-      theme: AppTheme.theme,
-      debugShowCheckedModeBanner: false,
-      initialRoute: isLoggedIn ? '/home' : '/login',
-      routes: {
-        '/login': (_) => const LoginScreen(),
-        '/home': (_) => const MainShell(),
-      },
-    );
+  navigatorKey: navigatorKey,
+  title: 'CRM',
+  theme: AppTheme.theme,
+  debugShowCheckedModeBanner: false,
+
+  home: SplashScreen(
+    nextScreen: isLoggedIn
+        ? const MainShell()
+        : const LoginScreen(),
+  ),
+
+  routes: {
+    '/login': (_) => const LoginScreen(),
+    '/home': (_) => const MainShell(),
+  },
+);
   }
 }
 

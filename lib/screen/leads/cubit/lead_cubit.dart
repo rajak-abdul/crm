@@ -6,6 +6,7 @@ import 'dart:io' show Platform;
 
 import 'package:crm_app/database/local_db.dart';
 import 'package:crm_app/modals/modals.dart';
+import 'package:crm_app/screen/currency/modal/account_currency_modal.dart';
 import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:dio/dio.dart';
@@ -195,9 +196,6 @@ class LeadCubit extends Cubit<LeadState> {
   List<AppUser> _salesUsers = [];
   String? _cachedToken;
   String? _cachedTenantSlug;
-  List<Map<String, dynamic>> _extractLeadList(dynamic data) {
-  return _parseListIsolate(data);
-}
 
   LeadCubit() : super(LeadInitial()) {
     _dio = Dio(BaseOptions(
@@ -1163,6 +1161,63 @@ if (_isSalesman &&
     }
   }
 
+  // ── 🌐 PUT /leads/updateLead/:id ──────────────────────────
+  // Status change that needs a reason (e.g. moving to Cold).
+  // Request body: { "status": "Cold", "rejectionReason": "No budget" }
+  Future<String?> updateStatusWithReason(
+      String id, String status, String reason) async {
+    try {
+      final res = await _dio.put('/leads/updateLead/$id', data: {
+        'status': status,
+        'rejectionReason': reason,
+      });
+      if (!isClosed && state is LeadLoaded) {
+        final current = state as LeadLoaded;
+        final existing = current.leads.where((l) => l.id == id).firstOrNull;
+        final updated = _extractLead(res.data) ??
+            existing?.copyWith(status: status, rejectionReason: reason);
+        if (updated != null) {
+          try {
+            await LocalDb.instance.upsertLeadFromApi(updated);
+          } catch (e) {
+            debugPrint('=== LEAD CACHE STATUS WRITE ERROR ===: $e');
+          }
+          emit(LeadActionSuccess(
+              leads: current.leads
+                  .map((l) => l.id == id ? updated : l)
+                  .toList(),
+              salesUsers: _salesUsers,
+              message: 'Status updated to $status'));
+        }
+      }
+      return null;
+    } on DioException catch (e) {
+      if (_isOfflineDio(e) && !isClosed && state is LeadLoaded) {
+        final current = state as LeadLoaded;
+        final existing = current.leads.where((l) => l.id == id).firstOrNull;
+        if (existing != null) {
+          final updated =
+              existing.copyWith(status: status, rejectionReason: reason);
+          try {
+            await LocalDb.instance.updateLead(id, updated);
+            emit(LeadActionSuccess(
+                leads: current.leads
+                    .map((l) => l.id == id ? updated : l)
+                    .toList(),
+                salesUsers: _salesUsers,
+                message: 'Status updated offline'));
+            return null;
+          } catch (dbErr) {
+            return 'Failed to update status offline: $dbErr';
+          }
+        }
+      }
+      return _dioMsg(e);
+    } catch (e) {
+      return 'Failed to update status: $e';
+    }
+  }
+
   // ── 🌐 PATCH /leads/:id/followup ─────────────────────────
   Future<String?> updateFollowUp(String id, DateTime date) async {
     try {
@@ -1350,14 +1405,57 @@ Future<String?> rejectLead(String id, String reason) async {
   }
 }
 
+  // ── 🌐 GET /users/me → account default currency ("USD") ──
+  // Falls back to the value cached in prefs, then 'INR'.
+  Future<String> getAccountCurrency() async {
+    final prefs = await SharedPreferences.getInstance();
+    final cached = prefs.getString('currency')?.trim().toUpperCase() ?? '';
+    try {
+      await _initToken();
+      final res = await _dio
+          .get('/users/me')
+          .timeout(const Duration(seconds: 8));
+      final data = res.data;
+      if (data is Map) {
+        // "currency" is top-level; also tolerate { user: {...} } / { data: {...} }
+        final source = data['currency'] != null
+            ? data
+            : (data['user'] is Map
+                ? data['user']
+                : (data['data'] is Map ? data['data'] : data));
+        final live = AccountCurrency.fromJson(
+                Map<String, dynamic>.from(source as Map))
+            .currency;
+        debugPrint('[LeadCubit] /users/me currency: $live');
+        if (live.isNotEmpty) {
+          await prefs.setString('currency', live);
+          return live;
+        }
+      }
+    } catch (e) {
+      debugPrint('=== ACCOUNT CURRENCY ERROR ===: $e');
+    }
+    return cached.isNotEmpty ? cached : 'INR';
+  }
+
   // ── 🌐 PATCH /leads/:id/convert ──────────────────────────
-  Future<String?> convertToDeal(String id, double dealValue,
-      DateTime expectedCloseDate, String currencyCode) async {
+  Future<String?> convertToDeal(
+    String id,
+    double dealValue,
+    String currencyCode, {
+    DateTime? expectedCloseDate,
+    String? stage,
+    String? notes,
+  }) async {
     try {
       await _dio.patch('/leads/$id/convert', data: {
         'value': dealValue,
-        'expectedCloseDate': DateFormat('yyyy-MM-dd').format(expectedCloseDate),
         'currency': currencyCode,
+        if (expectedCloseDate != null)
+          'expectedCloseDate':
+              DateFormat('yyyy-MM-dd').format(expectedCloseDate),
+        if (stage != null && stage.isNotEmpty) 'stage': stage,
+        if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
       });
       if (!isClosed && state is LeadLoaded) {
         final newList = (state as LeadLoaded)
@@ -1806,37 +1904,27 @@ Future<List<Lead>> getMissedFollowups() async {
 }// ===============
 // Export the leads
 // ================
+// Two modes (the dialog guarantees both dates or neither):
+//  • no dates   → every lead
+//  • start+end  → leads CREATED between start and end (both days included)
 Future<String?> exportLeads({
   DateTime? startDate,
   DateTime? endDate,
 }) async {
   try {
-    final prefs = await SharedPreferences.getInstance();
-    final slug = prefs.getString("tenant_slug") ?? "";
+    final allLeads = await _fetchAllLeadsForExport();
+    final leads = allLeads
+        .where((l) => _inDateRange(l.createdAt, startDate, endDate))
+        .toList();
+    debugPrint('[ExportLeads] fetched ${allLeads.length}, exporting '
+        '${leads.length} (range: $startDate → $endDate)');
 
-    // 1. Fetch the actual lead data as JSON (same endpoint, but
-    //    parsed properly — not saved raw)
-    final query = <String, dynamic>{
-      "page": "1",
-      "limit": "100000",
-    };
-    if (startDate != null) {
-      query["startDate"] = DateFormat("yyyy-MM-dd").format(startDate);
-    }
-    if (endDate != null) {
-      query["endDate"] = DateFormat("yyyy-MM-dd").format(endDate);
+    if (leads.isEmpty) {
+      return startDate != null
+          ? 'No leads found in the selected date range'
+          : 'No leads to export';
     }
 
-    await _initToken();
-    final res = await _dio.get(
-      '$_domain/$slug/api/leads/getAllLead',
-      queryParameters: query,
-    );
-
-    final leads = await compute(_parseListIsolate, res.data)
-        .then((list) => list.map((e) => Lead.fromJson(e)).toList());
-
-    // 2. Build a real xlsx workbook from the parsed leads
     final workbook = xls.Excel.createExcel();
     const sheetName = 'Leads';
     final sheet = workbook[sheetName];
@@ -1859,6 +1947,7 @@ Future<String?> exportLeads({
       'Assigned To',
       'Follow-up Date',
       'Notes',
+      'Created Date',
     ];
     sheet.appendRow(headers.map((h) => xls.TextCellValue(h)).toList());
 
@@ -1876,117 +1965,143 @@ Future<String?> exportLeads({
         xls.TextCellValue(l.requirement),
         xls.TextCellValue(l.status),
         xls.TextCellValue(l.assignTo),
-        l.followUpDate != null
-    ? xls.DateCellValue(
-        year: l.followUpDate!.year,
-        month: l.followUpDate!.month,
-        day: l.followUpDate!.day,
-      )
-    : xls.TextCellValue(''),
+        _xlsDate(l.followUpDate),
+        xls.TextCellValue(l.notes),
+        _xlsDate(l.createdAt),
       ]);
     }
-sheet.setColumnWidth(0, 20); // Lead Name
-sheet.setColumnWidth(1, 20); // Company Name
-sheet.setColumnWidth(2, 18); // Phone Number
-sheet.setColumnWidth(3, 30); // Email
-sheet.setColumnWidth(4, 30); // Address
-sheet.setColumnWidth(5, 10); // Country
-sheet.setColumnWidth(6, 10); // Client Type
-sheet.setColumnWidth(7, 10); // Industry
-sheet.setColumnWidth(8, 10); // Source
-sheet.setColumnWidth(9, 30); // Requirement
-sheet.setColumnWidth(10, 10); // Status
-sheet.setColumnWidth(11, 10); // Assigned To
-sheet.setColumnWidth(12, 20); // Follow-up Date
-sheet.setColumnWidth(13, 30); // Notes
+    sheet.setColumnWidth(0, 20); // Lead Name
+    sheet.setColumnWidth(1, 20); // Company Name
+    sheet.setColumnWidth(2, 18); // Phone Number
+    sheet.setColumnWidth(3, 30); // Email
+    sheet.setColumnWidth(4, 30); // Address
+    sheet.setColumnWidth(5, 10); // Country
+    sheet.setColumnWidth(6, 10); // Client Type
+    sheet.setColumnWidth(7, 10); // Industry
+    sheet.setColumnWidth(8, 10); // Source
+    sheet.setColumnWidth(9, 30); // Requirement
+    sheet.setColumnWidth(10, 10); // Status
+    sheet.setColumnWidth(11, 18); // Assigned To
+    sheet.setColumnWidth(12, 16); // Follow-up Date
+    sheet.setColumnWidth(13, 30); // Notes
+    sheet.setColumnWidth(14, 16); // Created Date
+
     final bytes = workbook.save();
     if (bytes == null) return 'Failed to generate export file';
 
-    // 3. Save the real xlsx bytes — same helper downloadLeadTemplate uses
     final savedPath = await _saveXlsxToDownloads('Leads.xlsx', bytes);
     debugPrint("Save Path: $savedPath");
-
     return null;
+  } on DioException catch (e) {
+    return _dioMsg(e);
   } catch (e) {
-    return e.toString();
+    return 'Failed to export leads: $e';
   }
 }
 
 // =========================
-// Export Followups Template
+// Export Followups
 // =========================
-Future<void> exportFollowUps({
+// Two modes (the dialog guarantees both dates or neither):
+//  • no dates   → every lead
+//  • start+end  → leads whose FOLLOW-UP DATE is between start and end
+// Each exported lead is written with its full follow-up note history.
+Future<String?> exportFollowUps({
   DateTime? startDate,
   DateTime? endDate,
 }) async {
-  final previousState = state;
-  final previousLeads =
-      previousState is LeadLoaded ? previousState.leads : <Lead>[];
-
-  emit(LeadLoading());
-
   try {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('token') ?? '';
-    final slug = prefs.getString('tenant_slug') ?? '';
-
-    final dio = Dio(
-      BaseOptions(
-        baseUrl: '$_domain/$slug/api',
-        headers: {
-          'Authorization': 'Bearer $token',
-        },
-      ),
-    );
-
-    final query = <String, dynamic>{
-      'page': '1',
-      'limit': '100000',
-    };
-
-    if (startDate != null) {
-      query['startDate'] =
-          DateFormat('yyyy-MM-dd').format(startDate);
-    }
-
-    if (endDate != null) {
-      query['endDate'] =
-          DateFormat('yyyy-MM-dd').format(endDate);
-    }
-
-    final res = await dio.get(
-      '/leads/getAllLead',
-      queryParameters: query,
-    );
-
-    final rawList = _extractLeadList(res.data);
-
-    final leads =
-        rawList.map((e) => Lead.fromJson(e)).toList();
+    final allLeads = await _fetchAllLeadsForExport();
+    final leads = allLeads
+        .where((l) => _inDateRange(l.followUpDate, startDate, endDate))
+        .toList();
+    debugPrint('[ExportFollowUps] fetched ${allLeads.length}, exporting '
+        '${leads.length} (range: $startDate → $endDate)');
 
     if (leads.isEmpty) {
-      emit(const LeadError('No leads to export'));
-      return;
+      return startDate != null
+          ? 'No follow-ups found in the selected date range'
+          : 'No leads to export';
     }
-
-    final bytes = _buildFollowUpsWorkbook(leads);
 
     await _saveXlsxToDownloads(
       'FollowUps.xlsx',
-      bytes,
+      _buildFollowUpsWorkbook(leads),
     );
-
-    emit(
-      LeadActionSuccess(
-        leads: previousLeads,
-        salesUsers: _salesUsers,
-        message: 'Follow-ups exported',
-      ),
-    );
+    return null;
+  } on DioException catch (e) {
+    return _dioMsg(e);
   } catch (e) {
-    emit(LeadError(e.toString()));
+    return 'Failed to export follow-ups: $e';
   }
 }
+
+/// Fetches every lead from GET /leads/getAllLead, page by page, so the
+/// export is complete even when the server caps the page size. No date
+/// params are sent — the range is applied locally on the right field.
+Future<List<Lead>> _fetchAllLeadsForExport() async {
+  await _initToken();
+  const pageSize = 500;
+  const maxPages = 200; // safety net
+  final byId = <String, Lead>{};
+  final noId = <Lead>[];
+
+  for (var page = 1; page <= maxPages; page++) {
+    final res = await _dio.get(
+      '/leads/getAllLead',
+      queryParameters: {'page': page, 'limit': pageSize},
+    );
+    final raw = await compute(_parseListIsolate, res.data);
+    if (raw.isEmpty) break;
+
+    var added = 0;
+    for (final e in raw) {
+      final lead = Lead.fromJson(e);
+      if (lead.id.isEmpty) {
+        noId.add(lead);
+        added++;
+      } else if (!byId.containsKey(lead.id)) {
+        byId[lead.id] = lead;
+        added++;
+      }
+    }
+
+    final total = _extractTotalCount(res.data);
+    final fetched = byId.length + noId.length;
+    // Stop when the page added nothing new (server ignores `page`),
+    // or we reached the total the server reported.
+    if (added == 0) break;
+    if (total != null && fetched >= total) break;
+  }
+  return [...byId.values, ...noId];
+}
+
+/// True when [date] (in local time) is between the start of [start] and
+/// the end of [end], both days included. No range → always true.
+bool _inDateRange(DateTime? date, DateTime? start, DateTime? end) {
+  if (start == null && end == null) return true;
+  if (date == null) return false;
+  final d = date.toLocal();
+  if (start != null &&
+      d.isBefore(DateTime(start.year, start.month, start.day))) {
+    return false;
+  }
+  if (end != null &&
+      !d.isBefore(DateTime(end.year, end.month, end.day + 1))) {
+    return false;
+  }
+  return true;
+}
+
+xls.CellValue _xlsDate(DateTime? d) {
+  if (d == null) return xls.TextCellValue('');
+  final local = d.toLocal();
+  return xls.DateCellValue(
+      year: local.year, month: local.month, day: local.day);
+}
+
+/// One row per follow-up note (full history); a lead without notes gets a
+/// single row with the note columns empty.
 Uint8List _buildFollowUpsWorkbook(List<Lead> leads) {
   final workbook = xls.Excel.createExcel();
   const sheetName = 'Follow-ups';
@@ -2000,52 +2115,46 @@ Uint8List _buildFollowUpsWorkbook(List<Lead> leads) {
     'Company',
     'Assign To',
     'Follow-up Date',
+    'Note Date',
     'Follow-up Note',
   ];
   sheet.appendRow(headers.map((h) => xls.TextCellValue(h)).toList());
 
   for (final l in leads) {
     if (l.followUpNotes.isEmpty) {
-      // Lead with no logged notes yet — still show it, blank note columns
       sheet.appendRow([
         xls.TextCellValue(l.name),
         xls.TextCellValue(l.companyName),
         xls.TextCellValue(l.assignTo),
+        _xlsDate(l.followUpDate),
         xls.TextCellValue(''),
         xls.TextCellValue(''),
       ]);
       continue;
     }
-
     for (final note in l.followUpNotes) {
       sheet.appendRow([
         xls.TextCellValue(l.name),
         xls.TextCellValue(l.companyName),
         xls.TextCellValue(l.assignTo),
-        note.createdAt != null
-    ? xls.DateCellValue(
-        year: note.createdAt!.year,
-        month: note.createdAt!.month,
-        day: note.createdAt!.day,
-      )
-    : xls.TextCellValue(''),
+        _xlsDate(l.followUpDate),
+        _xlsDate(note.createdAt),
         xls.TextCellValue(note.note),
       ]);
     }
   }
 
-   // Set column widths
   sheet.setColumnWidth(0, 30); // Lead
   sheet.setColumnWidth(1, 35); // Company
   sheet.setColumnWidth(2, 28); // Assign To
-  sheet.setColumnWidth(3, 56); // Follow-up Date
-  sheet.setColumnWidth(4, 40); // Follow-up Note
+  sheet.setColumnWidth(3, 16); // Follow-up Date
+  sheet.setColumnWidth(4, 16); // Note Date
+  sheet.setColumnWidth(5, 50); // Follow-up Note
 
   final bytes = workbook.save();
   if (bytes == null) throw Exception('Failed to generate workbook');
   return Uint8List.fromList(bytes);
 }
-
 
 // =========================
 // Download Import Template

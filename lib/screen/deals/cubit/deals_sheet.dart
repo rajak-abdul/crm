@@ -151,6 +151,13 @@ class DealsTemplateCubit extends Cubit<DealsTemplateState> {
 // Export deals
 // ===============================
 
+// ISO date string → "yyyy-MM-dd" (local); raw value if it can't be parsed.
+String _formatYmd(dynamic raw) {
+  final s = raw?.toString() ?? '';
+  final d = DateTime.tryParse(s);
+  return d == null ? s : DateFormat('yyyy-MM-dd').format(d.toLocal());
+}
+
 
 
 
@@ -184,8 +191,6 @@ Future<void> exportDeals({
       "Discount Given (%)",
       "Stage",
       "Email",
-      "Alternative Number",
-      "Alternative Email",
       "Source",
       "Company Size",
       "Industry",
@@ -193,7 +198,7 @@ Future<void> exportDeals({
       "Address",
       "Country",
       "Notes",
-      "Follow Up Date",
+      "Follow Up Date (YYYY-MM-DD)",
       "Follow Up Comment",
       "Created At",
     ];
@@ -256,18 +261,16 @@ sheet.setColumnWidth(7, 18); // Client Type
 sheet.setColumnWidth(8, 15); // Discount
 sheet.setColumnWidth(9, 25); // Stage
 sheet.setColumnWidth(10, 35); // Email
-sheet.setColumnWidth(11, 18); // Alternative Number
-sheet.setColumnWidth(12, 35); // Alternative Email
-sheet.setColumnWidth(13, 18); // Source
-sheet.setColumnWidth(14, 18); // Company Size
-sheet.setColumnWidth(15, 20); // Industry
-sheet.setColumnWidth(16, 35); // Requirement
-sheet.setColumnWidth(17, 30); // Address
-sheet.setColumnWidth(18, 18); // Country
-sheet.setColumnWidth(19, 40); // Notes
-sheet.setColumnWidth(20, 18); // Follow Up Date
-sheet.setColumnWidth(21, 35); // Follow Up Comment
-sheet.setColumnWidth(22, 18); // Created At
+sheet.setColumnWidth(11, 18); // Source
+sheet.setColumnWidth(12, 18); // Company Size
+sheet.setColumnWidth(13, 20); // Industry
+sheet.setColumnWidth(14, 35); // Requirement
+sheet.setColumnWidth(15, 30); // Address
+sheet.setColumnWidth(16, 18); // Country
+sheet.setColumnWidth(17, 40); // Notes
+sheet.setColumnWidth(18, 26); // Follow Up Date
+sheet.setColumnWidth(19, 35); // Follow Up Comment
+sheet.setColumnWidth(20, 18); // Created At
     }
 
     // ==========================
@@ -289,8 +292,6 @@ sheet.setColumnWidth(22, 18); // Created At
         deal['discountGiven'],
         deal['stage'],
         deal['email'],
-        deal['alternativeNumber'],
-        deal['alternativeEmail'],
         deal['source'],
         deal['companySize'],
         deal['industry'],
@@ -298,7 +299,7 @@ sheet.setColumnWidth(22, 18); // Created At
         deal['address'],
         deal['country'],
         deal['notes'],
-        deal['followUpDate'],
+        _formatYmd(deal['followUpDate']),
         deal['followUpComment'],
         deal['createdAt'],
       ];

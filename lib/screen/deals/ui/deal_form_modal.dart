@@ -1017,21 +1017,22 @@ void dispose() {
       'currency': _currency.split(' ').last, // "₹ INR" → "INR"
       'countryCode': _countryCode,
       'dealValue':
-          (double.tryParse(_value.text.replaceAll(',', '')) ?? 0).toString(),
-      if (assignToId != null) 'assignTo': assignToId,
+          (double.tryParse(_value.text.replaceAll(',', '')) ?? 0).toString(),      if (assignToId != null) 'assignTo': assignToId,
       if (followUpDateTime != null)
         'followUpDate': followUpDateTime.toUtc().toIso8601String(),
       'followUpComment': _followUpComment.text.trim(),
       // existing files kept on the deal — sent even empty on create,
       // matching the confirmed API contract.
-      'existingAttachments': _existingAttachments
+      // Sent as a JSON array string (like the web client) — a raw List
+      // becomes repeated fields, and an empty one is dropped entirely.
+      'existingAttachments': jsonEncode(_existingAttachments
           .map((a) => a.path)
           .where((p) => p.isNotEmpty)
-          .toList(),
-      'existingImages': _existingImages
+          .toList()),
+      'existingImages': jsonEncode(_existingImages
           .map((a) => a.path)
           .where((p) => p.isNotEmpty)
-          .toList(),
+          .toList()),
       'customFields': jsonEncode(_customFields.map((f) {
         final data = <String, dynamic>{
           'cardTitle': f.cardTitle,

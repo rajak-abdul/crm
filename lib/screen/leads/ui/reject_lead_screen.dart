@@ -24,7 +24,7 @@ class _RejectedLeadsScreenState
 
   String _search = '';
   int _currentPage = 1;
- final int _pageSize = 5; 
+  int _pageSize = 5; 
 
   @override
   void initState() {
@@ -161,9 +161,18 @@ PaginationWidget(
   currentPage: _currentPage,
   totalItems: filteredLeads.length,
   pageSize: _pageSize,
+  pageSizeOptions: const [5, 10, 25],
+
   onPageChanged: (page) {
     setState(() {
       _currentPage = page;
+    });
+  },
+
+  onPageSizeChanged: (size) {
+    setState(() {
+      _pageSize = size;
+      _currentPage = 1;
     });
   },
 ),    ],

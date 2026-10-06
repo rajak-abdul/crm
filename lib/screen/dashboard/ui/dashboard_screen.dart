@@ -9,6 +9,7 @@ import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:crm_app/modals/followup_model.dart';
 import 'package:crm_app/screen/LeaderBoard/ui/leader_board.dart';
+import 'package:crm_app/screen/calendar/UI/calendar_screen.dart';
 import 'package:crm_app/screen/dashboard/cubit/dashboard.dart';
 import 'package:crm_app/screen/dashboard/cubit/notification_cubit.dart';
 import 'package:crm_app/screen/dashboard/ui/dashboard_followup_page.ui.dart';
@@ -17,9 +18,21 @@ import 'package:crm_app/screen/document/deal/cubit/deal_doc_cubit.dart';
 import 'package:crm_app/screen/document/deal/ui/deal_doc_ui.dart' show DealDocumentScreen;
 import 'package:crm_app/screen/document/lead/cubit/leads_document_cubit.dart';
 import 'package:crm_app/screen/document/lead/ui/lead_document_ui.dart';
+import 'package:crm_app/screen/email/cubit/email_cubit.dart';
+import 'package:crm_app/screen/email/cubit/email_history_cubit.dart';
+import 'package:crm_app/screen/email/cubit/scheduled_email_cubit.dart';
+import 'package:crm_app/screen/email/ui/EmailContactsScreen.dart';
 import 'package:crm_app/screen/leads/ui/lead_screen.dart';
+import 'package:crm_app/screen/message/cubit/chat_cubit.dart'
+    show chatUnreadTotal, refreshChatUnreadTotal;
+import 'package:crm_app/screen/message/ui/message_screen.dart';
 import 'package:crm_app/screen/meeting/UI/meeting.dart';
 import 'package:crm_app/screen/meeting/cubit/meeting_cubit.dart';
+import 'package:crm_app/screen/proposal/UI/proposal_screen.dart';
+import 'package:crm_app/screen/proposal/cubit/proposal_cubit.dart';
+import 'package:crm_app/screen/tasks/view/target_screen.dart'
+    show TargetScreen;
+import 'package:crm_app/screen/tasks/view/task_screen.dart' show TaskScreen;
 import 'package:crm_app/screen/users/user_cubit.dart';
 import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:crm_app/shareWidgets/crm_header.dart';
@@ -366,6 +379,7 @@ class DashboardLoaded extends DashboardState {
   final String filterRange; // 'last7' | 'month'
   final int? filterMonth;
   final int? filterYear;
+  
 
   const DashboardLoaded({
     required this.topPerformer,
@@ -517,6 +531,8 @@ Future<void> _loadAuthToken() async {
   void _open() {
     setState(() => _isOpen = true);
     _ctrl.forward();
+    // Keep the drawer's Messages badge current.
+    refreshChatUnreadTotal();
   }
 
   void _close() {
@@ -563,9 +579,37 @@ Future<void> _loadAuthToken() async {
   Navigator.of(context, rootNavigator: true)
       .push(_slide(const InvoiceScreen()));
 
+} else if (route == '/proposals') {
+  Navigator.of(context, rootNavigator: true).push(
+    _slide(
+      BlocProvider(
+        create: (_) => ProposalCubit(),
+        child: const ProposalListScreen(),
+      ),
+    ),
+  );
 } else if (route == '/meetings') {
   Navigator.of(context, rootNavigator: true)
       .push(_slide(const MeetingsScreen()));
+
+} else if (route == '/calendar') {
+  Navigator.of(context, rootNavigator: true)
+      .push(_slide(const CalendarScreen()));
+
+} else if (route == '/messages') {
+  Navigator.of(context, rootNavigator: true)
+      .push(_slide(const MessagesScreen()));
+
+} else if (route == '/tasks') {
+  Navigator.of(context, rootNavigator: true)
+      .push(_slide(const TaskScreen()));
+
+} else if (route == '/targets') {
+  final notifCubit = context.read<NotificationCubit>();
+  Navigator.of(context, rootNavigator: true).push(_slide(TargetScreen(
+    onOpenNotifications: () => Navigator.of(context, rootNavigator: true)
+        .push(_slide(NotificationsScreen(cubit: notifCubit))),
+  )));
 
 } else if (route == '/lead-documents') {
   Navigator.of(context, rootNavigator: true).push(
@@ -584,6 +628,27 @@ Future<void> _loadAuthToken() async {
           Dio(),
         ),
         child: const DealDocumentScreen(),
+      ),
+    ),
+  );
+}
+
+else if (route == '/email') {
+  Navigator.of(
+    context,
+    rootNavigator: true,
+  ).push(
+    _slide(
+      MultiBlocProvider(
+        providers: [
+          BlocProvider(
+            create: (_) => EmailContactsCubit(),
+          ),
+          BlocProvider(
+            create: (_) => EmailHistoryCubit(),
+          ),
+        ],
+        child: const EmailContactsScreen(),
       ),
     ),
   );
@@ -751,10 +816,12 @@ class _CrmDrawerState extends State<_CrmDrawer> {
   String _active = '/dashboard';
   bool _dealsExpanded = false;
   bool _documentsExpanded = false;
+  bool _emailExpanded = false;
   String _drawerName = 'CRM User';
   String _drawerEmail = 'crm.stagingzar.com';
   String? _drawerImage;
   String _userRole = '';
+  Map<String, dynamic> _permissions = {};
 
   @override
   void initState() {
@@ -800,6 +867,19 @@ class _CrmDrawerState extends State<_CrmDrawer> {
       );
 
       var map = _extractUserMap(res.data);
+     final role = map['role'];
+
+Map<String, dynamic> permissions = {};
+
+if (role is Map) {
+  final roleMap = Map<String, dynamic>.from(role);
+
+  final rolePermissions = roleMap['permissions'];
+
+  if (rolePermissions is Map) {
+    permissions = Map<String, dynamic>.from(rolePermissions);
+  }
+}
       if (map['user'] is Map) {
         map = Map<String, dynamic>.from(map['user'] as Map);
       }
@@ -831,6 +911,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
         _drawerName = resolvedName;
         _drawerEmail = email.isEmpty ? 'crm.stagingzar.com' : email;
         _drawerImage = _resolveImageUrl(imageRaw);
+        _permissions = permissions;
       });
     } catch (_) {}
   }
@@ -906,7 +987,20 @@ class _CrmDrawerState extends State<_CrmDrawer> {
   }
 
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) {
+final showDashboard = _permissions['dashboard'] == true;
+final showLeads = _permissions['leads'] == true;
+final showDeals = _permissions['deals_all'] == true;
+final showDeal_pipeline = _permissions['deals_pipeline'] == true;
+final showInvoices = _permissions['invoices'] == true;
+final showDocuments = _permissions['documents'] == true;
+final showMeetings = _permissions['meetings'] == true;
+final showLeaderboard = _permissions['streak_leaderboard'] == true;
+final showProposals = _permissions['proposal'] == true;
+final showEmailCampaign = _permissions['email_campaigns'] == true;
+final showEmail = _permissions['email_chat'] == true;
+
+ return  Container(
         color: const Color(0xFF0F172A),
         child: SafeArea(
             child:
@@ -921,6 +1015,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
                     fontWeight: FontWeight.w700,
                     letterSpacing: 1.4)),
           ),
+          if (showDashboard)
           _Item(
               icon: Icons.dashboard_outlined,
               activeIcon: Icons.dashboard_rounded,
@@ -931,6 +1026,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
                 setState(() => _active = '/dashboard');
                 widget.onClose();
               }),
+              if (showLeads)
           _Item(
               icon: Icons.people_outline,
               activeIcon: Icons.people_rounded,
@@ -941,6 +1037,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
                 setState(() => _active = '/leads');
                 widget.onNavigate('/leads');
               }),
+              if (showDeals || showDeal_pipeline)
           _ExpandItem(
             icon: Icons.handshake_outlined,
             activeIcon: Icons.handshake_rounded,
@@ -950,6 +1047,8 @@ class _CrmDrawerState extends State<_CrmDrawer> {
             activeColor: const Color(0xFF8B5CF6),
             onToggle: () => setState(() => _dealsExpanded = !_dealsExpanded),
             children: [
+              if (showDeal_pipeline)
+
               _SubItem(
                   icon: Icons.filter_alt_outlined,
                   label: 'Deal Stages',
@@ -958,6 +1057,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
                     setState(() => _active = '/deals/stages');
                     widget.onNavigate('/deals', tab: 1);
                   }),
+                  if (showDeals)
               _SubItem(
                   icon: Icons.view_list_rounded,
                   label: 'All Deals',
@@ -968,6 +1068,7 @@ class _CrmDrawerState extends State<_CrmDrawer> {
                   }),
             ],
           ),
+          if(showInvoices)
           _Item(
               icon: Icons.receipt_long_outlined,
               activeIcon: Icons.receipt_long_rounded,
@@ -978,6 +1079,19 @@ class _CrmDrawerState extends State<_CrmDrawer> {
                 setState(() => _active = '/invoice');
                 widget.onNavigate('/invoice');
               }),
+      if (showProposals)
+  _Item(
+    icon: Icons.description_outlined,
+    activeIcon: Icons.description_rounded,
+    label: 'Proposals',
+    active: _active == '/proposals',
+    activeColor: const Color(0xFF3B82F6),
+    onTap: () {
+      setState(() => _active = '/proposals');
+      widget.onNavigate('/proposals');
+    },
+  ),
+              if(showMeetings)
               _Item(
     icon: Icons.calendar_month_outlined,
     activeIcon: Icons.calendar_month_rounded,
@@ -988,6 +1102,51 @@ class _CrmDrawerState extends State<_CrmDrawer> {
       setState(() => _active = '/meetings');
       widget.onNavigate('/meetings');
     }),
+    _Item(
+    icon: Icons.event_outlined,
+    activeIcon: Icons.event_rounded,
+    label: 'Calendar',
+    active: _active == '/calendar',
+    activeColor: const Color(0xFF06B6D4),
+    onTap: () {
+      setState(() => _active = '/calendar');
+      widget.onNavigate('/calendar');
+    }),
+    _Item(
+    icon: Icons.assignment_outlined,
+    activeIcon: Icons.assignment_rounded,
+    label: 'My Tasks',
+    active: _active == '/tasks',
+    activeColor: const Color(0xFF0B6FB5),
+    onTap: () {
+      setState(() => _active = '/tasks');
+      widget.onNavigate('/tasks');
+    }),
+    _Item(
+    icon: Icons.track_changes_outlined,
+    activeIcon: Icons.track_changes_rounded,
+    label: 'My Targets',
+    active: _active == '/targets',
+    activeColor: const Color(0xFF0369A1),
+    onTap: () {
+      setState(() => _active = '/targets');
+      widget.onNavigate('/targets');
+    }),
+    ValueListenableBuilder<int>(
+      valueListenable: chatUnreadTotal,
+      builder: (_, unread, __) => _Item(
+        icon: Icons.chat_bubble_outline_rounded,
+        activeIcon: Icons.chat_bubble_rounded,
+        label: 'Messages',
+        active: _active == '/messages',
+        activeColor: const Color(0xFF2563EB),
+        badgeCount: unread,
+        onTap: () {
+          setState(() => _active = '/messages');
+          widget.onNavigate('/messages');
+        }),
+    ),
+    if(showDocuments)
     _ExpandItem(
       icon: Icons.folder_outlined,
       activeIcon: Icons.folder_rounded,
@@ -1016,6 +1175,47 @@ class _CrmDrawerState extends State<_CrmDrawer> {
             }),
       ],
     ),
+    if (showEmail)
+  _ExpandItem(
+    icon: Icons.email_outlined,
+    activeIcon: Icons.email_rounded,
+    label: 'Email',
+    expanded: _emailExpanded,
+    active: _active.startsWith('/email'),
+    activeColor: const Color(0xFF3B82F6),
+    onToggle: () => setState(
+      () => _emailExpanded = !_emailExpanded,
+    ),
+    children: [
+      _SubItem(
+        icon: Icons.contacts_outlined,
+        label: 'Contacts',
+        active: _active == '/email/contacts',
+        onTap: () {
+          setState(
+            () => _active = '/email/contacts',
+          );
+
+          widget.onNavigate('/email');
+        },
+      ),
+
+      _SubItem(
+        icon: Icons.campaign_outlined,
+        label: 'Campaigns',
+        active: _active == '/email/campaigns',
+        onTap: () {
+          setState(
+            () => _active = '/email/campaigns',
+          );
+
+          // Add campaign navigation here
+        },
+      ),
+    ],
+  ),
+
+    if(showLeaderboard)
           _Item(
               icon: Icons.leaderboard_outlined,
               activeIcon: Icons.leaderboard_outlined,
@@ -1041,7 +1241,9 @@ class _CrmDrawerState extends State<_CrmDrawer> {
             padding: EdgeInsets.fromLTRB(22, 4, 22, 16),
           ),
         ])),
+
       );
+  }
 }
 
 class _Item extends StatelessWidget {
@@ -1050,13 +1252,17 @@ class _Item extends StatelessWidget {
   final bool active;
   final Color activeColor;
   final VoidCallback onTap;
+
+  /// Shown as a count pill when greater than 0 (e.g. unread messages).
+  final int badgeCount;
   const _Item(
       {required this.icon,
       required this.activeIcon,
       required this.label,
       required this.active,
       required this.activeColor,
-      required this.onTap});
+      required this.onTap,
+      this.badgeCount = 0});
   @override
   Widget build(BuildContext context) => GestureDetector(
         onTap: onTap,
@@ -1081,6 +1287,21 @@ class _Item extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                         color:
                             active ? Colors.white : const Color(0xFF94A3B8)))),
+            if (badgeCount > 0) ...[
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                    color: activeColor,
+                    borderRadius: BorderRadius.circular(10)),
+                child: Text(badgeCount > 99 ? '99+' : '$badgeCount',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700)),
+              ),
+              if (active) const SizedBox(width: 8),
+            ],
             if (active)
               Container(
                   width: 7,
