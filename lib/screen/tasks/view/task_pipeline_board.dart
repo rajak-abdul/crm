@@ -410,24 +410,39 @@ Future<void> showMoveTaskSheet(
       current: TaskStage.fromStatus(data.task.status),
       onMove: (stage, reason) =>
           viewModel.moveTask(data.task, stage, reason: reason),
+      blockedStages: taskAutomaticStages,
     );
 
+/// Task stages the system sets by itself — a task can't be moved there by
+/// hand (Task pipeline only; targets don't have this rule).
+const taskAutomaticStages = {
+  TaskStage.inProgress: "Tasks automatically move to 'In Progress' when "
+      'you start working on linked items.',
+  TaskStage.completed: 'The system is automated, you cannot drop here.',
+};
+
 /// Opens "Move card" for any pipeline item (task or target). [onMove]
-/// saves the move and returns an error message or null; In Hold always
-/// asks for a reason first.
+/// saves the move and returns an error message or null; In Hold and
+/// Rejected ask for a reason first. Stages in [blockedStages] can't be
+/// picked — tapping one shows its message instead.
 Future<void> showMoveStageSheet(
   BuildContext context, {
   required String title,
   required TaskStage current,
   required Future<String?> Function(TaskStage stage, String? reason) onMove,
+  Map<TaskStage, String> blockedStages = const {},
 }) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
     backgroundColor: Colors.transparent,
-    builder: (_) =>
-        _MoveStageSheet(title: title, current: current, onMove: onMove),
+    builder: (_) => _MoveStageSheet(
+      title: title,
+      current: current,
+      onMove: onMove,
+      blockedStages: blockedStages,
+    ),
   );
 }
 
@@ -435,11 +450,13 @@ class _MoveStageSheet extends StatefulWidget {
   final String title;
   final TaskStage current;
   final Future<String?> Function(TaskStage stage, String? reason) onMove;
+  final Map<TaskStage, String> blockedStages;
 
   const _MoveStageSheet({
     required this.title,
     required this.current,
     required this.onMove,
+    required this.blockedStages,
   });
 
   @override
@@ -450,10 +467,25 @@ class _MoveStageSheetState extends State<_MoveStageSheet> {
   late final TaskStage _current = widget.current;
   late TaskStage _selected = _current;
 
+  /// Shown when a blocked (automatic) stage is tapped.
+  String? _blockedMessage;
+
+  void _pick(TaskStage stage) {
+    final blocked = stage != _current ? widget.blockedStages[stage] : null;
+    setState(() {
+      _blockedMessage = blocked;
+      if (blocked == null) _selected = stage;
+    });
+  }
+
   final _reason = TextEditingController();
   bool _moving = false;
 
-  bool get _needsReason => _selected == TaskStage.inHold;
+  /// In Hold and Rejected both need a reason for the admin.
+  bool get _needsReason =>
+      _selected == TaskStage.inHold || _selected == TaskStage.rejected;
+
+  bool get _isReject => _selected == TaskStage.rejected;
 
   @override
   void dispose() {
@@ -491,8 +523,10 @@ class _MoveStageSheetState extends State<_MoveStageSheet> {
         backgroundColor: AppColors.success,
         content: Text(_selected == TaskStage.inHold
             ? 'Hold requested — waiting for admin approval'
-            : '${widget.title} moved to '
-                '${_selected.label}'),
+            : _isReject
+                ? 'Rejection requested — waiting for admin approval'
+                : '${widget.title} moved to '
+                    '${_selected.label}'),
       ));
   }
 
@@ -570,17 +604,46 @@ class _MoveStageSheetState extends State<_MoveStageSheet> {
                       stage: stage,
                       isCurrent: stage == _current,
                       selected: stage == _selected,
-                      onTap: _moving
-                          ? null
-                          : () => setState(() => _selected = stage),
+                      automatic: stage != _current &&
+                          widget.blockedStages.containsKey(stage),
+                      onTap: _moving ? null : () => _pick(stage),
                     ),
                 ],
               ),
+              if (_blockedMessage != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF3C7),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFFDE68A)),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.info_outline_rounded,
+                          size: 18, color: Color(0xFFB45309)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _blockedMessage!,
+                          style: const TextStyle(
+                            fontSize: 12.5,
+                            height: 1.35,
+                            color: Color(0xFF92400E),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               if (_needsReason && _selected != _current) ...[
                 const SizedBox(height: 14),
-                const Text(
-                  'Reason for hold *',
-                  style: TextStyle(
+                Text(
+                  _isReject ? 'Reason for rejection *' : 'Reason for hold *',
+                  style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
                     color: AppColors.textPrimary,
@@ -598,7 +661,9 @@ class _MoveStageSheetState extends State<_MoveStageSheet> {
                     color: AppColors.textPrimary,
                   ),
                   decoration: InputDecoration(
-                    hintText: 'Why should this be on hold?',
+                    hintText: _isReject
+                        ? 'Why should this be rejected?'
+                        : 'Why should this be on hold?',
                     hintStyle: const TextStyle(
                       fontSize: 13,
                       color: AppColors.textHint,
@@ -616,9 +681,12 @@ class _MoveStageSheetState extends State<_MoveStageSheet> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                const Text(
-                  'Your admin approves hold requests.',
-                  style: TextStyle(fontSize: 11, color: AppColors.textHint),
+                Text(
+                  _isReject
+                      ? 'Your admin approves rejection requests.'
+                      : 'Your admin approves hold requests.',
+                  style:
+                      const TextStyle(fontSize: 11, color: AppColors.textHint),
                 ),
               ],
               const SizedBox(height: 16),
@@ -665,6 +733,9 @@ class _StageOption extends StatelessWidget {
   final TaskStage stage;
   final bool isCurrent;
   final bool selected;
+
+  /// Set by the system, not by hand — shown dimmed with "Automatic".
+  final bool automatic;
   final VoidCallback? onTap;
 
   const _StageOption({
@@ -672,12 +743,20 @@ class _StageOption extends StatelessWidget {
     required this.isCurrent,
     required this.selected,
     required this.onTap,
+    this.automatic = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final color = taskStageColor(stage);
 
+    return Opacity(
+      opacity: automatic ? 0.5 : 1,
+      child: _buildOption(color),
+    );
+  }
+
+  Widget _buildOption(Color color) {
     return Material(
       color: selected ? color.withValues(alpha: 0.08) : AppColors.surface,
       borderRadius: BorderRadius.circular(13),
@@ -721,7 +800,11 @@ class _StageOption extends StatelessWidget {
               ),
               const SizedBox(height: 3),
               Text(
-                isCurrent ? 'Current status' : 'Move here',
+                isCurrent
+                    ? 'Current status'
+                    : automatic
+                        ? 'Automatic'
+                        : 'Move here',
                 style: const TextStyle(
                   fontSize: 10.5,
                   color: AppColors.textSecondary,

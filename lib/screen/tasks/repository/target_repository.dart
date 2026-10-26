@@ -42,6 +42,23 @@ class TargetRepository {
     ];
   }
 
+  /// Targets linked to one lead or deal ([kind]: 'lead' | 'deal').
+  Future<List<TargetModel>> getLinkedTargets({
+    required String kind,
+    required String id,
+  }) async {
+    final data = await apiService.getLinkedTargets(kind: kind, id: id);
+
+    if (data is! List) {
+      throw TargetApiException('Unexpected linked targets response');
+    }
+
+    return [
+      for (final e in data)
+        if (e is Map<String, dynamic>) TargetModel.fromJson(e),
+    ];
+  }
+
   /// Logs a call against a target. The recording is optional; pass its
   /// [recordingPath] (mobile/desktop) or [recordingBytes] (web).
   Future<CallReportResponseModel> reportCall({
@@ -148,7 +165,8 @@ class TargetRepository {
   }
 
   /// Moves a target to [status] ('New' | 'In Progress' | 'In Hold' |
-  /// 'Completed' | 'Rejected'). In Hold sends [reason] as holdReason.
+  /// 'Completed' | 'Rejected'). [reason] goes as holdReason (In Hold) or
+  /// rejectionReason (Rejected).
   Future<void> updateTargetStatus({
     required String targetId,
     required String status,
@@ -160,6 +178,7 @@ class TargetRepository {
       body: {
         'status': status,
         if (status == 'In Hold' && note.isNotEmpty) 'holdReason': note,
+        if (status == 'Rejected' && note.isNotEmpty) 'rejectionReason': note,
       },
     );
 

@@ -23,6 +23,8 @@ import 'package:crm_app/screen/deals/modal/deal_modal.dart';
 import 'package:crm_app/shareWidgets/share_widgets.dart'
     show showApiSnack, ErrorState, LoadingState;
 import 'package:crm_app/thems/app_themes.dart' show AppColors;
+import 'package:crm_app/shareWidgets/linked_work_index.dart';
+import 'package:crm_app/utils/data_sync.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:flutter/material.dart' hide SearchBar;
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -61,19 +63,28 @@ class DealsScreen extends StatefulWidget {
   final String? initialStageFilter;
   final bool showBackButton;
 
+  /// Opens this deal's detail sheet once the list has loaded.
+  final String? selectedDealId;
+
   // Dashboard period filter
   final String filterRange;
   final int? filterMonth;
   final int? filterYear;
+
+  /// Set only when this is the bottom-nav Deals tab: enables silent
+  /// refresh when stale / changed (TabRefreshScope). Null when pushed.
+  final int? tabIndex;
 
   const DealsScreen({
     super.key,
     this.initialTab = 0,
     this.initialStageFilter,
     this.showBackButton = true,
+    this.selectedDealId,
     this.filterRange = 'all',
     this.filterMonth,
     this.filterYear,
+    this.tabIndex,
   });
   @override
   State<DealsScreen> createState() => _DealsScreenState();
@@ -101,13 +112,22 @@ Widget build(BuildContext context) => MultiBlocProvider(
         BlocProvider(create: (_) => DealsTemplateCubit(_cubit)),
         BlocProvider(create: (_) => FollowUpsTemplateCubit()),
       ],
-child: _DealsShell(
-  initialTab: widget.initialTab,
-  initialStageFilter: widget.initialStageFilter,
-  showBackButton: widget.showBackButton,
-  filterRange: widget.filterRange,
-  filterMonth: widget.filterMonth,
-  filterYear: widget.filterYear,
+// Bottom-nav tab only: silent reload when you come back after 2+ min or
+// after deals changed elsewhere (the list stays on screen meanwhile).
+child: TabRefreshScope<DealsCubit, DealsState>(
+  area: SyncArea.deals,
+  tabIndex: widget.tabIndex,
+  isLoaded: (s) => s is DealsLoaded,
+  onRefresh: _cubit.loadDeals,
+  child: _DealsShell(
+    initialTab: widget.initialTab,
+    initialStageFilter: widget.initialStageFilter,
+    showBackButton: widget.showBackButton,
+    selectedDealId: widget.selectedDealId,
+    filterRange: widget.filterRange,
+    filterMonth: widget.filterMonth,
+    filterYear: widget.filterYear,
+  ),
 ),    );
 }
 
@@ -115,6 +135,7 @@ class _DealsShell extends StatefulWidget {
   final int initialTab;
   final String? initialStageFilter;
   final bool showBackButton;
+  final String? selectedDealId;
   final String filterRange;
   final int? filterMonth;
   final int? filterYear;
@@ -122,6 +143,7 @@ const _DealsShell({
   required this.initialTab,
   this.initialStageFilter,
   this.showBackButton = true,
+  this.selectedDealId,
   this.filterRange = 'all',
   this.filterMonth,
   this.filterYear,
@@ -132,11 +154,51 @@ const _DealsShell({
 class _DealsShellState extends State<_DealsShell> {
   late String _view;
   DealsLoaded? _lastLoaded;
+  bool _autoOpened = false;
+
+  /// One-shot: opens widget.selectedDealId after the first load — from the
+  /// loaded list when it's there, otherwise fetched by id.
+  void _autoOpenSelected(DealsLoaded loaded) {
+    final id = widget.selectedDealId;
+    if (_autoOpened || id == null || id.isEmpty) return;
+    _autoOpened = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      Deal? deal;
+      for (final d in loaded.allDeals) {
+        if (d.id == id) {
+          deal = d;
+          break;
+        }
+      }
+      deal ??= await context.read<DealsCubit>().getDealById(id);
+      if (!mounted) return;
+      if (deal == null) {
+        showApiSnack(context, 'Deal not found', isError: true);
+        return;
+      }
+      openDetail(deal);
+    });
+  }
 
   static const _viewOptions = [
     ('stages', 'Deal Stages'),
     ('alldeals', 'All Deals'),
   ];
+
+  // deals_pipeline → Deal Stages, deals_all → All Deals.
+  static bool _canView(String view) => PermissionHelper.can(
+      view == 'stages' ? 'deals_pipeline' : 'deals_all');
+
+  List<(String, String)> get _allowedViews =>
+      _viewOptions.where((o) => _canView(o.$1)).toList();
+
+  static String _viewLabel(String view) =>
+      _viewOptions.firstWhere((o) => o.$1 == view).$2;
+
+  void _showRestricted(String view) => showApiSnack(
+      context, 'Admin has restricted your access to ${_viewLabel(view)}',
+      isError: true);
 DateTimeRange? _dashboardDateRange() {
   final now = DateTime.now();
 
@@ -246,12 +308,24 @@ DateTimeRange? _dashboardDateRange() {
   @override
   void initState() {
     super.initState();
-      _view = widget.initialStageFilter != null
+    LinkedWorkIndex.refresh(); // task/target icons on the cards
+    final requested = widget.initialStageFilter != null
         ? 'alldeals'
         : (widget.initialTab == 1 ? 'stages' : 'alldeals');
-      
-        
-
+    final allowed = _allowedViews;
+    _view = allowed.isEmpty || _canView(requested)
+        ? requested
+        : allowed.first.$1;
+    // Only an explicit request for a restricted view (Deal Stages, or All
+    // Deals with a stage filter) is reported; the default entry switches
+    // to the allowed view silently.
+    final explicit =
+        widget.initialStageFilter != null || widget.initialTab == 1;
+    if (explicit && allowed.isNotEmpty && _view != requested) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showRestricted(requested);
+      });
+    }
   }
 
   @override
@@ -311,7 +385,23 @@ void dispose() {
       ),
     );
       
-  Widget _buildLoaded(BuildContext ctx, DealsLoaded loaded) => AnimatedSwitcher(
+  Widget _buildLoaded(BuildContext ctx, DealsLoaded loaded) =>
+      _allowedViews.isEmpty
+          ? const Center(
+              child: Padding(
+                padding: EdgeInsets.all(32),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.lock_outline_rounded,
+                      size: 40, color: AppColors.textSecondary),
+                  SizedBox(height: 12),
+                  Text('Admin has restricted your access to Deals',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 13, color: AppColors.textSecondary)),
+                ]),
+              ),
+            )
+          : AnimatedSwitcher(
       duration: const Duration(milliseconds: 200),
       child: _view == 'stages'
           ? _StagesView(
@@ -320,7 +410,6 @@ void dispose() {
               pendingDeals: loaded.pendingDeals,
               lostDeals: loaded.lostDeals,
               initialDateRange: _dashboardDateRange(),
-              onCreateDeal: () => _openCreate(loaded.salesUsers),
               onViewDeal: (d) => openDetail(d),
               onEditDeal: (d) => _openEdit(d, loaded.salesUsers),
               onDeleteDeal: (id) => ctx.read<DealsCubit>().deleteDeal(id))
@@ -367,8 +456,12 @@ void dispose() {
                 padding: const EdgeInsets.only(right: 16),
                 child: _ViewDropdown(
                     value: _view,
-                    options: _viewOptions,
-                    onChanged: (v) => setState(() => _view = v))),
+                    options: _allowedViews,
+                    onChanged: (v) => setState(() => _view = v),
+                    // Only one view allowed: tapping explains why the
+                    // other one is missing instead of opening a 1-item menu.
+                    onRestrictedTap: () => _showRestricted(
+                        _viewOptions.firstWhere((o) => o.$1 != _view).$1))),
           ],
         ),
         body: BlocConsumer<DealsCubit, DealsState>(
@@ -383,6 +476,7 @@ void dispose() {
           builder: (ctx, state) {
             if (state is DealsLoaded ) {
   _lastLoaded = state;
+  _autoOpenSelected(state);
 
     if (!PermissionHelper.can('users_roles')) {
       
@@ -402,16 +496,25 @@ void dispose() {
         ),
               floatingActionButton: Padding(
   padding: const EdgeInsets.only(bottom: 60),
-  child: FloatingActionButton(
-    heroTag: 'dealsFab',
-    onPressed: () {
-      if (_lastLoaded != null) {
-        _openCreate(_lastLoaded!.salesUsers);
-      }
-    },
-    backgroundColor: AppColors.primary,
-    foregroundColor: Colors.white,
-    child: const Icon(Icons.add),
+  // create_deal: true → enabled, false → shown but disabled.
+  child: Opacity(
+    opacity: PermissionHelper.can('create_deal') ? 1 : 0.45,
+    child: FloatingActionButton(
+      heroTag: 'dealsFab',
+      tooltip: PermissionHelper.can('create_deal')
+          ? 'Create Deal'
+          : 'You don\'t have permission to create deals',
+      onPressed: !PermissionHelper.can('create_deal')
+          ? null
+          : () {
+              if (_lastLoaded != null) {
+                _openCreate(_lastLoaded!.salesUsers);
+              }
+            },
+      backgroundColor: AppColors.primary,
+      foregroundColor: Colors.white,
+      child: const Icon(Icons.add),
+    ),
   ),
 ),
   )
@@ -422,16 +525,44 @@ class _ViewDropdown extends StatelessWidget {
   final String value;
   final List<(String, String)> options;
   final void Function(String) onChanged;
+  final VoidCallback onRestrictedTap;
   const _ViewDropdown(
-      {required this.value, required this.options, required this.onChanged});
+      {required this.value,
+      required this.options,
+      required this.onChanged,
+      required this.onRestrictedTap});
+
+  static final _decoration = BoxDecoration(
+      color: AppColors.primaryLight,
+      borderRadius: BorderRadius.circular(10),
+      border: Border.all(color: AppColors.primary.withOpacity(0.3)));
 
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) {
+    if (options.isEmpty) return const SizedBox.shrink();
+    if (options.length == 1) {
+      // Same look as the dropdown, but the tap shows the restriction.
+      return InkWell(
+        onTap: onRestrictedTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: _decoration,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Text(options.first.$2,
+                style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.primary)),
+            const Icon(Icons.keyboard_arrow_down_rounded,
+                size: 18, color: AppColors.primary),
+          ]),
+        ),
+      );
+    }
+    return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-          color: AppColors.primaryLight,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppColors.primary.withOpacity(0.3))),
+      decoration: _decoration,
       child: DropdownButtonHideUnderline(
           child: DropdownButton<String>(
               value: value,
@@ -448,6 +579,7 @@ class _ViewDropdown extends StatelessWidget {
               onChanged: (v) {
                 if (v != null) onChanged(v);
               })));
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -456,7 +588,6 @@ class _ViewDropdown extends StatelessWidget {
 class _StagesView extends StatefulWidget {
   final List<Deal> deals, pendingDeals, lostDeals;
     final DateTimeRange? initialDateRange;
-  final VoidCallback onCreateDeal;
   final void Function(Deal) onViewDeal;
   final void Function(Deal) onEditDeal;
   final void Function(String) onDeleteDeal;
@@ -466,7 +597,6 @@ class _StagesView extends StatefulWidget {
       required this.pendingDeals,
       required this.lostDeals,
       this.initialDateRange,
-      required this.onCreateDeal,
       required this.onViewDeal,
       required this.onEditDeal,
       required this.onDeleteDeal});
@@ -522,15 +652,7 @@ IconButton(
     child: const Icon(Icons.filter_alt_outlined),
   ),
 ),
-
-const SizedBox(width: 4),
-              if (PermissionHelper.can('users_roles'))
-                ElevatedButton.icon(
-                    onPressed: widget.onCreateDeal,
-                    icon: const Icon(Icons.add, size: 16),
-                    label: const Text('Create Deal',
-                        style: TextStyle(fontSize: 13)),
-                   ),
+              // Create Deal lives on the screen's + FAB only.
             ])),
         Container(height: 1, color: AppColors.divider),
         if (widget.pendingDeals.isNotEmpty || widget.lostDeals.isNotEmpty)
@@ -551,7 +673,10 @@ const SizedBox(width: 4),
         Expanded(
   child: RefreshIndicator(
     color: AppColors.primary,
-    onRefresh: () => context.read<DealsCubit>().refresh(),
+    onRefresh: () => Future.wait([
+      context.read<DealsCubit>().refresh(),
+      LinkedWorkIndex.refresh(),
+    ]),
     child: ListView.builder(
       padding: const EdgeInsets.all(14),
 
@@ -966,11 +1091,22 @@ class _DealTile extends StatelessWidget {
                           child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                            Text(deal.name,
-                                style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w700,
-                                    color: AppColors.textPrimary)),
+                            // Name + task/target icons when linked.
+                            Row(children: [
+                              Flexible(
+                                child: Text(deal.name,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w700,
+                                        color: AppColors.textPrimary)),
+                              ),
+                              const SizedBox(width: 6),
+                              LinkedWorkBadges(
+                                  kind: LinkedWorkKind.deal,
+                                  id: deal.id,
+                                  size: 14),
+                            ]),
                             Text(deal.companyName,
                                 style: const TextStyle(
                                     fontSize: 11,
@@ -1081,9 +1217,29 @@ bool _todayFollowupsOnly = false;
 int _page = 1;
 static const int _pageSize = 10;
 
+// "Tasks" filter — deals with an open linked task / running target. All
+// deals are already loaded, so this filters (and pages) the full list.
+static const _linkedAll = 'All Linked Work';
+static const _linkedTasks = 'Active Tasks';
+static const _linkedTargets = 'Active Targets';
+String _linkedFilter = _linkedAll;
+
+/// Only the options the role can see (assigned_tasks / my_targets).
+List<String> get _linkedItems => [
+      _linkedAll,
+      if (PermissionHelper.can('assigned_tasks')) _linkedTasks,
+      if (PermissionHelper.can('my_targets')) _linkedTargets,
+    ];
+
+/// Re-filter when the task/target lookup changes while this filter is on.
+void _onLinkedWorkChanged() {
+  if (mounted && _linkedFilter != _linkedAll) setState(() {});
+}
+
 @override
 void initState() {
   super.initState();
+  LinkedWorkIndex.notifier.addListener(_onLinkedWorkChanged);
     _dateRange = widget.initialDateRange;
 
   if (widget.initialStageFilter != null) {
@@ -1092,6 +1248,8 @@ void initState() {
 }
 void _showFilterSheet() {
   final allUsers = ['All Users', ...widget.salesUsers];
+  // Sales users only see their own deals — no assignee filter.
+  final showUserFilter = context.read<DealsCubit>().canViewAll;
   final allStages = ['All Stages', ...DealConstants.stages];
   const allClientTypes = [
     'All Client Types',
@@ -1105,7 +1263,14 @@ void _showFilterSheet() {
     isScrollControlled: true,
     showDragHandle: true,
     builder: (_) {
-      return StatefulBuilder(
+      // Draggable so a swipe down anywhere on the sheet (when scrolled
+      // to the top) slides it down and closes it.
+      return DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.85,
+        minChildSize: 0.4,
+        maxChildSize: 0.95,
+        builder: (_, scrollCtrl) => StatefulBuilder(
         builder: (context, setSheetState) {
           return SafeArea(
             child: Padding(
@@ -1117,6 +1282,10 @@ void _showFilterSheet() {
                     MediaQuery.of(context).viewInsets.bottom + 20,
               ),
               child: SingleChildScrollView(
+                controller: scrollCtrl,
+                // Content may fit without scrolling — still take the
+                // drag so a swipe down moves the sheet.
+                physics: const AlwaysScrollableScrollPhysics(),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment:
@@ -1132,35 +1301,6 @@ void _showFilterSheet() {
                     ),
 
                     const SizedBox(height: 20),
-
-                    const Text(
-  "Date Range",
-  style: TextStyle(
-    fontWeight: FontWeight.w600,
-  ),
-),
-
-const SizedBox(height: 8),
-
-InkWell(
-  borderRadius: BorderRadius.circular(12),
-  onTap: () => _pickDateRange(setSheetState),
-  child: InputDecorator(
-    decoration: const InputDecoration(
-      border: OutlineInputBorder(),
-      prefixIcon: Icon(Icons.date_range_outlined),
-      suffixIcon: Icon(Icons.calendar_month),
-    ),
-    child: Text(
-      _dateRange == null
-          ? "Select Date Range"
-          : "${DateFormat('dd MMM yyyy').format(_dateRange!.start)}  -  "
-            "${DateFormat('dd MMM yyyy').format(_dateRange!.end)}",
-    ),
-  ),
-),
-
-const SizedBox(height: 20),
 
                     const Text("Stage"),
 
@@ -1183,6 +1323,7 @@ const SizedBox(height: 20),
                       },
                     ),
 
+                    if (showUserFilter) ...[
                     const SizedBox(height: 16),
 
                     const Text("Assigned User"),
@@ -1205,6 +1346,7 @@ const SizedBox(height: 20),
                         });
                       },
                     ),
+                    ],
 
                     const SizedBox(height: 16),
 
@@ -1229,7 +1371,57 @@ const SizedBox(height: 20),
                       },
                     ),
 
+                    // Tasks: deals with an open linked task / target.
+                    if (_linkedItems.length > 1) ...[
+                      const SizedBox(height: 16),
+                      const Text("Tasks"),
+                      const SizedBox(height: 6),
+                      DropdownButtonFormField<String>(
+                        value: _linkedItems.contains(_linkedFilter)
+                            ? _linkedFilter
+                            : _linkedAll,
+                        items: _linkedItems
+                            .map(
+                              (e) => DropdownMenuItem(
+                                value: e,
+                                child: Text(e),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (v) {
+                          if (v == null) return;
+                          setSheetState(() => _linkedFilter = v);
+                          // Current tasks/targets for this filter.
+                          if (v != _linkedAll) LinkedWorkIndex.refresh();
+                        },
+                      ),
+                    ],
+
                     const SizedBox(height: 16),
+
+                    const Text("Date Range"),
+
+                    const SizedBox(height: 6),
+
+                    InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => _pickDateRange(setSheetState),
+                      child: InputDecorator(
+                        decoration: const InputDecoration(
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.date_range_outlined),
+                          suffixIcon: Icon(Icons.calendar_month),
+                        ),
+                        child: Text(
+                          _dateRange == null
+                              ? "Select Date Range"
+                              : "${DateFormat('dd MMM yyyy').format(_dateRange!.start)}  -  "
+                                  "${DateFormat('dd MMM yyyy').format(_dateRange!.end)}",
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 8),
 
                     CheckboxListTile(
                       value: _todayFollowupsOnly,
@@ -1258,6 +1450,7 @@ const SizedBox(height: 20),
                                 _clientTypeFilter =
                                     'All Client Types';
                                 _todayFollowupsOnly = false;
+                                _linkedFilter = _linkedAll;
                                 _page = 1;
                               });
 
@@ -1290,6 +1483,7 @@ const SizedBox(height: 20),
             ),
           );
         },
+        ),
       );
     },
   );
@@ -1303,6 +1497,7 @@ const SizedBox(height: 20),
 
   @override
   void dispose() {
+    LinkedWorkIndex.notifier.removeListener(_onLinkedWorkChanged);
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -1320,6 +1515,12 @@ const SizedBox(height: 20),
       ? _clientTypeFilter
       : 'All Client Types';
   final today = _dateOnly(DateTime.now());
+  final linkedIds = _linkedFilter == _linkedAll
+      ? null
+      : LinkedWorkIndex.notifier.value.activeIds(
+          LinkedWorkKind.deal,
+          tasks: _linkedFilter == _linkedTasks,
+        );
   return widget.deals.where((d) {
     final phone = d.phone.replaceAll(RegExp(r'[^0-9+]'), '').toLowerCase();
     final localPhone = d.phone.replaceAll(RegExp(r'[^0-9]'), '');
@@ -1360,11 +1561,14 @@ final matchDate =
     final matchTodayFollowUps =
         !_todayFollowupsOnly || (followUpDay != null && followUpDay == today);
 
+    final matchLinked = linkedIds == null || linkedIds.contains(d.id);
+
     return matchQ &&
         matchStage &&
         matchUser &&
         matchClientType &&
         matchTodayFollowUps &&
+        matchLinked &&
         matchDate;
   }).toList();
 }
@@ -1374,6 +1578,7 @@ final matchDate =
       _userFilter != 'All Users' ||
       _clientTypeFilter != 'All Client Types' ||
       _todayFollowupsOnly ||
+      _linkedFilter != _linkedAll ||
       _q.isNotEmpty ||
       false;
 
@@ -1591,6 +1796,7 @@ Container(
                         _searchCtrl.clear();
                         _clientTypeFilter = 'All Client Types';
                         _todayFollowupsOnly = false;
+                        _linkedFilter = _linkedAll;
                         _page = 1;
                       }),
                   child: const Text('Clear filters',
@@ -1612,7 +1818,10 @@ Container(
                 ]))
               : RefreshIndicator(
                   color: AppColors.primary,
-                  onRefresh: () => context.read<DealsCubit>().refresh(),
+                  onRefresh: () => Future.wait([
+                    context.read<DealsCubit>().refresh(),
+                    LinkedWorkIndex.refresh(),
+                  ]),
                   child: ListView.builder(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 14, vertical: 4),
@@ -1697,12 +1906,20 @@ class _DealRow extends StatelessWidget {
                             child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                              Text(deal.name,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppColors.textPrimary)),
+                              // Name + task/target icons when linked.
+                              Row(children: [
+                                Flexible(
+                                  child: Text(deal.name,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppColors.textPrimary)),
+                                ),
+                                const SizedBox(width: 6),
+                                LinkedWorkBadges(
+                                    kind: LinkedWorkKind.deal, id: deal.id),
+                              ]),
                               Text(deal.companyName,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(

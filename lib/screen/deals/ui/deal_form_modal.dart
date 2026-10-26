@@ -1,6 +1,7 @@
 // ══════════════════════════════════════════════════════════════
 // DEAL FORM MODAL
 // ══════════════════════════════════════════════════════════════
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -20,6 +21,7 @@ import 'package:intl/intl.dart';
 import 'package:intl_phone_field/countries.dart' show countries;
 import 'package:intl_phone_field/intl_phone_field.dart';
 import 'package:phone_numbers_parser/phone_numbers_parser.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../modals/modals.dart' hide Attachment;
 
@@ -74,6 +76,13 @@ class DealFormModalState extends State<DealFormModal> {
   DateTime? _followUpDate;
   TimeOfDay? _followUpTime;
 
+  /// Name of the deal already using the typed phone / email
+  /// (GET /deals/check-duplicate). Warning only — never blocks saving.
+  String? _phoneDupName;
+  String? _emailDupName;
+  Timer? _dupDebounce;
+  int _dupSeq = 0;
+
   /// Server-side files already on the deal (edit only); × removes from list
   /// and is sent back as `existingAttachments`/`existingImages` on save.
   final List<Attachment> _existingAttachments = [];
@@ -96,8 +105,11 @@ class DealFormModalState extends State<DealFormModal> {
     'Business Details',
     'Location',
     'Follow-up',
-    'Management',
+    'Documents',
+    // sub-accordions inside Documents
     'Attachments',
+    'Images',
+    'Notes',
   ];
   late final Map<String, bool> _sectionExpanded;
 
@@ -121,6 +133,9 @@ int _conversionRequestId = 0;
       GlobalKey<ScaffoldMessengerState>();
 
   bool get _isEdit => widget.editDeal != null;
+
+  /// Sales users (see [DealsCubit.canViewAll]) get no Assign To field.
+  late final bool _assigneeHidden = !context.read<DealsCubit>().canViewAll;
 
   ScaffoldMessengerState? _sheetMessenger() =>
       _sheetMessengerKey.currentState ?? ScaffoldMessenger.maybeOf(context);
@@ -177,17 +192,30 @@ int _conversionRequestId = 0;
     return timePart.isEmpty ? datePart : '$datePart, $timePart';
   }
 
-  String get _managementSubtitle {
-    final assignee =
-        _assignTo ?? (widget.users.isNotEmpty ? widget.users.first : null);
-    final name = assignee != null ? userName(assignee) : 'Unassigned';
-    final hasNote = _notes.text.trim().isNotEmpty;
-    return hasNote ? '$name · 1 note' : name;
-  }
-
   String get _attachmentsSubtitle {
     final count = _attachmentSlotsUsed;
     return count == 0 ? 'None added' : '$count file${count == 1 ? '' : 's'}';
+  }
+
+  int get _imageCount => _existingImages.length + _selectedImages.length;
+
+  String get _imagesSubtitle => _imageCount == 0
+      ? 'None added'
+      : '$_imageCount image${_imageCount == 1 ? '' : 's'}';
+
+  String get _notesSubtitle {
+    final note = _notes.text.trim();
+    return note.isEmpty ? 'No notes' : note.split('\n').first;
+  }
+
+  String get _documentsSubtitle {
+    final files = _attachmentSlotsUsed;
+    final parts = [
+      if (files > 0) '$files file${files == 1 ? '' : 's'}',
+      if (_imageCount > 0) '$_imageCount image${_imageCount == 1 ? '' : 's'}',
+      if (_notes.text.trim().isNotEmpty) '1 note',
+    ];
+    return parts.isEmpty ? 'Attachments, images, notes' : parts.join(' · ');
   }
 
       String _currencyCode(String value) {
@@ -339,8 +367,80 @@ void initState() {
 
 
 
+  /// Re-checks phone + email for duplicates 1s after the user stops typing.
+  /// Values that are invalid, too short, or unchanged from the deal being
+  /// edited (it would match itself) aren't sent.
+  void _scheduleDuplicateCheck() {
+    _dupDebounce?.cancel();
+    _dupDebounce = Timer(const Duration(seconds: 1), () async {
+      final digits = RegExp(r'[^0-9]');
+      final local = _phone.text.trim().replaceAll(digits, '');
+      final dial = _countryCode.split(' ').first.replaceAll(digits, '');
+      final fullPhone = '$dial$local';
+      final email = _email.text.trim();
+
+      final orig = widget.editDeal;
+      final origPhone = (orig?.phone ?? '').replaceAll(digits, '');
+      final samePhone = origPhone.isNotEmpty &&
+          (origPhone == fullPhone ||
+              origPhone == local ||
+              _extractLocalNumber(origPhone) == local);
+      final checkPhone = local.length >= 6 &&
+          validatePhoneForCountry(
+                  local, _countryCode.split(' ').last, 'Phone Number') ==
+              null &&
+          !samePhone;
+      final checkEmail = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email) &&
+          email.toLowerCase() != (orig?.email ?? '').trim().toLowerCase();
+
+      final seq = ++_dupSeq;
+      final hits = (checkPhone || checkEmail)
+          ? await context.read<DealsCubit>().checkDuplicate(
+                phoneNumber: checkPhone ? fullPhone : null,
+                email: checkEmail ? email : null,
+              )
+          : const <String, String>{};
+      // A newer keystroke has started its own check.
+      if (!mounted || seq != _dupSeq) return;
+      setState(() {
+        _phoneDupName = hits?['phoneNumber'];
+        _emailDupName = hits?['email'];
+      });
+    });
+  }
+
+  Widget _duplicateWarning(String field, String? name) => name == null
+      ? const SizedBox.shrink()
+      : Padding(
+          padding: const EdgeInsets.only(top: 4, left: 2),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(top: 1),
+                child: Icon(Icons.warning_amber_rounded,
+                    size: 13, color: AppColors.warning),
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  name.isEmpty
+                      ? 'This $field is already used by another deal'
+                      : 'This $field is already used by "$name"',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFFB45309),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+
   @override
 void dispose() {
+  _dupDebounce?.cancel();
   _value.removeListener(_onDealValueChanged);
   for (final c in [_name, _value, _city, _pincode, _notes, _customIndustry]) {
     c.removeListener(_refreshSubtitles);
@@ -822,26 +922,14 @@ void dispose() {
   Widget _buildCustomField(CustomField field) {
     Widget fieldWidget;
 
+    const fieldStyle = TextStyle(fontSize: 14, color: AppColors.textPrimary);
     switch (field.type) {
-      case 'text':
-        fieldWidget = TextFormField(
-          initialValue: field.value,
-          decoration: InputDecoration(
-            labelText: field.name,
-            border: const OutlineInputBorder(),
-          ),
-          onChanged: (value) => field.value = value,
-        );
-        break;
-
       case 'number':
         fieldWidget = TextFormField(
           initialValue: field.value,
           keyboardType: TextInputType.number,
-          decoration: InputDecoration(
-            labelText: field.name,
-            border: const OutlineInputBorder(),
-          ),
+          style: fieldStyle,
+          decoration: _dec(field.name),
           onChanged: (value) => field.value = value,
         );
         break;
@@ -850,24 +938,24 @@ void dispose() {
       case 'select':
         fieldWidget = DropdownButtonFormField<String>(
           value: field.options.contains(field.value) ? field.value : null,
-          decoration: InputDecoration(
-            labelText: field.name,
-            border: const OutlineInputBorder(),
-          ),
+          isExpanded: true,
+          style: fieldStyle,
+          decoration: _dec('Select'),
           items: field.options
-              .map((option) =>
-                  DropdownMenuItem<String>(value: option, child: Text(option)))
+              .map((option) => DropdownMenuItem<String>(
+                  value: option,
+                  child: Text(option, overflow: TextOverflow.ellipsis)))
               .toList(),
           onChanged: (selectedValue) {
             if (selectedValue == null) return;
-            field.value = selectedValue;
-            setState(() {});
+            setState(() => field.value = selectedValue);
           },
         );
         break;
 
       case 'date':
         fieldWidget = InkWell(
+          borderRadius: BorderRadius.circular(12),
           onTap: () async {
             DateTime initialDate = DateTime.now();
             if (field.value.isNotEmpty) {
@@ -886,67 +974,127 @@ void dispose() {
             setState(() => field.value = formatted);
           },
           child: InputDecorator(
-            decoration: InputDecoration(
-              labelText: field.name,
-              border: const OutlineInputBorder(),
-              suffixIcon: const Icon(Icons.calendar_today),
+            decoration: _dec(
+              null,
+              suffix: const Icon(Icons.calendar_today_outlined,
+                  size: 18, color: AppColors.textSecondary),
             ),
-            child: Text(field.value.isEmpty ? 'Select date' : field.value),
+            child: Text(
+              field.value.isEmpty ? 'Select date' : field.value,
+              style: TextStyle(
+                fontSize: 14,
+                color: field.value.isEmpty
+                    ? AppColors.textHint
+                    : AppColors.textPrimary,
+              ),
+            ),
           ),
         );
         break;
 
+      case 'text':
       default:
         fieldWidget = TextFormField(
           initialValue: field.value,
-          decoration: InputDecoration(
-            labelText: field.name,
-            border: const OutlineInputBorder(),
-          ),
+          style: fieldStyle,
+          decoration: _dec(field.name),
           onChanged: (value) => field.value = value,
         );
     }
 
     return Padding(
       padding: const EdgeInsets.only(top: 14),
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(child: fieldWidget),
-          const SizedBox(width: 4),
-          IconButton(
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            icon: const Icon(Icons.close, size: 20, color: Colors.red),
-            onPressed: () async {
-              if (field.id.isNotEmpty) {
-                final confirmed = await showDialog<bool>(
-                  context: context,
-                  builder: (dialogContext) {
-                    return AlertDialog(
-                      title: const Text('Remove custom field?'),
-                      content: Text('Remove "${field.name}" from this deal?'),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(dialogContext, false),
-                          child: const Text('Cancel'),
-                        ),
-                        ElevatedButton(
-                          onPressed: () => Navigator.pop(dialogContext, true),
-                          child: const Text('Remove'),
-                        ),
-                      ],
-                    );
-                  },
-                );
-                if (confirmed != true || !mounted) return;
-              }
-              setState(() => _customFields.remove(field));
-            },
+          // Label + "Custom" tag
+          Row(children: [
+            Flexible(
+              child: Text(
+                field.name,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppColors.primaryLight,
+                borderRadius: BorderRadius.circular(99),
+              ),
+              child: const Text(
+                'Custom',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.primary,
+                ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 6),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: fieldWidget),
+              const SizedBox(width: 10),
+              // Square trash button, same height as the field
+              SizedBox(
+                width: 48,
+                height: 48,
+                child: OutlinedButton(
+                  onPressed: () => _removeCustomField(field),
+                  style: OutlinedButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    backgroundColor: AppColors.surface,
+                    side: const BorderSide(color: AppColors.border),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Icon(
+                    Icons.delete_outline,
+                    size: 20,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
     );
+  }
+
+  /// Saved fields (with an id) ask first; a field added in this session
+  /// is just dropped.
+  Future<void> _removeCustomField(CustomField field) async {
+    if (field.id.isNotEmpty) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Remove custom field?'),
+          content: Text('Remove "${field.name}" from this deal?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Remove'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+    }
+    setState(() => _customFields.remove(field));
   }
 
   // ── SAVE ─────────────────────────────────────────────────────
@@ -965,10 +1113,6 @@ void dispose() {
       _snack(phoneErr);
       return;
     }
-    if (_email.text.trim().isEmpty) {
-      _snack('Email is required');
-      return;
-    }
     if (_company.text.trim().isEmpty) {
       _snack('Company Name is required');
       return;
@@ -977,11 +1121,20 @@ void dispose() {
     setState(() => _saving = true);
     final cubit = context.read<DealsCubit>();
 
-    final selectedUser =
-        _assignTo ?? (widget.users.isNotEmpty ? widget.users.first : null);
-    final assignToId = (selectedUser != null && selectedUser.isNotEmpty)
-        ? userId(selectedUser)
-        : null;
+    final String? assignToId;
+    if (_assigneeHidden) {
+      // Sales user: a new deal is theirs; an edit keeps the current owner
+      // (assignTo is left out of the payload).
+      final prefs = await SharedPreferences.getInstance();
+      final me = prefs.getString('user_id')?.trim() ?? '';
+      assignToId = (!_isEdit && me.isNotEmpty) ? me : null;
+    } else {
+      final selectedUser =
+          _assignTo ?? (widget.users.isNotEmpty ? widget.users.first : null);
+      assignToId = (selectedUser != null && selectedUser.isNotEmpty)
+          ? userId(selectedUser)
+          : null;
+    }
 
     final followUpDateTime = _followUpDate == null
         ? null
@@ -992,6 +1145,9 @@ void dispose() {
             (_followUpTime ?? const TimeOfDay(hour: 9, minute: 0)).hour,
             (_followUpTime ?? const TimeOfDay(hour: 9, minute: 0)).minute,
           );
+
+    final dealValue =
+        (double.tryParse(_value.text.replaceAll(',', '')) ?? 0).toString();
 
     final payload = <String, dynamic>{
       'dealName': _name.text.trim(),
@@ -1016,8 +1172,8 @@ void dispose() {
       'notes': _notes.text.trim(),
       'currency': _currency.split(' ').last, // "₹ INR" → "INR"
       'countryCode': _countryCode,
-      'dealValue':
-          (double.tryParse(_value.text.replaceAll(',', '')) ?? 0).toString(),      if (assignToId != null) 'assignTo': assignToId,
+      'dealValue': dealValue,
+      if (assignToId != null) 'assignTo': assignToId,
       if (followUpDateTime != null)
         'followUpDate': followUpDateTime.toUtc().toIso8601String(),
       'followUpComment': _followUpComment.text.trim(),
@@ -1092,7 +1248,7 @@ void dispose() {
   Widget build(BuildContext context) => ScaffoldMessenger(
         key: _sheetMessengerKey,
         child: Scaffold(
-          backgroundColor: AppColors.background,
+          backgroundColor: Colors.transparent,
           body: DraggableScrollableSheet(
               initialChildSize: 0.96,
               maxChildSize: 0.98,
@@ -1201,130 +1357,49 @@ void dispose() {
                               const FieldLabel('Deal Value', required: true),
                               const SizedBox(height: 6),
                               Row(
-  crossAxisAlignment: CrossAxisAlignment.start,
-  children: [
-    CompactDrop(
-      value: _currency,
-      items: DealConstants.currencies,
-      width: 110,
-      onChanged: (v) async {
-        setState(() {
-          _currency = v;
-          _convertedValue = null;
-        });
-
-        await _loadConversionRate();
-      },
-    ),
-
-    const SizedBox(width: 10),
-
-    Expanded(
-      child: _tf(
-        _value,
-        '0.00',
-        type: TextInputType.number,
-      ),
-    ),
-  ],
-),
-
-if (_loadingConversionRate) ...[
-  const SizedBox(height: 6),
-
-  const Align(
-    alignment: Alignment.centerLeft,
-    child: Text(
-      'Loading exchange rate...',
-      style: TextStyle(
-        fontSize: 11,
-        color: AppColors.textSecondary,
-      ),
-    ),
-  ),
-],
-
-if (_convertedValue != null &&
-    _exchangeRate != null) ...[
-  const SizedBox(height: 6),
-
-  Align(
-    alignment: Alignment.centerLeft,
-    child: Text(
-      '≈ ${_formatConvertedValue(
-        _convertedValue!,
-        _tenantCurrency,
-      )}',
-      style: const TextStyle(
-        fontSize: 12,
-        fontWeight: FontWeight.w600,
-        color: AppColors.textSecondary,
-      ),
-    ),
-  ),
-],                              const SizedBox(height: 16),
-
-                              const FieldLabel('Phone Number', required: true),
-                              const SizedBox(height: 6),
-                              Row(children: [
-                                Expanded(
-                                  child: IntlPhoneField(
-                                    inputFormatters: [
-                                      FilteringTextInputFormatter.digitsOnly,
-                                    ],
-                                    controller: _phone,
-                                    initialCountryCode: _getInitialCountryCode(
-                                        widget.editDeal?.phone ?? ''),
-                                    decoration: const InputDecoration(
-                                      hintText: '9876543210',
-                                      border: OutlineInputBorder(),
-                                    ),
-                                    onChanged: (phone) {
-                                      _phone.text = phone.number;
-                                      _countryCode =
-                                          '${phone.countryCode} ${phone.countryISOCode}';
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  CompactDrop(
+                                    value: _currency,
+                                    items: DealConstants.currencies,
+                                    width: 110,
+                                    onChanged: (v) async {
+                                      setState(() {
+                                        _currency = v;
+                                        _convertedValue = null;
+                                      });
+                                      await _loadConversionRate();
                                     },
                                   ),
-                                ),
-                              ]),
-                              const SizedBox(height: 16),
-
-                              const FieldLabel('Alternative Number'),
-                              const SizedBox(height: 6),
-                              Row(children: [
-                                Expanded(
-                                  child: IntlPhoneField(
-                                    inputFormatters: [
-                                      FilteringTextInputFormatter.digitsOnly,
-                                    ],
-                                    controller: _altPhone,
-                                    initialCountryCode: _getInitialCountryCode(
-                                        widget.editDeal?.alternativeNumber ??
-                                            ''),
-                                    decoration: const InputDecoration(
-                                      hintText: '9876543210',
-                                      border: OutlineInputBorder(),
-                                    ),
-                                    onChanged: (phone) {
-                                      _altPhone.text = phone.number;
-                                      _altCountryCode =
-                                          '${phone.countryCode} ${phone.countryISOCode}';
-                                    },
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: _tf(_value, '0.00',
+                                        type: TextInputType.number),
+                                  ),
+                                ],
+                              ),
+                              if (_loadingConversionRate) ...[
+                                const SizedBox(height: 6),
+                                const Text(
+                                  'Loading exchange rate...',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: AppColors.textSecondary,
                                   ),
                                 ),
-                              ]),
-                              const SizedBox(height: 16),
-
-                              const FieldLabel('Email', required: true),
-                              const SizedBox(height: 6),
-                              _tf(_email, 'deal@company.com',
-                                  type: TextInputType.emailAddress),
-                              const SizedBox(height: 16),
-
-                              const FieldLabel('Alternative Email'),
-                              const SizedBox(height: 6),
-                              _tf(_altEmail, 'alt@example.com',
-                                  type: TextInputType.emailAddress),
+                              ],
+                              if (_convertedValue != null &&
+                                  _exchangeRate != null) ...[
+                                const SizedBox(height: 6),
+                                Text(
+                                  '≈ ${_formatConvertedValue(_convertedValue!, _tenantCurrency)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.textSecondary,
+                                  ),
+                                ),
+                              ],
                               const SizedBox(height: 16),
 
                               const FieldLabel('Stage'),
@@ -1336,15 +1411,110 @@ if (_convertedValue != null &&
                                   onChanged: (v) => setState(() => _stage = v)),
                               const SizedBox(height: 16),
 
+                              const FieldLabel('Phone Number', required: true),
+                              const SizedBox(height: 6),
+                              IntlPhoneField(
+                                controller: _phone,
+                                initialCountryCode: _getInitialCountryCode(
+                                    widget.editDeal?.phone ?? ''),
+                                // Length is checked on save; no counter.
+                                disableLengthCheck: true,
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.digitsOnly,
+                                ],
+                                style: const TextStyle(
+                                    fontSize: 14,
+                                    color: AppColors.textPrimary),
+                                decoration: _dec('9876543210'),
+                                onChanged: (phone) {
+                                  _phone.text = phone.number;
+                                  _countryCode =
+                                      '${phone.countryCode} ${phone.countryISOCode}';
+                                  _scheduleDuplicateCheck();
+                                },
+                              ),
+                              _duplicateWarning('phone number', _phoneDupName),
+                              const SizedBox(height: 16),
+
+                              const FieldLabel('Alternative Number'),
+                              const SizedBox(height: 6),
+                              IntlPhoneField(
+                                controller: _altPhone,
+                                initialCountryCode: _getInitialCountryCode(
+                                    widget.editDeal?.alternativeNumber ?? ''),
+                                disableLengthCheck: true,
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.digitsOnly,
+                                ],
+                                style: const TextStyle(
+                                    fontSize: 14,
+                                    color: AppColors.textPrimary),
+                                decoration: _dec('9876543210'),
+                                onChanged: (phone) {
+                                  _altPhone.text = phone.number;
+                                  _altCountryCode =
+                                      '${phone.countryCode} ${phone.countryISOCode}';
+                                },
+                              ),
+                              const SizedBox(height: 16),
+
+                              const FieldLabel('Email'),
+                              const SizedBox(height: 6),
+                              _tf(_email, 'deal@company.com',
+                                  type: TextInputType.emailAddress,
+                                  onChanged: (_) => _scheduleDuplicateCheck()),
+                              _duplicateWarning('email', _emailDupName),
+                              const SizedBox(height: 16),
+
+                              const FieldLabel('Alternative Email'),
+                              const SizedBox(height: 6),
+                              _tf(_altEmail, 'alt@example.com',
+                                  type: TextInputType.emailAddress),
+                              const SizedBox(height: 16),
+
                               const FieldLabel('Company Name', required: true),
                               const SizedBox(height: 6),
                               _tf(_company, 'Organisation name'),
+                              // Sales users can't reassign — no field.
+                              if (!_assigneeHidden) ...[
                               const SizedBox(height: 16),
+
+                              const FieldLabel('Assign To'),
+                              const SizedBox(height: 6),
+                              widget.users.isEmpty
+                                  ? Container(
+                                      height: 48,
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 14),
+                                      decoration: BoxDecoration(
+                                          color: AppColors.surface,
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                          border: Border.all(
+                                              color: AppColors.border)),
+                                      alignment: Alignment.centerLeft,
+                                      child: const Text('No users available',
+                                          style: TextStyle(
+                                              fontSize: 14,
+                                              color: AppColors.textHint)))
+                                  : FullDrop(
+                                      value: _assignTo ?? widget.users.first,
+                                      items: widget.users,
+                                      icon: Icons.person_outline,
+                                      labelBuilder: userName,
+                                      onChanged: (v) =>
+                                          setState(() => _assignTo = v)),
+                              ],
+                              // 'Management' custom fields from before the
+                              // section was removed still render here.
                               ..._customFields
-                                  .where((f) => f.cardTitle == 'Deal Information')
+                                  .where((f) =>
+                                      f.cardTitle == 'Deal Information' ||
+                                      f.cardTitle == 'Management')
                                   .map(_buildCustomField),
                               _addFieldButton('Deal Information'),
                               ], // Deal Information
+                              const SizedBox(height: 24),
 
                               _collapsibleHeader(
                                   title: 'Business Details',
@@ -1385,7 +1555,6 @@ if (_convertedValue != null &&
                                   icon: Icons.corporate_fare_outlined,
                                   onChanged: (v) =>
                                       setState(() => _clientType = v)),
-                              const SizedBox(height: 16),
                               ..._customFields
                                   .where((f) => f.cardTitle == 'Business Details')
                                   .map(_buildCustomField),
@@ -1394,38 +1563,26 @@ if (_convertedValue != null &&
                               const SizedBox(height: 24),
 
                               // ── § Location ─────────────────────────────────────
+                              // Matches the Leads form: current-location icon in the
+                              // header, every field full width.
                               _collapsibleHeader(
                                   title: 'Location',
                                   icon: Icons.location_on_outlined,
-                                  subtitle: _locationSubtitle),
+                                  subtitle: _locationSubtitle,
+                                  trailing: IconButton(
+                                    tooltip: 'Get current location',
+                                    icon: const Icon(Icons.my_location,
+                                        size: 20, color: AppColors.primary),
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: () {
+                                      if (!_sectionExpanded['Location']!) {
+                                        _toggleSection('Location');
+                                      }
+                                      _fetchCurrentLocation();
+                                    },
+                                  )),
                               if (_sectionExpanded['Location']!) ...[
                               const SizedBox(height: 14),
-
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: OutlinedButton.icon(
-                                  onPressed: _fetchCurrentLocation,
-                                  style: OutlinedButton.styleFrom(
-                                    foregroundColor: AppColors.primary,
-                                    side: const BorderSide(
-                                        color: AppColors.primary),
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 10, vertical: 8),
-                                    minimumSize: Size.zero,
-                                    tapTargetSize:
-                                        MaterialTapTargetSize.shrinkWrap,
-                                    visualDensity: VisualDensity.compact,
-                                  ),
-                                  icon: const Icon(Icons.my_location, size: 20),
-                                  label: const Text(
-                                    'Use Current Location',
-                                    style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 16),
 
                               const FieldLabel('Address'),
                               const SizedBox(height: 6),
@@ -1433,163 +1590,44 @@ if (_convertedValue != null &&
                                   maxLines: 2),
                               const SizedBox(height: 16),
 
-                              Row(children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const FieldLabel('City'),
-                                      const SizedBox(height: 6),
-                                      _tf(_city, 'Enter City'),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const FieldLabel('State'),
-                                      const SizedBox(height: 6),
-                                      _tf(_stateCtrl, 'Enter State'),
-                                    ],
-                                  ),
-                                ),
-                              ]),
+                              const FieldLabel('City'),
+                              const SizedBox(height: 6),
+                              _tf(_city, 'Enter City'),
                               const SizedBox(height: 16),
 
-                              Row(children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const FieldLabel('Pincode'),
-                                      const SizedBox(height: 6),
-                                      _tf(_pincode, 'Enter Pincode'),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const FieldLabel('Country'),
-                                      const SizedBox(height: 6),
-                                      FullDrop(
-                                          value: _country,
-                                          items: AppConstants.countries,
-                                          icon: Icons.public_outlined,
-                                          onChanged: (v) =>
-                                              setState(() => _country = v)),
-                                    ],
-                                  ),
-                                ),
-                              ]),
+                              const FieldLabel('State'),
+                              const SizedBox(height: 6),
+                              _tf(_stateCtrl, 'Enter State'),
                               const SizedBox(height: 16),
 
-                              Row(children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const FieldLabel('Latitude'),
-                                      const SizedBox(height: 6),
-                                      _tf(_latitude,
-                                          'Auto-filled via current location, or enter manually',
-                                          type: const TextInputType
-                                              .numberWithOptions(
-                                              decimal: true, signed: true)),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const FieldLabel('Longitude'),
-                                      const SizedBox(height: 6),
-                                      _tf(_longitude,
-                                          'Auto-filled via current location, or enter manually',
-                                          type: const TextInputType
-                                              .numberWithOptions(
-                                              decimal: true, signed: true)),
-                                    ],
-                                  ),
-                                ),
-                              ]),
+                              const FieldLabel('Pincode'),
+                              const SizedBox(height: 6),
+                              _tf(_pincode, 'Enter Pincode'),
                               const SizedBox(height: 16),
 
-                              Row(
-                                children: [
-                                  const Text(
-                                    'Images',
-                                    style: TextStyle(
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w600,
-                                        color: AppColors.textSecondary),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  IconButton(
-                                    onPressed: (_existingImages.length +
-                                                _selectedImages.length) <
-                                            5
-                                        ? _pickDealImage
-                                        : null,
-                                    icon: const Icon(
-                                        Icons.add_a_photo_outlined,
-                                        size: 20),
-                                    style: IconButton.styleFrom(
-                                      backgroundColor: AppColors.primaryLight,
-                                      foregroundColor: AppColors.primary,
-                                      padding: const EdgeInsets.all(6),
-                                      minimumSize: Size.zero,
-                                      tapTargetSize:
-                                          MaterialTapTargetSize.shrinkWrap,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 10),
-                              if (_existingImages.isNotEmpty ||
-                                  _selectedImages.isNotEmpty)
-                                Wrap(
-                                  spacing: 10,
-                                  runSpacing: 10,
-                                  children: [
-                                    ..._existingImages.map((img) => _ImageThumb(
-                                        imageProvider:
-                                            NetworkImage(_imageUrl(img.path)),
-                                        onView: () =>
-                                            _showImagePreview(NetworkImage(
-                                                _imageUrl(img.path))),
-                                        onRemove: () =>
-                                            _removeExistingImage(img))),
-                                    ..._selectedImages.asMap().entries.map(
-                                        (e) => _ImageThumb(
-                                            imageProvider:
-                                                FileImage(File(e.value.path)),
-                                            onView: () => _showImagePreview(
-                                                FileImage(
-                                                    File(e.value.path))),
-                                            onRemove: () =>
-                                                _removeSelectedImage(e.key))),
-                                  ],
-                                )
-                              else
-                                const Text(
-                                  'No images uploaded',
-                                  style: TextStyle(
-                                      fontSize: 12,
-                                      color: AppColors.textSecondary),
-                                ),
+                              const FieldLabel('Country'),
+                              const SizedBox(height: 6),
+                              FullDrop(
+                                  value: _country,
+                                  items: AppConstants.countries,
+                                  icon: Icons.public_outlined,
+                                  onChanged: (v) => setState(() => _country = v)),
+                              const SizedBox(height: 16),
+
+                              const FieldLabel('Latitude'),
+                              const SizedBox(height: 6),
+                              _tf(_latitude,
+                                  'Auto-filled via current location, or enter manually',
+                                  type: const TextInputType.numberWithOptions(
+                                      decimal: true, signed: true)),
+                              const SizedBox(height: 16),
+
+                              const FieldLabel('Longitude'),
+                              const SizedBox(height: 6),
+                              _tf(_longitude,
+                                  'Auto-filled via current location, or enter manually',
+                                  type: const TextInputType.numberWithOptions(
+                                      decimal: true, signed: true)),
                               ], // Location
                               const SizedBox(height: 24),
 
@@ -1673,61 +1711,18 @@ if (_convertedValue != null &&
                               ], // Follow-up
                               const SizedBox(height: 24),
 
-                              // ── § 3 Management ────────────────────────────────
+                              // ── § 3 Documents ─────────────────────────────────
+                              // Attachments, Images and Notes as sub-accordions.
                               _collapsibleHeader(
-                                  title: 'Management',
-                                  icon: Icons.tune_outlined,
-                                  subtitle: _managementSubtitle),
-                              if (_sectionExpanded['Management']!) ...[
-                              const SizedBox(height: 14),
-
-                              const FieldLabel('Assign To'),
-                              const SizedBox(height: 6),
-                              widget.users.isEmpty
-                                  ? Container(
-                                      height: 48,
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 14),
-                                      decoration: BoxDecoration(
-                                          color: AppColors.surface,
-                                          borderRadius:
-                                              BorderRadius.circular(12),
-                                          border: Border.all(
-                                              color: AppColors.border)),
-                                      alignment: Alignment.centerLeft,
-                                      child: const Text('No users available',
-                                          style: TextStyle(
-                                              fontSize: 14,
-                                              color: AppColors.textHint)))
-                                  : FullDrop(
-                                      value: _assignTo ?? widget.users.first,
-                                      items: widget.users,
-                                      icon: Icons.person_outline,
-                                      labelBuilder: userName,
-                                      onChanged: (v) =>
-                                          setState(() => _assignTo = v)),
-                              const SizedBox(height: 16),
-
-                              const FieldLabel('Notes'),
-                              const SizedBox(height: 6),
-                              _tf(_notes, 'Any additional context…',
-                                  maxLines: 4),
-                              const SizedBox(height: 16),
-                              ..._customFields
-                                  .where((f) => f.cardTitle == 'Management')
-                                  .map(_buildCustomField),
-                              _addFieldButton('Management'),
-                              ], // Management
-                              const SizedBox(height: 24),
-
-                              // ── § 4 Attachments ───────────────────────────────
-                              _collapsibleHeader(
+                                  title: 'Documents',
+                                  icon: Icons.folder_outlined,
+                                  subtitle: _documentsSubtitle),
+                              if (_sectionExpanded['Documents']!) ...[
+                              _subAccordion(
                                   title: 'Attachments',
                                   icon: Icons.attach_file_rounded,
-                                  subtitle: _attachmentsSubtitle),
-                              if (_sectionExpanded['Attachments']!) ...[
-                              const SizedBox(height: 14),
-
+                                  subtitle: _attachmentsSubtitle,
+                                  children: [
                               GestureDetector(
                                   onTap: _attachmentSlotsUsed < 5
                                       ? _pickFiles
@@ -1935,7 +1930,92 @@ if (_convertedValue != null &&
                                                           AppColors.danger))),
                                         ]))),
                               ],
-                              ], // Attachments
+                                  ]), // Attachments
+
+                              _subAccordion(
+                                  title: 'Images',
+                                  icon: Icons.image_outlined,
+                                  subtitle: _imagesSubtitle,
+                                  children: [
+                                Row(
+                                  children: [
+                                    const Expanded(
+                                      child: Text(
+                                        'Up to 5 images',
+                                        style: TextStyle(
+                                            fontSize: 11,
+                                            color: AppColors.textHint),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      onPressed: (_existingImages.length +
+                                                  _selectedImages.length) <
+                                              5
+                                          ? _pickDealImage
+                                          : null,
+                                      icon: const Icon(
+                                          Icons.add_a_photo_outlined,
+                                          size: 20),
+                                      style: IconButton.styleFrom(
+                                        backgroundColor: AppColors.primaryLight,
+                                        foregroundColor: AppColors.primary,
+                                        padding: const EdgeInsets.all(6),
+                                        minimumSize: Size.zero,
+                                        tapTargetSize:
+                                            MaterialTapTargetSize.shrinkWrap,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+                                if (_existingImages.isNotEmpty ||
+                                    _selectedImages.isNotEmpty)
+                                  Wrap(
+                                    spacing: 10,
+                                    runSpacing: 10,
+                                    children: [
+                                      ..._existingImages.map((img) =>
+                                          _ImageThumb(
+                                              imageProvider: NetworkImage(
+                                                  _imageUrl(img.path)),
+                                              onView: () => _showImagePreview(
+                                                  NetworkImage(
+                                                      _imageUrl(img.path))),
+                                              onRemove: () =>
+                                                  _removeExistingImage(img))),
+                                      ..._selectedImages.asMap().entries.map(
+                                          (e) => _ImageThumb(
+                                              imageProvider:
+                                                  FileImage(File(e.value.path)),
+                                              onView: () => _showImagePreview(
+                                                  FileImage(
+                                                      File(e.value.path))),
+                                              onRemove: () =>
+                                                  _removeSelectedImage(e.key))),
+                                    ],
+                                  )
+                                else
+                                  const Text(
+                                    'No images uploaded',
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: AppColors.textSecondary),
+                                  ),
+                              ]), // Images
+
+                              _subAccordion(
+                                  title: 'Notes',
+                                  icon: Icons.sticky_note_2_outlined,
+                                  subtitle: _notesSubtitle,
+                                  children: [
+                                _tf(_notes, 'Any additional context…',
+                                    maxLines: 4),
+                              ]), // Notes
+                              ..._customFields
+                                  .where((f) => f.cardTitle == 'Documents')
+                                  .map(_buildCustomField),
+                              _addFieldButton('Documents'),
+                              ], // Documents
                               const SizedBox(height: 24),
 
                               const SizedBox(height: 28),
@@ -2034,23 +2114,27 @@ if (_convertedValue != null &&
   }
 }
 
+  /// Compact outlined "+ Add custom field" pill for one section.
   Widget _addFieldButton(String cardTitle) => Padding(
-        padding: const EdgeInsets.only(top: 16),
-        child: SizedBox(
-          width: double.infinity,
+        // Bottom gap keeps the pill clear of the next section header.
+        padding: const EdgeInsets.only(top: 14, bottom: 12),
+        child: Align(
+          alignment: Alignment.centerLeft,
           child: OutlinedButton.icon(
             onPressed: () => _openCreateCustomField(cardTitle),
+            icon: const Icon(Icons.add_rounded, size: 18),
+            label: const Text('Add custom field'),
             style: OutlinedButton.styleFrom(
               foregroundColor: AppColors.primary,
-              side: BorderSide(color: AppColors.primary.withOpacity(0.4)),
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-            ),
-            icon: const Icon(Icons.add_circle_outline, size: 18),
-            label: const Text(
-              'Add Field',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              side: BorderSide(color: AppColors.primary.withOpacity(0.5)),
+              shape: const StadiumBorder(),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              textStyle: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
         ),
@@ -2060,6 +2144,7 @@ if (_convertedValue != null &&
     required String title,
     required IconData icon,
     String? subtitle,
+    Widget? trailing,
   }) {
     final expanded = _sectionExpanded[title] ?? false;
     return Padding(
@@ -2106,6 +2191,7 @@ if (_convertedValue != null &&
                 ],
               ),
             ),
+            if (trailing != null) trailing,
             const SizedBox(width: 8),
             Icon(
               expanded
@@ -2116,6 +2202,85 @@ if (_convertedValue != null &&
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// Bordered, nested accordion used inside a main section (Documents).
+  /// Shares [_sectionExpanded] with the top-level headers.
+  Widget _subAccordion({
+    required String title,
+    required IconData icon,
+    required String subtitle,
+    required List<Widget> children,
+  }) {
+    final expanded = _sectionExpanded[title] ?? false;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () => _toggleSection(title),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  Icon(icon, size: 16, color: AppColors.primary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          title,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    expanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    size: 20,
+                    color: AppColors.textSecondary,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 2, 12, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: children,
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -2145,29 +2310,38 @@ if (_convertedValue != null &&
                             active ? AppColors.primary : AppColors.textHint))),
           ]));
 
+  /// Shared input look (text fields, phone fields, custom fields).
+  InputDecoration _dec(String? hint, {int maxLines = 1, Widget? suffix}) =>
+      InputDecoration(
+          hintText: hint,
+          hintStyle: const TextStyle(fontSize: 14, color: AppColors.textHint),
+          suffixIcon: suffix,
+          contentPadding: EdgeInsets.symmetric(
+              horizontal: 14, vertical: maxLines > 1 ? 14 : 13),
+          filled: true,
+          fillColor: AppColors.surface,
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: AppColors.border)),
+          enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: AppColors.border)),
+          focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide:
+                  const BorderSide(color: AppColors.primary, width: 1.5)));
+
   Widget _tf(TextEditingController c, String hint,
-          {TextInputType type = TextInputType.text, int maxLines = 1}) =>
+          {TextInputType type = TextInputType.text,
+          int maxLines = 1,
+          ValueChanged<String>? onChanged}) =>
       TextField(
           controller: c,
           keyboardType: type,
           maxLines: maxLines,
+          onChanged: onChanged,
           style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
-          decoration: InputDecoration(
-              hintText: hint,
-              contentPadding: EdgeInsets.symmetric(
-                  horizontal: 14, vertical: maxLines > 1 ? 14 : 13),
-              filled: true,
-              fillColor: AppColors.surface,
-              border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: AppColors.border)),
-              enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: AppColors.border)),
-              focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide:
-                      const BorderSide(color: AppColors.primary, width: 1.5))));
+          decoration: _dec(hint, maxLines: maxLines));
 
   String _imageUrl(String path) {
     if (path.startsWith('http://') || path.startsWith('https://')) {

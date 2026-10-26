@@ -1,35 +1,28 @@
 import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:crm_app/screen/dashboard/cubit/notification_cubit.dart';
 import 'package:crm_app/screen/dashboard/ui/dashboard_screen.dart'
-    show DashboardScreen;
+    show DashboardScreen, dashboardDrawerOpen;
 import 'package:crm_app/screen/deals/ui/deal_screen.dart' show DealsScreen;
-import 'package:crm_app/screen/document/deal/cubit/deal_doc_cubit.dart'
-    show DealDocCubit;
-import 'package:crm_app/screen/document/deal/ui/deal_doc_ui.dart'
-    show DealDocumentScreen;
-import 'package:crm_app/screen/document/lead/cubit/leads_document_cubit.dart'
-    show LeadsCubit;
-import 'package:crm_app/screen/document/lead/ui/lead_document_ui.dart'
-    show LeadsDoc;
 import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
 import 'package:crm_app/screen/leads/ui/lead_screen.dart' show LeadsScreen, LeadDetailSheet;
 import 'package:crm_app/screen/login/ui/login_screen.dart' show LoginScreen;
-import 'package:crm_app/screen/meeting/UI/meeting.dart' show MeetingsScreen;
+import 'package:crm_app/screen/message/cubit/chat_cubit.dart'
+    show refreshChatUnreadTotal;
+import 'package:crm_app/screen/notification/cubit/notification_cubit.dart';
+import 'package:crm_app/screen/notification/cubit/notification_state.dart' show NotificationLoaded, NotificationState;
+import 'package:crm_app/screen/notification/ui/notifiication.dart';
 import 'package:crm_app/screen/profile/ui/profile_screen.dart'
     show ProfileScreen;
-import 'package:crm_app/screen/invoice/ui/invoice_screen.dart';
-import 'package:crm_app/screen/LeaderBoard/ui/leader_board.dart';
 import 'package:crm_app/screen/splash_screen/splash_screen.dart';
 import 'package:crm_app/shareWidgets/crm_drawer.dart';
 import 'package:crm_app/shareWidgets/crm_header.dart';
 import 'package:crm_app/shareWidgets/missed_followup.dart';
 import 'package:crm_app/shareWidgets/notifcation_service.dart';
 import 'package:crm_app/thems/app_themes.dart' show AppColors, AppTheme;
+import 'package:crm_app/utils/data_sync.dart';
 import 'package:crm_app/utils/missed_followup_timer.dart';
 import 'package:crm_app/utils/permission_helper.dart';
-import 'package:dio/dio.dart' show Dio;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -44,19 +37,32 @@ void main() async {
     statusBarIconBrightness: Brightness.dark,
   ));
 
+  // Only the login check must finish before the first frame (it picks
+  // Home vs Login).
   final prefs = await SharedPreferences.getInstance();
   final token = prefs.getString('token');
   final isLoggedIn = token != null && token.isNotEmpty;
-  await NotificationService.initialize();
 
-  await PermissionHelper.load();
+  // Not needed to draw the splash — runs while the video plays; the splash
+  // waits for it before opening Home / Login.
+  final startup = Future.wait([
+    NotificationService.initialize(),
+    PermissionHelper.load(),
+  ]).catchError((Object e) {
+    debugPrint('Startup init error: $e');
+    return <void>[];
+  });
 
-  runApp(CRMApp(isLoggedIn: isLoggedIn));
+  runApp(CRMApp(isLoggedIn: isLoggedIn, startup: startup));
 }
 
 class CRMApp extends StatelessWidget {
   final bool isLoggedIn;
-  const CRMApp({super.key, required this.isLoggedIn});
+
+  /// Startup work still running when the app is first drawn.
+  final Future<void>? startup;
+
+  const CRMApp({super.key, required this.isLoggedIn, this.startup});
 
   @override
   Widget build(BuildContext context) {
@@ -67,6 +73,7 @@ class CRMApp extends StatelessWidget {
   debugShowCheckedModeBanner: false,
 
   home: SplashScreen(
+    ready: startup,
     nextScreen: isLoggedIn
         ? const MainShell()
         : const LoginScreen(),
@@ -90,7 +97,7 @@ class MainShell extends StatefulWidget {
 }
 
 class _MainShellState extends State<MainShell>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
       
 
       // in _MainShellState
@@ -122,6 +129,9 @@ Future<void> _openLeadFromNotification(String leadId) async {
   debugPrint('PENDING AFTER FRAME: $_pendingSelectedLeadId');
 }
   int _idx = 0;
+
+  /// Bottom-nav tabs opened so far (Dashboard is the landing tab).
+  final Set<int> _visitedTabs = {0};
   late final Connectivity _connectivity;
   AnimationController? _ctrl;
   Animation<double>? _anim;
@@ -134,52 +144,60 @@ Future<void> _openLeadFromNotification(String leadId) async {
     'global_missed_followup_last_shown';
   bool _isOpen = false;
   bool _isOffline = false;
-  String _authToken = '';
   String _userName = 'User';
   String? _profileImage;
+  /// Runs every [MissedFollowupTimer.tickInterval] and on app resume.
+  /// Calls the API at most once per [MissedFollowupTimer.interval]: the
+  /// saved time is the last successful check, shown or not (the key
+  /// keeps its old name — logout clears it by that name).
   Future<void> _checkMissedFollowups() async {
-  if (!mounted) return;
+  final reminder = MissedFollowupTimer.instance;
+  if (!mounted || reminder.checking || reminder.popupOpen) return;
+
+  reminder.checking = true;
 
   try {
     final prefs = await SharedPreferences.getInstance();
 
-    final lastShownMillis =
+    final lastCheckedMillis =
         prefs.getInt(_missedFollowupLastShownKey);
 
     final now = DateTime.now();
 
-    // If popup was already shown within the last hour,
-    // don't show it again.
-    if (lastShownMillis != null) {
-      final lastShown =
-          DateTime.fromMillisecondsSinceEpoch(lastShownMillis);
+    // Checked within the last hour — wait for the next tick.
+    if (lastCheckedMillis != null) {
+      final lastChecked =
+          DateTime.fromMillisecondsSinceEpoch(lastCheckedMillis);
 
-      if (now.difference(lastShown) <
-          const Duration(hours: 1)) {
+      if (now.difference(lastChecked) < MissedFollowupTimer.interval) {
         return;
       }
     }
 
     // Get missed follow-ups from your existing Cubit.
-    final leads = await _leadCubit.getMissedFollowups();
+    // Page 1 only (10 rows) — the dialog loads further pages on scroll.
+    final firstPage = await _leadCubit.getMissedFollowups(page: 1);
 
-    if (!mounted || leads.isEmpty) {
-      return;
-    }
-
-    // Save the time BEFORE showing the popup.
+    // Saved after every successful check, even with nothing to show,
+    // so the API isn't called again on every tick. A failed check
+    // isn't saved and is retried on the next tick.
     await prefs.setInt(
       _missedFollowupLastShownKey,
       now.millisecondsSinceEpoch,
     );
 
-    if (!mounted) return;
+    if (!mounted || firstPage.leads.isEmpty || reminder.popupOpen) {
+      return;
+    }
+
+    reminder.popupOpen = true;
 
     showDialog(
   context: context,
   barrierDismissible: false,
   builder: (dialogContext) => MissedFollowupDialog(
-    missedLeads: leads,
+    firstPage: firstPage,
+    loadPage: (page) => _leadCubit.getMissedFollowups(page: page),
     onViewLead: (lead) async {
   Navigator.of(dialogContext).pop();
 
@@ -192,18 +210,34 @@ Future<void> _openLeadFromNotification(String leadId) async {
   await _openLeadFromNotification(lead.id);
 },
   ),
-);
+).whenComplete(() => reminder.popupOpen = false);
   } catch (e) {
     debugPrint(
       'Missed follow-up check failed: $e',
     );
+  } finally {
+    reminder.checking = false;
   }
 }
+
+  /// The timer pauses while the app is in the background, so check again
+  /// on resume (the one-hour rule still decides whether to call the API).
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkMissedFollowups();
+      // Role may have changed on the web while the app was away.
+      PermissionHelper.refresh();
+    }
+  }
 // Inside build(), right before you use `_screens` in the IndexedStack:
 
   @override
   void initState() {
     super.initState();
+    // Fresh shell (e.g. after login): Dashboard first, no stale marks.
+    shellActiveTab.value = 0;
+    DataSync.instance.reset();
     _notifCubit = NotificationCubit();
     _leadCubit = LeadCubit();
     _ctrl = AnimationController(
@@ -224,9 +258,13 @@ Future<void> _openLeadFromNotification(String leadId) async {
 
     _loadUserInfo();
     _loadNotifications();
+    // Live role.permissions from /users/me replace the ones saved at login.
+    PermissionHelper.refresh();
     _notifAutoRefreshTimer = Timer.periodic(
         _notifAutoRefreshInterval, (_) => _autoRefreshNotifications());
+    WidgetsBinding.instance.addObserver(this);
     MissedFollowupTimer.instance.start(
+  owner: this,
   onTick: _checkMissedFollowups,
 );
   }
@@ -264,7 +302,6 @@ Future<void> _openLeadFromNotification(String leadId) async {
             '')
         .trim();
     setState(() {
-      _authToken = prefs.getString('token') ?? '';
       if (name.isNotEmpty) _userName = name;
       _profileImage = _resolveProfileImageUrl(rawImage);
     });
@@ -280,6 +317,8 @@ Future<void> _openLeadFromNotification(String leadId) async {
   void _open() {
   setState(() => _isOpen = true);
   _ctrl?.forward();
+  // Keep the drawer's Messages badge current.
+  refreshChatUnreadTotal();
 }
 
 void _close() {
@@ -293,6 +332,10 @@ void dispose() {
   debugPrint('DIAG MainShellState DISPOSED');
 debugPrintStack();
   _notifAutoRefreshTimer?.cancel();
+  WidgetsBinding.instance.removeObserver(this);
+  // Only stops the timer if this shell still owns it — a replacement
+  // shell may already have started its own.
+  MissedFollowupTimer.instance.stop(owner: this);
   _ctrl?.dispose();
   _notifCubit.close();
   _leadCubit.close();
@@ -335,35 +378,15 @@ Route _slide(Widget page) => PageRouteBuilder(
         setState(() => _idx = 0);
       } else if (route == '/leads') {
         setState(() => _idx = 1);
-      } else if (route == '/deals') {
+      } else if (route == '/deals' && tab == 0) {
         setState(() => _idx = 2);
-      } else if (route == '/invoice') {
+      } else if (route == '/deals') {
+        // The Deals tab always opens on All Deals; Deal Stages opens on
+        // top, the same as from the Dashboard drawer.
         Navigator.of(context, rootNavigator: true)
-            .push(_slide(const InvoiceScreen()));
-      } else if (route == '/meetings') {
-        Navigator.of(context, rootNavigator: true)
-            .push(_slide(const MeetingsScreen()));
-      } else if (route == '/lead-documents') {
-        Navigator.of(context, rootNavigator: true).push(
-          _slide(
-            BlocProvider(
-              create: (_) => LeadsCubit(),
-              child: const LeadsDoc(),
-            ),
-          ),
-        );
-      } else if (route == '/deal-documents') {
-        Navigator.of(context, rootNavigator: true).push(
-          _slide(
-            BlocProvider(
-              create: (_) => DealDocCubit(Dio()),
-              child: const DealDocumentScreen(),
-            ),
-          ),
-        );
-      } else if (route == '/LeaderboardPage') {
-        Navigator.of(context, rootNavigator: true)
-            .push(_slide(LeaderboardPage(authToken: _authToken)));
+            .push(_slide(DealsScreen(initialTab: tab)));
+      } else {
+        pushDrawerScreen(context, route, notifCubit: _notifCubit);
       }
     });
   }
@@ -425,18 +448,40 @@ Route _slide(Widget page) => PageRouteBuilder(
 
     final sw = MediaQuery.of(context).size.width;
     final dw = sw * _drawerFraction;
+
+    // Each tab is built — and loads its data — only the first time it's
+    // opened, then kept alive by the IndexedStack. TabRefreshScope inside
+    // each tab reloads it silently when it's stale or something changed.
+    // The open tab's permission was turned off (live /users/me refresh):
+    // fall back to the Dashboard instead of showing a hidden tab.
+    if ((_idx == 1 && !PermissionHelper.can('leads')) ||
+        (_idx == 2 &&
+            !PermissionHelper.can('deals_all') &&
+            !PermissionHelper.can('deals_pipeline'))) {
+      _idx = 0;
+    }
+    _visitedTabs.add(_idx);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) shellActiveTab.value = _idx;
+    });
       final screens = [
     const DashboardScreen(),
-    LeadsScreen(
-      key: const PageStorageKey('leads_tab'), // ADD THIS
-      showBackButton: false,
-      selectedLeadId: _pendingSelectedLeadId,
-      onLeadOpened: () => setState(() => _pendingSelectedLeadId = null),
-    ),
-    const DealsScreen(
-      initialTab: 0,
-      showBackButton: false,
-    ),
+    _visitedTabs.contains(1)
+        ? LeadsScreen(
+            key: const PageStorageKey('leads_tab'), // ADD THIS
+            showBackButton: false,
+            tabIndex: 1,
+            selectedLeadId: _pendingSelectedLeadId,
+            onLeadOpened: () => setState(() => _pendingSelectedLeadId = null),
+          )
+        : const SizedBox.shrink(),
+    _visitedTabs.contains(2)
+        ? const DealsScreen(
+            initialTab: 0,
+            showBackButton: false,
+            tabIndex: 2,
+          )
+        : const SizedBox.shrink(),
   ];
 
     return BlocProvider.value(
@@ -453,7 +498,16 @@ Route _slide(Widget page) => PageRouteBuilder(
                   top: 0,
                   bottom: 0,
                   width: dw,
-                  child: CrmDrawer(onNavigate: _onDrawerNav, onClose: _close)),
+                  child: CrmDrawer(
+                    onNavigate: _onDrawerNav,
+                    onClose: _close,
+                    currentRoute: switch (_idx) {
+                      1 => '/leads',
+                      2 => '/deals/all',
+                      _ => '/dashboard',
+                    },
+                    isOpen: _isOpen,
+                  )),
               Transform(
                 transform: Matrix4.identity()
                   ..translate(t * dw, 0.0)
@@ -508,22 +562,32 @@ Route _slide(Widget page) => PageRouteBuilder(
                         ),
                       ],
                     ),
-                    bottomNavigationBar: _BottomNav(
-                      selectedIndex: _idx,
-                      onTap: (i) async {
-                        final result = await _connectivity.checkConnectivity();
-                        if (result == ConnectivityResult.none && i != 0) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                  "No Internet. Only Dashboard is available."),
-                            ),
-                          );
-                          setState(() => _idx = 0);
-                          return;
-                        }
-                        setState(() => _idx = i);
-                      },
+                    // Hidden while the Dashboard tab's own drawer is open,
+                    // so that drawer runs full height like this shell's.
+                    bottomNavigationBar: ValueListenableBuilder<bool>(
+                      valueListenable: dashboardDrawerOpen,
+                      builder: (_, drawerOpen, nav) =>
+                          drawerOpen && _idx == 0
+                              ? const SizedBox.shrink()
+                              : nav!,
+                      child: _BottomNav(
+                        selectedIndex: _idx,
+                        onTap: (i) async {
+                          final result =
+                              await _connectivity.checkConnectivity();
+                          if (result == ConnectivityResult.none && i != 0) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                    "No Internet. Only Dashboard is available."),
+                              ),
+                            );
+                            setState(() => _idx = 0);
+                            return;
+                          }
+                          setState(() => _idx = i);
+                        },
+                      ),
                     ),
                   ),
                 ),
@@ -575,16 +639,24 @@ class _BottomNav extends StatelessWidget {
                       label: 'Dashboard',
                       isSelected: selectedIndex == 0,
                       onTap: () => onTap(0)),
+                  // Indices stay fixed (they index the IndexedStack), so
+                  // hiding a tab doesn't shift the others.
+                  if (PermissionHelper.can('leads'))
                   _NavItem(
                       icon: Icons.people_outline,
                       activeIcon: Icons.people_rounded,
                       label: 'Leads',
                       isSelected: selectedIndex == 1,
                       onTap: () => onTap(1)),
+                  if (PermissionHelper.can('deals_all') ||
+                      PermissionHelper.can('deals_pipeline'))
                   _NavItem(
                       icon: Icons.handshake_outlined,
                       activeIcon: Icons.handshake_rounded,
-                      label: 'All Deals',
+                      // Pipeline-only users land on Deal Stages.
+                      label: PermissionHelper.can('deals_all')
+                          ? 'All Deals'
+                          : 'Deal Stages',
                       isSelected: selectedIndex == 2,
                       onTap: () => onTap(2)),
                 ]),

@@ -213,7 +213,7 @@ class _LoginViewState extends State<_LoginView> {
                     style: const TextStyle(
                         fontSize: 15, color: AppColors.textPrimary),
                     decoration: InputDecoration(
-                      hintText: 'e.g. kishore',
+                      hintText: 'Enter workspace name',
                       prefixIcon: const Icon(Icons.apartment_outlined,
                           color: AppColors.textSecondary, size: 20),
                       filled: true,

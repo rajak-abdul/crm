@@ -4,6 +4,7 @@
 // ╚══════════════════════════════════════════════════════════════╝
 
 import 'package:crm_app/main.dart' show navigatorKey;
+import 'package:crm_app/utils/data_sync.dart';
 import 'package:crm_app/utils/missed_followup_timer.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:flutter/material.dart';
@@ -25,6 +26,8 @@ class AuthGuard {
 
     try {
       MissedFollowupTimer.instance.stop();
+      SessionCache.clear();
+      DataSync.instance.reset();
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('token');

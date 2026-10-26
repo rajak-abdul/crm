@@ -93,6 +93,17 @@ class TargetApiService {
         fallback: 'Failed to load targets',
       );
 
+  /// GET /targets/linked/:kind/:id — targets linked to one lead or deal
+  /// (kind: 'lead' | 'deal'). Response: [ target, ... ].
+  Future<dynamic> getLinkedTargets({
+    required String kind,
+    required String id,
+  }) =>
+      _send(
+        () => dio.get('/targets/linked/$kind/$id'),
+        fallback: 'Failed to load linked targets',
+      );
+
   /// POST /targets/:targetId/reports/call (multipart)
   /// Fields: companyName, callSummary, companyUrl, recording (file).
   /// Response: { message, target: { ..., reportedCalls: [...] } }.

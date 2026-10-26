@@ -304,44 +304,70 @@ List<SalesPerson> get _filtered {
 
   // ── KPI Grid ──────────────────────────────────────────────────────────────────
 
-  Widget _buildKpiGrid() {
-    final s = _response?.stats;
-    final dateLabel = _response?.dateRange.formatted ?? '—';
+Widget _buildKpiGrid() {
+  final response = _response;
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-      child: GridView.count(
-        crossAxisCount: 2,
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        childAspectRatio: 1.55,
-        children: [
-          _kpiCard(
-              'Active Salespeople',
-              s != null ? '${s.activeSalespeople}' : '—',
-              s != null ? 'Out of ${s.totalSalespeople} total' : '—',
-              Icons.group_outlined,
-              orange),
-          _kpiCard(
-              'Conversion Rate',
-              s != null ? '${s.avgConversionRate.toStringAsFixed(1)}%' : '—',
-              dateLabel,
-              Icons.gps_fixed_rounded,
-              green),
-          _kpiCard('Total Leads', s != null ? '${s.totalLeads}' : '—',
-              dateLabel, Icons.radar_rounded, const Color(0xFF06B6D4)),
-          _kpiCard(
-              'Converted Leads',
-              s != null ? '${s.totalConvertedLeads}' : '—',
-              'Deals with Lead ID',
-              Icons.trending_up_rounded,
-              purple),
-        ],
-      ),
-    );
+  // Find the logged-in salesperson.
+  SalesPerson? person;
+
+  for (final p in response?.data ?? <SalesPerson>[]) {
+    if (p.isCurrentUser) {
+      person = p;
+      break;
+    }
   }
+
+  final dateLabel = response?.dateRange.formatted ?? '—';
+
+  return Padding(
+    padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+    child: GridView.count(
+      crossAxisCount: 2,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      mainAxisSpacing: 12,
+      crossAxisSpacing: 12,
+      childAspectRatio: 1.55,
+      children: [
+        _kpiCard(
+          'Your Status',
+          person?.status ?? '—',
+          '${person?.conversionDisplay ?? '0.0%'} conversion',
+          Icons.group_outlined,
+          orange,
+        ),
+        _kpiCard(
+          'Your Conversion Rate',
+          person?.conversionDisplay ?? '0.0%',
+          dateLabel,
+          Icons.gps_fixed_rounded,
+          green,
+        ),
+        _kpiCard(
+          'Your Leads',
+          _formatNumber(person?.cumulativeTotalLeads ?? 0),
+          dateLabel,
+          Icons.radar_rounded,
+          const Color(0xFF06B6D4),
+        ),
+        _kpiCard(
+          'Your Conversions',
+          '${person?.convertedLeads ?? 0}',
+          'Deals with Lead ID',
+          Icons.trending_up_rounded,
+          purple,
+        ),
+      ],
+    ),
+  );
+}
+
+String _formatNumber(int value) {
+  return value.toString().replaceAllMapped(
+    RegExp(r'\B(?=(\d{3})+(?!\d))'),
+    (match) => ',',
+  );
+}
 
   Widget _kpiCard(
       String title, String value, String sub, IconData icon, Color accent) {

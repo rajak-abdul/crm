@@ -7,6 +7,9 @@
 
 import 'dart:async';
 
+import 'package:crm_app/screen/notification/cubit/notification_cubit.dart';
+import 'package:crm_app/screen/notification/cubit/notification_state.dart';
+import 'package:crm_app/screen/notification/model/notification_model.dart';
 import 'package:crm_app/services/auth_interceptor.dart';
 import 'package:crm_app/thems/app_themes.dart' show AppColors;
 import 'package:dio/dio.dart'
@@ -17,517 +20,8 @@ import 'package:flutter_bloc/flutter_bloc.dart' show Cubit, BlocBuilder;
 import 'package:shared_preferences/shared_preferences.dart'
     show SharedPreferences;
 
-// ══════════════════════════════════════════════════════════════
-// MODEL
-// ══════════════════════════════════════════════════════════════
-class AppNotification extends Equatable {
-  final String id;
-  final String userId;
-  final String type;
-  final String text;
-  final bool read;
-  final String? profileImage;
-  final String? userName;
-  final String? dealId;
-  final String? dealName;
-  final String? leadId;
-  final String? proposalId;
-  final String? proposalTitle;
-  final String? salesmanName;
-  final String? salesmanId;
-  final DateTime? createdAt;
-  final DateTime? expiresAt;
 
-  const AppNotification({
-    required this.id,
-    required this.userId,
-    required this.type,
-    required this.text,
-    required this.read,
-    this.profileImage,
-    this.userName,
-    this.dealId,
-    this.dealName,
-    this.leadId,
-    this.proposalId,
-    this.proposalTitle,
-    this.salesmanName,
-    this.salesmanId,
-    this.createdAt,
-    this.expiresAt,
-  });
 
-  static String _s(dynamic v, [String fallback = '']) =>
-      v == null ? fallback : v.toString().trim();
-
-  static String? _nullableStr(dynamic v) {
-    if (v == null) return null;
-    final s = v.toString().trim();
-    return s.isEmpty ? null : s;
-  }
-
-  factory AppNotification.fromJson(Map<String, dynamic> j) {
-    final meta = j['meta'] is Map
-        ? Map<String, dynamic>.from(j['meta'] as Map)
-        : <String, dynamic>{};
-
-    return AppNotification(
-      id: _s(j['_id'] ?? j['id']),
-      userId: _s(j['userId']),
-      type: _s(j['type'], 'general'),
-      text: _s(j['text'] ?? j['message'] ?? j['title']),
-      read: j['read'] == true || j['isRead'] == true,
-      // removed buildProfileImageUrl — store raw filename only
-      profileImage: _nullableStr(j['profileImage'] ?? meta['profileImage']),
-      userName: _nullableStr(j['userName'] ?? meta['salesmanName']),
-      dealId: _nullableStr(meta['dealId']),
-      dealName: _nullableStr(meta['dealName']),
-      leadId: _nullableStr(meta['leadId']),
-      proposalId: _nullableStr(meta['proposalId']),
-      proposalTitle: _nullableStr(meta['proposalTitle']),
-      salesmanName: _nullableStr(meta['salesmanName']),
-      salesmanId: _nullableStr(meta['salesmanId']),
-      createdAt: j['createdAt'] != null
-          ? DateTime.tryParse(j['createdAt'].toString())
-          : null,
-      expiresAt: j['expiresAt'] != null
-          ? DateTime.tryParse(j['expiresAt'].toString())
-          : null,
-    );
-  }
-
-  AppNotification copyWith({bool? read}) => AppNotification(
-        id: id,
-        userId: userId,
-        type: type,
-        text: text,
-        read: read ?? this.read,
-        profileImage: profileImage,
-        userName: userName,
-        dealId: dealId,
-        dealName: dealName,
-        leadId: leadId,
-        proposalId: proposalId,
-        proposalTitle: proposalTitle,
-        salesmanName: salesmanName,
-        salesmanId: salesmanId,
-        createdAt: createdAt,
-        expiresAt: expiresAt,
-      );
-
-  String get subtitle {
-    if (dealName != null) return dealName!;
-    if (proposalTitle != null) return proposalTitle!;
-    return '';
-  }
-
-  bool get isExpired {
-    if (expiresAt == null) return false;
-    return DateTime.now().isAfter(expiresAt!);
-  }
-
-  @override
-  List<Object?> get props => [id, read];
-}
-
-// ══════════════════════════════════════════════════════════════
-// STATE
-// ══════════════════════════════════════════════════════════════
-abstract class NotificationState extends Equatable {
-  const NotificationState();
-  @override
-  List<Object?> get props => [];
-}
-
-class NotificationInitial extends NotificationState {}
-
-class NotificationLoading extends NotificationState {}
-
-class NotificationLoaded extends NotificationState {
-  final List<AppNotification> notifications;
-  final int unreadCount;
-  final bool hasMore;
-  final int currentPage;
-
-  const NotificationLoaded({
-    required this.notifications,
-    required this.unreadCount,
-    this.hasMore = false,
-    this.currentPage = 1,
-  });
-
-  @override
-  List<Object?> get props => [notifications, unreadCount, hasMore, currentPage];
-}
-
-class NotificationError extends NotificationState {
-  final String message;
-  const NotificationError(this.message);
-  @override
-  List<Object?> get props => [message];
-}
-
-// ══════════════════════════════════════════════════════════════
-// CUBIT
-// ══════════════════════════════════════════════════════════════
-class NotificationCubit extends Cubit<NotificationState> {
-  static const _base = 'https://crm-backend-api.techzarinfo.cloud/api';
-
-  Dio? _dio;
-  String? _cachedToken;
-  String? _currentUserId;
-
-  int _currentPage = 1;
-  bool _hasMore = true;
-  bool _isLoadingMore = false;
-
-  DateTime? _lastLoadTime;
-  static const _minLoadInterval = Duration(seconds: 2);
-
-  NotificationCubit() : super(NotificationInitial()) {
-    _initDio();
-  }
-
-  Future<void> _initDio() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      _cachedToken = prefs.getString('token');
-      _currentUserId = prefs.getString('user_id');
-
-      debugPrint(
-          '[NotifCubit] token=${_cachedToken != null ? "found" : "NULL"}');
-      debugPrint('[NotifCubit] user_id=$_currentUserId');
-
-      final dio = Dio(BaseOptions(
-        baseUrl: _base,
-        connectTimeout: const Duration(seconds: 20),
-        receiveTimeout: const Duration(seconds: 20),
-      ));
-
-      dio.interceptors.add(InterceptorsWrapper(
-        onRequest: (opt, handler) {
-          if (_cachedToken != null) {
-            opt.headers['Authorization'] = 'Bearer $_cachedToken';
-          }
-          handler.next(opt);
-        },
-        onError: (error, handler) {
-          if (error.response?.statusCode == 401) {
-            emit(const NotificationError(
-                'Session expired. Please login again.'));
-          }
-          handler.next(error);
-        },
-      ));
-      dio.interceptors.add(AuthInterceptor());
-
-      _dio = dio;
-
-      // ✅ If user_id missing but token exists, fetch profile to get userId
-      if ((_currentUserId == null || _currentUserId!.isEmpty) &&
-          _cachedToken != null) {
-        try {
-          final res = await dio.get('/users/profile');
-          debugPrint('[NotifCubit] profile response: ${res.data}');
-          final body = res.data;
-          String? fetchedId;
-          if (body is Map) {
-            fetchedId = body['_id'] as String? ??
-                body['id'] as String? ??
-                body['userId'] as String? ??
-                (body['data'] is Map
-                    ? (body['data']['_id'] as String? ??
-                        body['data']['id'] as String?)
-                    : null);
-          }
-          if (fetchedId != null && fetchedId.isNotEmpty) {
-            _currentUserId = fetchedId;
-            await prefs.setString('user_id', fetchedId); // save for next time
-            debugPrint('[NotifCubit] fetched user_id: $_currentUserId');
-          }
-        } catch (e) {
-          debugPrint('[NotifCubit] failed to fetch profile: $e');
-        }
-      }
-
-      if (_currentUserId != null && _currentUserId!.isNotEmpty) {
-        await load(_currentUserId!, refresh: true);
-      }
-    } catch (e) {
-      debugPrint('[NotifCubit] _initDio error: $e');
-      emit(NotificationError('Failed to initialize: $e'));
-    }
-  }
-
-  NotificationLoaded? get _loaded =>
-      state is NotificationLoaded ? state as NotificationLoaded : null;
-
-  // ── Called from dashboard after login ──────────────────────
-  // Pass userId directly — no need to re-read from prefs.
-  Future<void> load(String userId,
-      {bool refresh = false, bool silent = false}) async {
-    if (userId.isEmpty) {
-      emit(const NotificationError('User ID is required'));
-      return;
-    }
-
-    // Wait for _dio to be ready (edge case: called before _initDio finishes)
-    if (_dio == null) {
-      debugPrint('[NotifCubit] _dio not ready, retrying in 500ms…');
-      await Future.delayed(const Duration(milliseconds: 500));
-      if (_dio == null) {
-        emit(const NotificationError('Not ready yet. Please try again.'));
-        return;
-      }
-    }
-
-    _currentUserId = userId;
-
-    // Debounce non-refresh calls
-    if (!refresh && _lastLoadTime != null) {
-      final elapsed = DateTime.now().difference(_lastLoadTime!);
-      if (elapsed < _minLoadInterval) return;
-    }
-    _lastLoadTime = DateTime.now();
-
-    if (_isLoadingMore) return;
-
-    if (refresh) {
-      _currentPage = 1;
-      _hasMore = true;
-      if (!silent) emit(NotificationLoading());
-    } else if (state is NotificationInitial) {
-      emit(NotificationLoading());
-    }
-
-    _isLoadingMore = true;
-
-    try {
-      debugPrint('[NotifCubit] GET /notifications/$userId?page=$_currentPage');
-
-      final res = await _dio!.get(
-        '/notifications/$userId',
-        queryParameters: {'page': _currentPage, 'limit': 20},
-      );
-
-      debugPrint('[NotifCubit] response type: ${res.data.runtimeType}');
-
-      final newNotifications = _parse(res.data);
-      debugPrint(
-          '[NotifCubit] parsed ${newNotifications.length} notifications');
-
-      _hasMore = newNotifications.length == 20;
-
-      List<AppNotification> allNotifications;
-      if (refresh || _currentPage == 1) {
-        allNotifications = newNotifications;
-      } else {
-        final current = _loaded?.notifications ?? [];
-        allNotifications = [...current, ...newNotifications];
-      }
-
-      if (refresh) {
-        _currentPage = 2;
-      } else if (_hasMore) {
-        _currentPage++;
-      }
-
-      final unread = allNotifications.where((n) => !n.read).length;
-
-      emit(NotificationLoaded(
-        notifications: allNotifications,
-        unreadCount: unread,
-        hasMore: _hasMore,
-        currentPage: _currentPage,
-      ));
-    } on DioException catch (e) {
-      debugPrint(
-          '[NotifCubit] DioException: ${e.type} ${e.response?.statusCode}');
-      if (!refresh && _currentPage > 1) {
-        // Pagination failure — keep existing list silently
-      } else {
-        emit(NotificationError(_dioMsg(e)));
-      }
-    } catch (e) {
-      debugPrint('[NotifCubit] error: $e');
-      emit(NotificationError(e.toString()));
-    } finally {
-      _isLoadingMore = false;
-    }
-  }
-
-  Future<void> loadMore() async {
-    if (_loaded == null) return;
-    if (!_hasMore || _isLoadingMore) return;
-    if (_currentUserId == null) return;
-    await load(_currentUserId!);
-  }
-
-  // ✅ Safer refresh()
-  Future<void> refresh({String? userId, bool silent = false}) async {
-    final id = userId ?? _currentUserId;
-    if (id == null || id.isEmpty) {
-      debugPrint('[NotifCubit] refresh() called but no userId available');
-      return;
-    }
-    _currentUserId = id;
-    await load(id, refresh: true, silent: silent);
-  }
-
-  Future<void> markAsRead(String notifId) async {
-    if (_dio == null) return;
-    final cur = _loaded;
-    if (cur == null) return;
-
-    final notif = cur.notifications.cast<AppNotification?>().firstWhere(
-          (n) => n?.id == notifId,
-          orElse: () => null,
-        );
-    if (notif == null || notif.read) return;
-
-    // Optimistic update
-    final updated = cur.notifications
-        .map((n) => n.id == notifId ? n.copyWith(read: true) : n)
-        .toList();
-    emit(NotificationLoaded(
-      notifications: updated,
-      unreadCount: updated.where((n) => !n.read).length,
-      hasMore: cur.hasMore,
-      currentPage: cur.currentPage,
-    ));
-
-    try {
-      await _dio!.patch('/notifications/read/$notifId');
-    } catch (_) {
-      emit(cur); // revert
-    }
-  }
-
-  Future<void> markAllAsRead(String userId) async {
-    if (_dio == null) return;
-    final cur = _loaded;
-    if (cur == null) return;
-
-    final unreadIds =
-        cur.notifications.where((n) => !n.read).map((n) => n.id).toList();
-    if (unreadIds.isEmpty) return;
-
-    final originalState = cur;
-
-    final updated =
-        cur.notifications.map((n) => n.copyWith(read: true)).toList();
-    emit(NotificationLoaded(
-      notifications: updated,
-      unreadCount: 0,
-      hasMore: cur.hasMore,
-      currentPage: cur.currentPage,
-    ));
-
-    try {
-      const batchSize = 10;
-      for (var i = 0; i < unreadIds.length; i += batchSize) {
-        final batch = unreadIds.skip(i).take(batchSize);
-        await Future.wait(
-          batch.map((id) => _dio!.patch('/notifications/read/$id')),
-        );
-      }
-    } catch (_) {
-      emit(originalState); // revert
-    }
-  }
-
-  Future<void> delete(String notifId) async {
-    if (_dio == null) return;
-    final cur = _loaded;
-    if (cur == null) return;
-
-    final originalState = cur;
-    final updated = cur.notifications.where((n) => n.id != notifId).toList();
-    emit(NotificationLoaded(
-      notifications: updated,
-      unreadCount: updated.where((n) => !n.read).length,
-      hasMore: cur.hasMore,
-      currentPage: cur.currentPage,
-    ));
-
-    try {
-      await _dio!.delete('/notifications/$notifId');
-    } catch (_) {
-      emit(originalState);
-    }
-  }
-
-  Future<bool> bulkDelete(List<String> ids) async {
-    if (_dio == null) return false;
-    final cur = _loaded;
-    if (cur == null || ids.isEmpty) return false;
-
-    final originalState = cur;
-    final updated =
-        cur.notifications.where((n) => !ids.contains(n.id)).toList();
-    emit(NotificationLoaded(
-      notifications: updated,
-      unreadCount: updated.where((n) => !n.read).length,
-      hasMore: cur.hasMore,
-      currentPage: cur.currentPage,
-    ));
-
-    try {
-      await _dio!.delete('/notifications/bulk', data: {'notificationIds': ids});
-      return true;
-    } catch (_) {
-      emit(originalState);
-      return false;
-    }
-  }
-
-  Future<bool> clearAll() async {
-    final cur = _loaded;
-    if (cur == null || cur.notifications.isEmpty) return false;
-    return bulkDelete(cur.notifications.map((n) => n.id).toList());
-  }
-
-  List<AppNotification> _parse(dynamic data) {
-    List<dynamic> raw = [];
-    if (data is List) {
-      raw = data;
-    } else if (data is Map) {
-      for (final k in ['data', 'notifications', 'result', 'records']) {
-        if (data[k] is List) {
-          raw = data[k] as List;
-          break;
-        }
-      }
-    }
-    final out = <AppNotification>[];
-    for (final item in raw) {
-      if (item is Map) {
-        try {
-          out.add(AppNotification.fromJson(Map<String, dynamic>.from(item)));
-        } catch (e) {
-          debugPrint('[NotifCubit] parse error: $e');
-        }
-      }
-    }
-    return out;
-  }
-
-  String _dioMsg(DioException e) => switch (e.type) {
-        DioExceptionType.connectionTimeout ||
-        DioExceptionType.receiveTimeout =>
-          'Connection timed out.',
-        DioExceptionType.connectionError => 'No internet connection.',
-        DioExceptionType.badResponse =>
-          'Server error (${e.response?.statusCode}).',
-        _ => 'Something went wrong. Please try again.',
-      };
-
-  @override
-  Future<void> close() {
-    _dio?.close();
-    return super.close();
-  }
-}
 
 // ══════════════════════════════════════════════════════════════
 // HELPERS
@@ -707,7 +201,7 @@ class NotificationPanel extends StatelessWidget {
       },
     );
   }
-
+  
   void _showDeleteDialog(
       BuildContext context, NotificationCubit cubit, String id) {
     showDialog(
@@ -915,29 +409,51 @@ class NotificationsScreen extends StatefulWidget {
   State<NotificationsScreen> createState() => _NotificationsScreenState();
 }
 
-class _NotificationsScreenState extends State<NotificationsScreen>
-    with SingleTickerProviderStateMixin {
+class _NotificationsScreenState extends State<NotificationsScreen> {
+  
+final TextEditingController _searchController = TextEditingController();
+
+String _selectedDateRange = 'All Time';
+DateTime? _startDate;
+DateTime? _endDate;
+
+String _searchQuery = '';
+
+      String _selectedFilter = 'All';
+      bool get _isDateFilterActive => _selectedDateRange != 'All Time';
+
+final List<String> _notificationFilters = [
+  'All',
+  'Unread',
+  'Tasks',
+  'Targets',
+  'Leads',
+  'Deals',
+  'Follow-ups',
+  'Scheduled Emails',
+  'Invoices',
+  'Other',
+];
   late TabController _tabController;
   final Set<String> _selected = {};
   bool _isSelecting = false;
   Timer? _autoRefreshTimer;
   static const _autoRefreshInterval = Duration(seconds: 15);
 
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-    _loadOnOpen(); // ← add this
-    _autoRefreshTimer = Timer.periodic(_autoRefreshInterval, (_) {
-      if (_isSelecting) return;
-      _autoRefresh();
-    });
-  }
+@override
+void initState() {
+  super.initState();
+  _loadOnOpen();
 
+  _autoRefreshTimer = Timer.periodic(_autoRefreshInterval, (_) {
+    if (_isSelecting) return;
+    _autoRefresh();
+  });
+}
   @override
   void dispose() {
     _autoRefreshTimer?.cancel();
-    _tabController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -969,6 +485,199 @@ class _NotificationsScreenState extends State<NotificationsScreen>
     final uid = prefs.getString('user_id') ?? '';
     widget.cubit.refresh(userId: uid);
   }
+  Widget _buildNotificationFilters(int unreadCount) {
+  return SizedBox(
+    height: 52,
+    child: ListView.separated(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: 8,
+      ),
+      itemCount: _notificationFilters.length,
+      separatorBuilder: (_, __) => const SizedBox(width: 8),
+      itemBuilder: (context, index) {
+        final filter = _notificationFilters[index];
+        final isSelected = _selectedFilter == filter;
+
+        return ChoiceChip(
+          label: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(filter),
+              if (filter == 'Unread' && unreadCount > 0) ...[
+                const SizedBox(width: 5),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 2,
+                  ),
+                  decoration: const BoxDecoration(
+                    color: Colors.red,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Text(
+                    '$unreadCount',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          selected: isSelected,
+          showCheckmark: false,
+          onSelected: (_) {
+            setState(() {
+              _selectedFilter = filter;
+            });
+          },
+          selectedColor: AppColors.primary,
+          backgroundColor: AppColors.surface,
+          labelStyle: TextStyle(
+            color: isSelected ? Colors.white : AppColors.textPrimary,
+            fontSize: 12,
+            fontWeight:
+                isSelected ? FontWeight.w600 : FontWeight.w400,
+          ),
+          side: BorderSide(
+            color: isSelected
+                ? AppColors.primary
+                : AppColors.divider,
+          ),
+          shape: const StadiumBorder(),
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+        );
+      },
+    ),
+  );
+}
+
+
+
+List<AppNotification> _filterNotifications(
+  List<AppNotification> notifications,
+) {
+  final now = DateTime.now();
+  DateTime? from;
+  DateTime? to;
+
+  switch (_selectedDateRange) {
+    case 'Today':
+      from = DateTime(now.year, now.month, now.day);
+      to = from.add(const Duration(days: 1));
+      break;
+
+    case 'This Week':
+      final today = DateTime(now.year, now.month, now.day);
+      from = today.subtract(Duration(days: today.weekday - 1));
+      to = from.add(const Duration(days: 7));
+      break;
+
+    case 'This Month':
+      from = DateTime(now.year, now.month, 1);
+      to = DateTime(now.year, now.month + 1, 1);
+      break;
+
+    case 'Custom':
+      from = _startDate == null
+          ? null
+          : DateTime(
+              _startDate!.year,
+              _startDate!.month,
+              _startDate!.day,
+            );
+      to = _endDate == null
+          ? null
+          : DateTime(
+              _endDate!.year,
+              _endDate!.month,
+              _endDate!.day,
+            ).add(const Duration(days: 1));
+      break;
+  }
+
+  return notifications.where((n) {
+    // Category filter
+    final type = n.type.toLowerCase().replaceAll('_', '-');
+
+    bool matchesCategory;
+
+    switch (_selectedFilter) {
+      case 'Unread':
+        matchesCategory = !n.read;
+        break;
+      case 'Tasks':
+        matchesCategory = type == 'task';
+        break;
+      case 'Targets':
+        matchesCategory = type == 'target';
+        break;
+      case 'Leads':
+        matchesCategory = type == 'lead';
+        break;
+      case 'Deals':
+        matchesCategory = type == 'deal';
+        break;
+      case 'Follow-ups':
+        matchesCategory =
+            type == 'follow-up' || type == 'followup';
+        break;
+      case 'Scheduled Emails':
+        matchesCategory = type == 'scheduled-email' ||
+            type == 'scheduled-email-reminder';
+        break;
+      case 'Invoices':
+        matchesCategory = type == 'invoice';
+        break;
+      case 'Other':
+        const knownTypes = {
+          'task',
+          'target',
+          'lead',
+          'deal',
+          'follow-up',
+          'followup',
+          'scheduled-email',
+          'scheduled-email-reminder',
+          'invoice',
+        };
+        matchesCategory = !knownTypes.contains(type);
+        break;
+      default:
+        matchesCategory = true;
+    }
+
+    if (!matchesCategory) return false;
+
+    // Search filter
+    if (_searchQuery.isNotEmpty) {
+      final query = _searchQuery;
+      final matchesSearch =
+          n.text.toLowerCase().contains(query) ||
+          n.type.toLowerCase().contains(query) ||
+          (n.userName?.toLowerCase().contains(query) ?? false) ||
+          (n.dealName?.toLowerCase().contains(query) ?? false) ||
+          (n.proposalTitle?.toLowerCase().contains(query) ?? false);
+
+      if (!matchesSearch) return false;
+    }
+
+    // Date filter
+    if (from != null || to != null) {
+      final createdAt = n.createdAt;
+      if (createdAt == null) return false;
+      if (from != null && createdAt.isBefore(from)) return false;
+      if (to != null && !createdAt.isBefore(to)) return false;
+    }
+
+    return true;
+  }).toList();
+}
+
 
   @override
   Widget build(BuildContext context) {
@@ -1049,56 +758,104 @@ class _NotificationsScreenState extends State<NotificationsScreen>
           ],
           const SizedBox(width: 4),
         ],
-        bottom: TabBar(
-          controller: _tabController,
-          labelColor: AppColors.primary,
-          unselectedLabelColor: AppColors.textSecondary,
-          indicatorColor: AppColors.primary,
-          indicatorWeight: 2.5,
-          labelStyle:
-              const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-          tabs: [
-            BlocBuilder<NotificationCubit, NotificationState>(
-              bloc: widget.cubit,
-              builder: (ctx, state) {
-                final count = state is NotificationLoaded
-                    ? state.notifications.where((n) => !n.read).length
-                    : 0;
-                return Tab(
-                  child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Text('Unread'),
-                        if (count > 0) ...[
-                          const SizedBox(width: 6),
-                          _Badge('$count', AppColors.primary),
-                        ],
-                      ]),
-                );
-              },
+bottom: PreferredSize(
+preferredSize: Size.fromHeight(
+  _isDateFilterActive ? 144 : 112,
+),  child: Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _searchController,
+                onChanged: (value) {
+                  setState(() {
+                    _searchQuery = value.trim().toLowerCase();
+                  });
+                },
+                decoration: InputDecoration(
+                  hintText: 'Search notifications...',
+                  prefixIcon: const Icon(Icons.search_rounded),
+                  filled: true,
+                  fillColor: AppColors.background,
+                  contentPadding: const EdgeInsets.symmetric(
+                    vertical: 12,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
             ),
-            BlocBuilder<NotificationCubit, NotificationState>(
-              bloc: widget.cubit,
-              builder: (ctx, state) {
-                final count = state is NotificationLoaded
-                    ? state.notifications.length
-                    : 0;
-                return Tab(
-                  child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Text('All'),
-                        const SizedBox(width: 6),
-                        _Badge('$count', AppColors.textSecondary),
-                      ]),
-                );
-              },
-            ),
+            const SizedBox(width: 8),
+            
+IconButton(
+  onPressed: _showNotificationFilters,
+  tooltip: 'Filter notifications',
+  icon: const Icon(Icons.filter_alt_outlined),
+),
+
           ],
         ),
       ),
+BlocBuilder<NotificationCubit, NotificationState>(
+  bloc: widget.cubit,
+  builder: (context, state) {
+    final unreadCount = state is NotificationLoaded
+        ? state.notifications.where((n) => !n.read).length
+        : 0;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildNotificationFilters(unreadCount),
+
+        if (_isDateFilterActive)
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.only(
+                right: 16,
+                bottom: 8,
+              ),
+              child: TextButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _selectedDateRange = 'All Time';
+                    _startDate = null;
+                    _endDate = null;
+                  });
+                },
+                icon: const Icon(
+                  Icons.filter_alt_off_outlined,
+                  size: 16,
+                ),
+                label: const Text('Clear Filter'),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.primary,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  },
+),    ],
+  ),
+),
+   ),
       body: RefreshIndicator(
         onRefresh: _handleRefresh,
+        
         child: BlocBuilder<NotificationCubit, NotificationState>(
           bloc: widget.cubit,
           builder: (ctx, state) {
@@ -1133,34 +890,26 @@ class _NotificationsScreenState extends State<NotificationsScreen>
               return const SizedBox.shrink();
             }
 
-            final all = state.notifications;
-            final unread = all.where((n) => !n.read).toList();
 
-            return TabBarView(
-              controller: _tabController,
-              children: [
-                _NotifList(
-                  items: unread,
-                  emptyText: 'No unread notifications 🎉',
-                  cubit: widget.cubit,
-                  selected: _selected,
-                  isSelecting: _isSelecting,
-                  onToggle: _toggleSelection,
-                  onLoadMore: widget.cubit.loadMore,
-                  hasMore: state.hasMore,
-                ),
-                _NotifList(
-                  items: all,
-                  emptyText: 'No notifications yet',
-                  cubit: widget.cubit,
-                  selected: _selected,
-                  isSelecting: _isSelecting,
-                  onToggle: _toggleSelection,
-                  onLoadMore: widget.cubit.loadMore,
-                  hasMore: state.hasMore,
-                ),
-              ],
-            );
+
+
+final all = state.notifications;
+final filteredNotifications = _filterNotifications(all);
+
+return _NotifList(
+  items: filteredNotifications,
+  emptyText: _selectedFilter == 'Unread'
+      ? 'No unread notifications 🎉'
+      : _selectedFilter == 'All'
+          ? 'No notifications yet'
+          : 'No $_selectedFilter notifications yet',
+  cubit: widget.cubit,
+  selected: _selected,
+  isSelecting: _isSelecting,
+  onToggle: _toggleSelection,
+  onLoadMore: widget.cubit.loadMore,
+  hasMore: state.hasMore,
+);
           },
         ),
       ),
@@ -1220,6 +969,301 @@ class _NotificationsScreenState extends State<NotificationsScreen>
       ),
     );
   }
+
+  
+Future<void> _showNotificationFilters() async {
+  String selectedRange = _selectedDateRange;
+  DateTime? startDate = _startDate;
+  DateTime? endDate = _endDate;
+
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (sheetContext) {
+      return StatefulBuilder(
+        builder: (context, setSheetState) {
+          Future<void> chooseDate({required bool isStart}) async {
+            final picked = await showDatePicker(
+              context: context,
+              initialDate: isStart
+                  ? startDate ?? DateTime.now()
+                  : endDate ?? startDate ?? DateTime.now(),
+              firstDate: DateTime(2020),
+              lastDate: DateTime(2100),
+            );
+
+            if (picked != null) {
+              setSheetState(() {
+                if (isStart) {
+                  startDate = picked;
+                  if (endDate != null && endDate!.isBefore(picked)) {
+                    endDate = picked;
+                  }
+                } else {
+                  endDate = picked;
+                }
+              });
+            }
+          }
+
+          Widget rangeChip(String label) {
+            final selected = selectedRange == label;
+
+            return ChoiceChip(
+              label: Text(label),
+              selected: selected,
+              showCheckmark: false,
+              avatar: Icon(
+                Icons.calendar_today_outlined,
+                size: 18,
+                color: selected ? Colors.white : Colors.black87,
+              ),
+              selectedColor: const Color(0xFF1769FF),
+              backgroundColor: Colors.white,
+              labelStyle: TextStyle(
+                color: selected ? Colors.white : Colors.black87,
+                fontWeight: FontWeight.w500,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(
+                  color: selected
+                      ? const Color(0xFF1769FF)
+                      : const Color(0xFFE1E5ED),
+                ),
+              ),
+              onSelected: (_) {
+                setSheetState(() {
+                  selectedRange = label;
+                });
+              },
+            );
+          }
+
+          String formatDate(DateTime? date) {
+            if (date == null) return 'Select date';
+            return '${date.day.toString().padLeft(2, '0')} '
+                '${_monthName(date.month)} ${date.year}';
+          }
+
+          return SafeArea(
+            child: Container(
+              padding: EdgeInsets.fromLTRB(
+                20,
+                12,
+                20,
+                24 + MediaQuery.of(context).viewInsets.bottom,
+              ),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(
+                  top: Radius.circular(24),
+                ),
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 42,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFB7BDC8),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.filter_alt_outlined,
+                          color: Color(0xFF1769FF),
+                          size: 28,
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Text(
+                            'Filter Notifications',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(sheetContext),
+                          icon: const Icon(Icons.close, size: 28),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Date Range',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        rangeChip('All Time'),
+                        rangeChip('Today'),
+                        rangeChip('This Week'),
+                        rangeChip('This Month'),
+                        rangeChip('Custom'),
+                      ],
+                    ),
+
+                    // Date fields appear ONLY for Custom.
+                    if (selectedRange == 'Custom') ...[
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _dateField(
+                              label: 'Start Date',
+                              value: formatDate(startDate),
+                              onTap: () => chooseDate(isStart: true),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _dateField(
+                              label: 'End Date',
+                              value: formatDate(endDate),
+                              onTap: () => chooseDate(isStart: false),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 54,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF1769FF),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        onPressed: () {
+                          if (selectedRange == 'Custom') {
+                            if (startDate == null || endDate == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Please select both start and end dates.',
+                                  ),
+                                ),
+                              );
+                              return;
+                            }
+
+                            if (endDate!.isBefore(startDate!)) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'End date must be on or after start date.',
+                                  ),
+                                ),
+                              );
+                              return;
+                            }
+                          }
+
+                          setState(() {
+                            _selectedDateRange = selectedRange;
+                            _startDate = startDate;
+                            _endDate = endDate;
+                          });
+
+                          Navigator.pop(sheetContext);
+                        },
+                        child: const Text(
+                          'Apply Filters',
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+}
+
+String _monthName(int month) {
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+  return months[month - 1];
+}
+
+Widget _dateField({
+  required String label,
+  required String value,
+  required VoidCallback onTap,
+}) {
+  return InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(12),
+    child: Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: const Color(0xFFE1E5ED)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.calendar_today_outlined,
+            size: 20,
+            color: Color(0xFF64748B),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  value,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 }
 
 // ── List with pagination ──────────────────────────────────────

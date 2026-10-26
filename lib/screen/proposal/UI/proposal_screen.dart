@@ -22,6 +22,23 @@ class _ProposalListScreenState extends State<ProposalListScreen> {
   int currentPage = 1;
   int pageSize = 10;
   final List<int> pageSizeOptions = [10, 20, 50];
+
+  final Set<String> _selectedProposalIds = {};
+bool _isDeleting = false;
+
+bool get _isSelectionMode => _selectedProposalIds.isNotEmpty;
+
+void _toggleProposalSelection(String id) {
+  setState(() {
+    if (!_selectedProposalIds.add(id)) {
+      _selectedProposalIds.remove(id);
+    }
+  });
+}
+
+void _clearProposalSelection() {
+  setState(() => _selectedProposalIds.clear());
+}
   
   
   final TextEditingController searchController =
@@ -269,10 +286,37 @@ InkWell(
        //backgroundColor: const Color(0xfff1f1f1),
 appBar: AppBar(
   automaticallyImplyLeading: true,
-  title: const Text('Proposals'),
   backgroundColor: const Color(0xfff1f1f1),
   surfaceTintColor: Colors.transparent,
   scrolledUnderElevation: 0,
+  title: Text(
+    _isSelectionMode
+        ? '${_selectedProposalIds.length} selected'
+        : 'Proposals',
+  ),
+  actions: [
+    if (_isSelectionMode) ...[
+      IconButton(
+        tooltip: 'Delete selected',
+        onPressed: _isDeleting ? null : _deleteSelectedProposals,
+        icon: _isDeleting
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(
+                Icons.delete_outline,
+                color: Colors.red,
+              ),
+      ),
+      IconButton(
+        tooltip: 'Cancel selection',
+        onPressed: _isDeleting ? null : _clearProposalSelection,
+        icon: const Icon(Icons.close),
+      ),
+    ],
+  ],
 ),
 
       body: SafeArea(
@@ -310,7 +354,25 @@ Row(
         height: 44,
         child: TextField(
           controller: searchController,
+          textInputAction: TextInputAction.search,
+          onChanged: (_) {
+            setState(() => currentPage = 1);
+          },
           decoration: InputDecoration(
+            suffixIcon: searchController.text.isEmpty
+                ? null
+                : IconButton(
+                    tooltip: 'Clear search',
+                    icon: const Icon(
+                      Icons.close,
+                      size: 18,
+                      color: Colors.grey,
+                    ),
+                    onPressed: () {
+                      searchController.clear();
+                      setState(() => currentPage = 1);
+                    },
+                  ),
             hintText: 'Search by title, email, or deal',
             hintStyle: const TextStyle(
               fontSize: 13,
@@ -488,8 +550,24 @@ if (selectedFilter != 'all' ||
                    final filter =
     selectedFilter.trim().toLowerCase();
 
+final query =
+    searchController.text.trim().toLowerCase();
+
 final List<Proposal> proposals =
     state.proposals.where((proposal) {
+  // ============================================================
+  // SEARCH (title, email, deal)
+  // ============================================================
+
+  if (query.isNotEmpty &&
+      ![
+        proposal.title,
+        proposal.email,
+        proposal.dealTitle,
+      ].any((field) => field.toLowerCase().contains(query))) {
+    return false;
+  }
+
   // ============================================================
   // STATUS FILTER
   // ============================================================
@@ -587,21 +665,36 @@ return Column(
           itemCount: paginatedProposals.length,
           separatorBuilder: (_, __) =>
               const SizedBox(height: 10),
-          itemBuilder: (context, index) {
-            final proposal = paginatedProposals[index];
+          
+itemBuilder: (context, index) {
+  final proposal = paginatedProposals[index];
+  final isSelected =
+      _selectedProposalIds.contains(proposal.id);
 
-            return ProposalCard(
-              key: ValueKey(proposal.id),
-              proposal: proposal,
-              onMorePressed: () {
-                _showActions(
-                  context,
-                  proposal,
-                );
-              },
-            );
-          },
-        ),
+ 
+return GestureDetector(
+  onLongPress: () => _toggleProposalSelection(proposal.id),
+  onTap: () {
+    if (_isSelectionMode) {
+      _toggleProposalSelection(proposal.id);
+    } else {
+      
+    }
+  },
+  child: ProposalCard(
+    key: ValueKey(proposal.id),
+    proposal: proposal,
+    isSelected: isSelected,
+    selectionMode: _isSelectionMode,
+    onMorePressed: () {
+      if (!_isSelectionMode) {
+        _showActions(context, proposal);
+      }
+    },
+  ),
+);
+
+},        ),
       ),
     ),
 
@@ -687,6 +780,67 @@ if (result == true && mounted) {
 floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,   );
   }
 
+  // ===============================================================
+  // deleteSelectedProposals
+  // ===============================================================
+
+  Future<void> _deleteSelectedProposals() async {
+  if (_selectedProposalIds.isEmpty || _isDeleting) return;
+
+  final ids = List<String>.from(_selectedProposalIds);
+
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('Delete proposals?'),
+      content: Text('Delete ${ids.length} selected proposal(s)?'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text(
+            'Delete',
+            style: TextStyle(color: Colors.red),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  if (confirmed != true || !mounted) return;
+
+  setState(() => _isDeleting = true);
+
+  try {
+    await context.read<ProposalCubit>().bulkDeleteProposals(
+      proposalIds: ids,
+    );
+
+    if (!mounted) return;
+
+    _clearProposalSelection();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${ids.length} proposal(s) deleted')),
+    );
+  } catch (e) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Delete failed: $e'),
+        backgroundColor: Colors.red,
+      ),
+    );
+  } finally {
+    if (mounted) {
+      setState(() => _isDeleting = false);
+    }
+  }
+}
   // ===============================================================
   // ACTIONS
   // ===============================================================

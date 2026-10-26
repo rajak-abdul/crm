@@ -10,6 +10,7 @@ import 'package:crm_app/screen/tasks/api_service/task_api_service.dart';
 import 'package:crm_app/screen/tasks/model/task/task_modal.dart';
 import 'package:crm_app/screen/tasks/repository/task_repository.dart';
 import 'package:crm_app/screen/tasks/view/linked_items_sheet.dart';
+import 'package:crm_app/screen/tasks/view/overdue_reason_dialog.dart';
 import 'package:crm_app/screen/tasks/view/task_notifications_view.dart';
 import 'package:crm_app/screen/tasks/view/task_pipeline_board.dart';
 import 'package:crm_app/screen/tasks/view/task_widgets.dart';
@@ -21,6 +22,7 @@ import 'package:crm_app/thems/app_themes.dart' show AppColors;
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:intl/intl.dart';
 
 // ══════════════════════════════════════════════════════════════
 // ENTRY POINT — wires API Service → Repository → ViewModel
@@ -45,6 +47,62 @@ const _leadBars = [0.12, 0.16, 0.22, 0.3, 0.36, 0.45, 0.55, 0.64, 0.74, 0.95];
 const _dealBars = [0.1, 0.14, 0.2, 0.26, 0.34, 0.42, 0.52, 0.62, 0.72, 0.95];
 const _closedLine = [0.1, 0.25, 0.2, 0.42, 0.3, 0.52, 0.38, 0.6, 0.66, 0.85];
 const _lostLine = [0.25, 0.18, 0.55, 0.3, 0.42, 0.62, 0.45, 0.9];
+
+// ══════════════════════════════════════════════════════════════
+// OVERDUE REASON — asks for each overdue task's delay reason, one
+// popup at a time, whenever the ViewModel reports some.
+// ══════════════════════════════════════════════════════════════
+class _OverdueReasonPrompt extends StatefulWidget {
+  final Widget child;
+
+  const _OverdueReasonPrompt({required this.child});
+
+  @override
+  State<_OverdueReasonPrompt> createState() => _OverdueReasonPromptState();
+}
+
+class _OverdueReasonPromptState extends State<_OverdueReasonPrompt> {
+  bool _asking = false;
+
+  Future<void> _askAll() async {
+    if (_asking) return;
+    _asking = true;
+
+    final vm = context.read<TaskViewModel>();
+    while (true) {
+      if (!mounted) break;
+      final queue = vm.state.overdueTasks;
+      // Not while another page is pushed on top of Tasks.
+      if (queue.isEmpty || ModalRoute.of(context)?.isCurrent == false) break;
+
+      final task = queue.first;
+      final sent = await showOverdueReasonDialog(
+        context,
+        task: task,
+        onSubmit: (reason) => vm.submitOverdueReason(task, reason),
+      );
+      if (!mounted) break;
+
+      // Backed out instead of answering — leave the Tasks screen.
+      if (!sent) {
+        Navigator.of(context).maybePop();
+        break;
+      }
+    }
+
+    _asking = false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return BlocListener<TaskViewModel, TaskState>(
+      listenWhen: (a, b) =>
+          b.overdueTasks.isNotEmpty && a.overdueTasks != b.overdueTasks,
+      listener: (_, __) => _askAll(),
+      child: widget.child,
+    );
+  }
+}
 
 // ══════════════════════════════════════════════════════════════
 // MY TASKS VIEW
@@ -104,6 +162,12 @@ class _TaskView extends StatelessWidget {
   Widget build(BuildContext context) {
     final vm = context.read<TaskViewModel>();
 
+    return _OverdueReasonPrompt(
+      child: _buildScaffold(context, vm),
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context, TaskViewModel vm) {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
@@ -155,6 +219,62 @@ class _TaskView extends StatelessWidget {
       ),
     );
   }
+
+  // ======================
+  // Task Screen
+  // ======================
+  Future<void> _selectOverviewPeriod(
+  BuildContext context,
+  TaskViewModel vm,
+  String period,
+) async {
+  if (period != 'custom') {
+    await _runAction(
+      context,
+      () => vm.changePeriod(period),
+    );
+    return;
+  }
+
+  final now = DateTime.now();
+
+  final range = await showDateRangePicker(
+    context: context,
+    firstDate: DateTime(2000),
+    lastDate: DateTime(now.year + 5),
+    initialDateRange: DateTimeRange(
+      start: DateTime(now.year, now.month, 1),
+      end: now,
+    ),
+    helpText: 'Select dashboard date range',
+    saveText: 'Apply',
+    builder: (context, child) {
+      return Theme(
+        data: Theme.of(context).copyWith(
+          colorScheme: Theme.of(context).colorScheme.copyWith(
+            primary: TaskPalette.accent,
+            surface: AppColors.surface,
+          ),
+        ),
+        child: child!,
+      );
+    },
+  );
+
+  if (range == null || !context.mounted) return;
+
+  final startDate = DateFormat('yyyy-MM-dd').format(range.start);
+  final endDate = DateFormat('yyyy-MM-dd').format(range.end);
+
+  await _runAction(
+    context,
+    () => vm.changePeriod(
+      'custom',
+      startDate: startDate,
+      endDate: endDate,
+    ),
+  );
+}
 
   List<Widget> _buildBody(
     BuildContext context,
@@ -250,12 +370,14 @@ class _TaskView extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            OverviewPeriodDropdown(
-              value: state.period,
-              onChanged: (period) =>
-                  _runAction(context, () => vm.changePeriod(period)),
-            ),
-          ],
+OverviewPeriodDropdown(
+  value: state.period,
+  onChanged: (period) => _selectOverviewPeriod(
+    context,
+    vm,
+    period,
+  ),
+),          ],
         ),
         const SizedBox(height: 14),
         Row(

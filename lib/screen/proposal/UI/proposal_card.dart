@@ -2,17 +2,22 @@ import 'package:crm_app/screen/proposal/UI/proposal_card_details_sheet.dart' sho
 import 'package:crm_app/screen/proposal/cubit/proposal_cubit.dart';
 import 'package:crm_app/screen/proposal/modal/proposal_modal.dart';
 import 'package:flutter/material.dart';
+import 'package:crm_app/thems/app_themes.dart' show AppColors;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 
 class ProposalCard extends StatefulWidget {
   final Proposal proposal;
   final VoidCallback onMorePressed;
+  final bool isSelected;
+  final bool selectionMode;
 
   const ProposalCard({
     super.key,
     required this.proposal,
     required this.onMorePressed,
+    required this.isSelected,
+    required this.selectionMode,
   });
 
   @override
@@ -56,6 +61,7 @@ void dispose() {
   _followUpCommentController?.dispose();
   super.dispose();
 }
+
 
   // ===============================================================
   // STATUS DISPLAY
@@ -351,18 +357,48 @@ onChanged: isUpdatingStatus
   @override
   Widget build(BuildContext context) {
     return Container(
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        color: const Color(0xfff1f1f1),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: const Color(0xFFF0F9FF),
-          width: .5,
-        ),
-      ),
+  clipBehavior: Clip.antiAlias,
+  decoration: BoxDecoration(
+    color: widget.isSelected
+        ? const Color(0xFFEEF5FF)
+        : const Color(0xfff1f1f1),
+    borderRadius: BorderRadius.circular(14),
+    border: Border.all(
+      color: widget.isSelected
+          ? const Color(0xFF3267D5)
+          : const Color(0xFFF0F9FF),
+      width: widget.isSelected ? 1.8 : 0.5,
+    ),
+  ),
       child: Stack(
         children: [
-
+          if (widget.selectionMode)
+  Positioned(
+    top: 6,
+    left: 8,
+    child: Container(
+      width: 15,
+      height: 15,
+      decoration: BoxDecoration(
+        color: widget.isSelected
+            ? const Color(0xFF3267D5)
+            : Colors.white,
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: const Color(0xFF3267D5),
+          width: 1.5,
+        ),
+      ),
+      child: widget.isSelected
+          ? const Icon(
+              Icons.check,
+              size: 12,
+              color: Colors.white,
+            )
+          : null,
+    ),
+  ),
+  
           // =========================================================
           // LEFT STATUS LINE
           // =========================================================
@@ -825,6 +861,7 @@ Future<void> _showFollowUpDetails(
                                   content: Text(
                                     'Follow-up updated',
                                   ),
+                                  backgroundColor: AppColors.success,
                                 ),
                               );
                             }
@@ -1258,6 +1295,7 @@ Widget _followUpEditMode({
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Proposal deleted'),
+        backgroundColor: AppColors.success,
       ),
     );
   } catch (e) {

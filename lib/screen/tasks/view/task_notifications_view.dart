@@ -62,6 +62,7 @@ class TaskNotificationsView extends StatelessWidget {
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(
         content: Text(error ?? 'Notification deleted'),
+        backgroundColor: error == null ? AppColors.success : AppColors.danger,
         behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 2),
       ));

@@ -12,6 +12,7 @@ import 'package:crm_app/screen/email/ui/create_email_screen.dart';
 import 'package:crm_app/screen/email/ui/recipents_helper.dart';
 import 'package:crm_app/shareWidgets/pagination.dart';
 import 'package:flutter/material.dart';
+import 'package:crm_app/thems/app_themes.dart' show AppColors;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:crm_app/screen/email/modal/scheduled_email_modal.dart';
 
@@ -498,21 +499,20 @@ Widget _buildEmailCard(ScheduledEmail email) {
               const Spacer(),
 
               // DELETE
-              InkWell(
-                borderRadius: BorderRadius.circular(20),
-                onTap: () {
-                  //_showDeleteConfirmation(email);
-                },
-                child: const Padding(
-                  padding: EdgeInsets.all(3),
-                  child: Icon(
-                    Icons.delete_outline,
-                    size: 16,
-                    color: Color(0xFFC7CAD1),
-                  ),
-                ),
-              ),
-            ],
+InkWell(
+  borderRadius: BorderRadius.circular(20),
+  onTap: _isDeletingEmail
+      ? null
+      : () => _deleteSentEmail(email.id.toString()),
+  child: const Padding(
+    padding: EdgeInsets.all(3),
+    child: Icon(
+      Icons.delete_outline,
+      size: 20,
+      color: Color(0xFFDC2626),
+    ),
+  ),
+),            ],
           ),
 
           // HTML:
@@ -2101,7 +2101,93 @@ Future<void> _editScheduledEmail(
       ),
     );
   }
-}Future<void> _cancelScheduledEmail(
+}
+
+// =============================
+// Delete functionality
+// =============================
+
+bool _isDeletingEmail = false;
+
+Future<void> _deleteSentEmail(String emailId) async {
+  if (_isDeletingEmail) return;
+
+  final confirm = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('Delete sent email?'),
+      content: const Text(
+        'Are you sure you want to delete this email from history?',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text(
+            'Delete',
+            style: TextStyle(color: Colors.red),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  if (confirm != true || !mounted) return;
+
+  setState(() => _isDeletingEmail = true);
+
+  try {
+    final success = await EmailHistoryCubit().deleteSentEmail(emailId);
+
+    if (!mounted) return;
+
+    if (success) {
+  // If the deleted email was the only item on this page,
+  // go back one page when possible.
+  final historyState = context.read<EmailHistoryCubit>().state;
+
+  var page = _historyPage;
+
+  if (historyState is EmailHistorySuccess &&
+      historyState.emails.length == 1 &&
+      page > 1) {
+    page--;
+  }
+
+  await _loadHistory(page);
+
+  if (!mounted) return;
+
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Text('Email deleted successfully'),
+    ),
+  );
+} else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to delete email'),
+        ),
+      );
+    }
+  } catch (e) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Unable to delete email: $e'),
+      ),
+    );
+  } finally {
+    if (mounted) {
+      setState(() => _isDeletingEmail = false);
+    }
+  }
+}
+Future<void> _cancelScheduledEmail(
   ScheduledEmail email,
 ) async {
   try {
@@ -2118,6 +2204,7 @@ Future<void> _editScheduledEmail(
         content: Text(
           'Scheduled email cancelled successfully',
         ),
+        backgroundColor: AppColors.success,
       ),
     );
   } catch (e) {

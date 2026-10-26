@@ -1,11 +1,54 @@
 import 'package:crm_app/screen/meeting/cubit/meeting_cubit.dart';
 import 'package:crm_app/screen/meeting/cubit/meeting_state.dart';
 import 'package:crm_app/screen/meeting/modal/meeting.dart';
+import 'package:crm_app/thems/app_themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+
+/// Shown when a meeting is created while Google isn't connected — from the
+/// Meetings screen and from the lead / deal Meetings tabs. Info only: tap
+/// outside to dismiss.
+void showConnectGoogleDialog(BuildContext context) {
+  showDialog(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        titlePadding: const EdgeInsets.fromLTRB(24, 28, 24, 0),
+        contentPadding: const EdgeInsets.fromLTRB(24, 14, 24, 32),
+        title: const Row(
+          children: [
+            Icon(
+              Icons.account_circle_outlined,
+              color: Colors.blue,
+              size: 30,
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Connect Google',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: const Text(
+          'You need to connect your Google account before creating a meeting.',
+          style: TextStyle(fontSize: 15, height: 1.4),
+        ),
+      );
+    },
+  );
+}
 
 class MeetingsScreen extends StatelessWidget {
   const MeetingsScreen({super.key});
@@ -73,7 +116,10 @@ void initState() {
           meeting.description.toLowerCase().contains(_searchQuery) ||
           (meeting.creatorEmail ?? '')
               .toLowerCase()
-              .contains(_searchQuery);
+              .contains(_searchQuery) ||
+          meeting.attendees.any(
+            (email) => email.toLowerCase().contains(_searchQuery),
+          );
     }).toList();
   }
 
@@ -142,63 +188,12 @@ void initState() {
   return 'scheduled';
 }
 
-  void _showConnectGoogleDialog() {
-    showDialog(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          title: const Row(
-            children: [
-              Icon(
-                Icons.account_circle_outlined,
-                color: Colors.blue,
-              ),
-              SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'Connect Google',
-                ),
-              ),
-            ],
-          ),
-          content: const Text(
-            'You need to connect your Google account before creating a meeting.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(dialogContext);
-              },
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pop(dialogContext);
-                // _connectGoogle();
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
-                foregroundColor: Colors.white,
-              ),
-              child: const Text(
-                'Connect Google',
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
   void _onNewMeeting() {
     final state = context.read<MeetingsCubit>().state;
 
     if (state is MeetingsLoaded &&
         !state.googleConnected) {
-      _showConnectGoogleDialog();
+      showConnectGoogleDialog(context);
       return;
     }
 
@@ -243,13 +238,17 @@ void initState() {
 
           if (!mounted) return;
 
-          if (success) {
-            Navigator.pop(context);
-
-            _showMessage(
-              'Meeting created successfully.',
-            );
+          if (!success) {
+            throw Exception(context.read<MeetingsCubit>().lastError ??
+                'Failed to create meeting.');
           }
+
+          Navigator.pop(context);
+
+          _showMessage(
+            'Meeting created successfully.',
+            success: true,
+          );
         },
       );
     },
@@ -292,25 +291,30 @@ void _showEditMeetingSheet(Meeting meeting) {
 
           if (!mounted) return;
 
-          if (success) {
-            if (sheetContext.mounted) {
-              Navigator.pop(sheetContext);
-            }
-
-            _showMessage(
-              'Meeting updated successfully.',
-            );
+          if (!success) {
+            throw Exception(context.read<MeetingsCubit>().lastError ??
+                'Failed to update meeting.');
           }
+
+          if (sheetContext.mounted) {
+            Navigator.pop(sheetContext);
+          }
+
+          _showMessage(
+            'Meeting updated successfully.',
+            success: true,
+          );
         },
       );
     },
   );
 }
 
-  void _showMessage(String message) {
+  void _showMessage(String message, {bool success = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
+        backgroundColor: success ? AppColors.success : AppColors.danger,
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -463,6 +467,12 @@ void _showEditMeetingSheet(Meeting meeting) {
                   ),
                   child: TextField(
                     controller: _searchController,
+                    textInputAction: TextInputAction.search,
+                    onChanged: (value) {
+                      setState(() {
+                        _searchQuery = value.trim().toLowerCase();
+                      });
+                    },
                     decoration: InputDecoration(
                       hintText: 'Search meetings...',
                       prefixIcon: const Icon(
@@ -471,8 +481,10 @@ void _showEditMeetingSheet(Meeting meeting) {
                       ),
                       suffixIcon: _searchQuery.isNotEmpty
                           ? IconButton(
+                              tooltip: 'Clear search',
                               onPressed: () {
                                 _searchController.clear();
+                                setState(() => _searchQuery = '');
                               },
                               icon: const Icon(
                                 Icons.close_rounded,
@@ -756,6 +768,7 @@ return _MeetingCard(
                 success
                     ? 'Meeting cancelled successfully.'
                     : 'Failed to cancel meeting.',
+                success: success,
               );
             },
             child: const Text('Cancel Meeting'),
@@ -1557,20 +1570,12 @@ void initState() {
   );
 
   if (!emailRegex.hasMatch(email)) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Please enter a valid email address.'),
-      ),
-    );
+    _showSnack('Please enter a valid email address.');
     return;
   }
 
   if (_attendees.contains(email)) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('This email is already added.'),
-      ),
-    );
+    _showSnack('This email is already added.');
     return;
   }
 
@@ -1648,13 +1653,7 @@ void _removeAttendee(String email) {
     );
 
     if (!selected.isAfter(_startDateTime)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'End time must be after start time.',
-          ),
-        ),
-      );
+      _showSnack('End time must be after start time.');
       return;
     }
 
@@ -1667,20 +1666,12 @@ void _removeAttendee(String email) {
   final title = _titleController.text.trim();
 
   if (title.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Please enter a meeting title.'),
-      ),
-    );
+    _showSnack('Please enter a meeting title.');
     return;
   }
 
   if (!_endDateTime.isAfter(_startDateTime)) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('End time must be after start time.'),
-      ),
-    );
+    _showSnack('End time must be after start time.');
     return;
   }
 
@@ -1705,16 +1696,52 @@ void _removeAttendee(String email) {
       _creating = false;
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Failed to save meeting: $e'),
-      ),
-    );
+    _showSnack(e.toString().replaceFirst('Exception: ', ''));
   }
 }
 
+  // The sheet's own messenger, so snackbars show on top of the sheet
+  // instead of on the page behind it.
+  final _messengerKey = GlobalKey<ScaffoldMessengerState>();
+
+  void _showSnack(String message, {bool error = true}) {
+    final messenger = _messengerKey.currentState;
+    if (messenger == null) return;
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: error ? AppColors.danger : AppColors.success,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ScaffoldMessenger(
+        key: _messengerKey,
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          // The sheet pads itself for the keyboard.
+          resizeToAvoidBottomInset: false,
+          // The Scaffold fills the route, so it takes over the barrier's
+          // tap-outside-to-close; taps on the sheet itself don't close it.
+          body: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => Navigator.of(context).maybePop(),
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: GestureDetector(
+                onTap: () {},
+                child: _buildSheet(context),
+              ),
+            ),
+          ),
+        ),
+      );
+
+  Widget _buildSheet(BuildContext context) {
     final bottom =
         MediaQuery.of(context).viewInsets.bottom;
 

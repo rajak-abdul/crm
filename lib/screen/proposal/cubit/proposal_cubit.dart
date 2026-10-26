@@ -599,6 +599,73 @@ Future<void> getDraftProposals() async {
 }
 
 // ============================================================
+// BULK DELETE PROPOSALS
+// ============================================================
+
+Future<void> bulkDeleteProposals({
+  required List<String> proposalIds,
+}) async {
+  try {
+    if (proposalIds.isEmpty) {
+      throw Exception('Please select at least one proposal');
+    }
+
+    await initialize();
+
+    debugPrint('Bulk deleting proposals: $proposalIds');
+
+    final response = await dio.delete(
+      '/proposal/bulk-delete',
+      data: {
+        'ids': proposalIds,
+      },
+    );
+
+    debugPrint('Bulk delete status: ${response.statusCode}');
+    debugPrint('Bulk delete response: ${response.data}');
+
+    if (response.statusCode == 200 &&
+        response.data is Map &&
+        response.data['success'] == true) {
+      final currentState = state;
+
+      if (currentState is ProposalLoaded) {
+        final updatedProposals =
+            currentState.proposals.where((proposal) {
+          return !proposalIds.contains(proposal.id);
+        }).toList();
+
+        emit(ProposalLoaded(updatedProposals));
+      }
+
+      debugPrint('Proposals deleted successfully');
+    } else {
+      throw Exception(
+        response.data is Map
+            ? response.data['message']?.toString() ??
+                'Failed to delete proposals'
+            : 'Failed to delete proposals',
+      );
+    }
+  } on DioException catch (e) {
+    debugPrint(
+      'Bulk delete error: ${e.response?.statusCode}',
+    );
+    debugPrint('Bulk delete response: ${e.response?.data}');
+
+    throw Exception(
+      e.response?.data is Map
+          ? e.response?.data['message']?.toString() ??
+              'Failed to delete proposals'
+          : 'Failed to delete proposals',
+    );
+  } catch (e) {
+    debugPrint('Bulk delete exception: $e');
+    rethrow;
+  }
+}
+
+// ============================================================
 // SEND DRAFT PROPOSAL
 // ============================================================
 

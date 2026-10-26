@@ -92,14 +92,19 @@ class ContactModel {
     );
   }
 
-  ContactModel copyWith({int? unreadCount, LastMessageModel? lastMessage}) {
+  ContactModel copyWith({
+    int? unreadCount,
+    LastMessageModel? lastMessage,
+    bool clearLastMessage = false,
+  }) {
     return ContactModel(
       id: id,
       name: name,
       email: email,
       profileImage: profileImage,
       role: role,
-      lastMessage: lastMessage ?? this.lastMessage,
+      lastMessage:
+          clearLastMessage ? null : lastMessage ?? this.lastMessage,
       unreadCount: unreadCount ?? this.unreadCount,
     );
   }
@@ -242,7 +247,7 @@ class GroupModel {
     );
   }
 
-  GroupModel copyWith({int? unreadCount}) {
+  GroupModel copyWith({int? unreadCount, bool clearLastMessage = false}) {
     return GroupModel(
       id: id,
       name: name,
@@ -253,7 +258,7 @@ class GroupModel {
       admins: admins,
       memberCount: memberCount,
       onlyAdminsCanMessage: onlyAdminsCanMessage,
-      lastMessage: lastMessage,
+      lastMessage: clearLastMessage ? null : lastMessage,
       unreadCount: unreadCount ?? this.unreadCount,
     );
   }

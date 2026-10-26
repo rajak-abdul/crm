@@ -10,7 +10,6 @@ import 'package:connectivity_plus/connectivity_plus.dart' show Connectivity, Con
 import 'package:crm_app/database/local_db.dart';
 import 'package:crm_app/modals/followup_model.dart';
 import 'package:crm_app/modals/modals.dart' show Lead;
-import 'package:crm_app/screen/LeaderBoard/cubit/leaderBoard_cubit.dart';
 import 'package:crm_app/screen/dashboard/ui/dashboard_screen.dart'
     show
         PipelineStage,
@@ -19,9 +18,9 @@ import 'package:crm_app/screen/dashboard/ui/dashboard_screen.dart'
         DashboardSummary,
         DashboardInitial,
         DashboardLoaded,
-        DashboardError,
-        InvoiceRecord;
+        DashboardError;
 import 'package:crm_app/services/auth_interceptor.dart';
+import 'package:crm_app/utils/data_sync.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:dio/dio.dart'
     show DioExceptionType, DioException, Dio, BaseOptions, InterceptorsWrapper;
@@ -35,7 +34,6 @@ class DashboardCubit extends Cubit<DashboardState> {
 
   late final Dio _dio;
   String? _cachedToken;
-  final Map<String, double> _rateCache = {};
 
   DashboardCubit() : super(DashboardInitial()) {
     _dio = Dio(BaseOptions(
@@ -102,10 +100,10 @@ class DashboardCubit extends Cubit<DashboardState> {
   // NEW: dashboard overview
   _fetchDashboardOverview(),
 
-  _fetchSummary(),
-  _fetchInvoices(),
-
   _fetchAllDealMaps(),
+
+  // Account currency from /users/me — label for Total Revenue
+  _fetchAccountCurrency(),
 ]);
 
 final leadsResult =
@@ -187,19 +185,19 @@ if (revenueByCurrency is Map) {
   }
 }
 
+// Value stays as-is; only the label follows /users/me when it differs.
+preferredCurrency = _labelCurrency(
+  preferredCurrency,
+  results[4] as String?,
+);
+
 debugPrint(
   '[Revenue DEBUG] FINAL '
   'currency=$preferredCurrency '
   'totalRevenue=$totalRevenue',
 );
-final base =
-    results[3] as DashboardSummary;
-
-final invoices =
-    results[4] as List<InvoiceRecord>;
-
 final allDealRows =
-    results[5] as List<Map<String, dynamic>>;
+    results[3] as List<Map<String, dynamic>>;
       final allLeads = canViewAll
           ? allLeadsRaw
           : allLeadsRaw.where((l) => l.assignedToId == userId).toList();
@@ -210,9 +208,8 @@ final allDealRows =
           _buildTodaysFollowUps(allLeads, allDealRows); // ← ADD
 
 
-      final pendingLeads = base.pendingLeads > 0
-          ? base.pendingLeads
-          : allLeads.where((l) => l.status != 'Converted').length;
+      final pendingLeads =
+          allLeads.where((l) => l.status != 'Converted').length;
 
       final scopedDeals = _scopeDealsForUser(
         allDealRows,
@@ -226,7 +223,7 @@ final allDealRows =
   range: 'all',
   month: null,
   year: null,
-  apiFallback: base,
+  apiFallback: const DashboardSummary(),
   dealsFetched: allDealRows.isNotEmpty,
 );
 // ════════════════════════════════════════════════════════════
@@ -251,68 +248,6 @@ debugPrint(
   'totalRevenue=$totalRevenue, '
   'currency=$preferredCurrency',
 );
-//
-      Map<String, dynamic>? topPerformer;
-
-try {
-  final now = DateTime.now();
-
-  final start = DateTime(
-    now.year,
-    now.month,
-    now.day,
-  ).subtract(const Duration(days: 6));
-
-  final end = DateTime(
-    now.year,
-    now.month,
-    now.day,
-  );
-
-  final leaderboard = await LeaderboardService.fetchLeaderboard(
-    token: _cachedToken ?? '',
-    filterType: 'last7',
-    startDate:
-        "${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')}",
-    endDate:
-        "${end.year}-${end.month.toString().padLeft(2, '0')}-${end.day.toString().padLeft(2, '0')}",
-  );
-
-  if (leaderboard.data.isNotEmpty) {
-    if (canViewAll) {
-      // Admin/manager view — show the actual #1 performer.
-      leaderboard.data.sort(
-        (a, b) => b.convertedLeads.compareTo(a.convertedLeads),
-      );
-      final top = leaderboard.data.first;
-      topPerformer = {
-        "name": top.name,
-        "email": top.email,
-        "conversionRate": top.conversionRate,
-        "convertedLeads": top.convertedLeads,
-        "totalLeads": top.totalLeads,
-        "productiveDays": top.productiveDays,
-      };
-    } else {
-      // Salesperson view — show their own stats, not the leaderboard's #1.
-      final mine = _findOwnLeaderboardEntry(
-        leaderboard.data,
-        userId: userId,
-        userName: userName,
-      );
-      if (mine != null) {
-        topPerformer = {
-          "name": mine.name,
-          "email": mine.email,
-          "conversionRate": mine.conversionRate,
-          "convertedLeads": mine.convertedLeads,
-          "totalLeads": mine.totalLeads,
-          "productiveDays": mine.productiveDays,
-        };
-      }
-    }
-  }
-} catch (_) {}
   final summary = DashboardSummary(
   totalLeads: overviewTotalLeads,
 
@@ -323,8 +258,6 @@ try {
   pendingLeads: pendingLeads,
 
   pendingInvoices: overviewPendingInvoices,
-
-  leadsChange: base.leadsChange,
 
   dealsChange: dealMetrics.dealsChange,
 
@@ -345,12 +278,11 @@ try {
       if (isClosed) return;
 
       final freshState = DashboardLoaded(
-        topPerformer: topPerformer,
         allLeads: allLeads,
         recentLeads: recentLeads,
         summary: summary,
         pipeline: pipeline,
-        invoices: invoices,
+        invoices: const [],
         todaysFollowUps: todaysFollowUps, // ← ADD
         allDealRows: allDealRows,
         filterRange: 'all',
@@ -410,6 +342,42 @@ Future<Map<String, dynamic>> _fetchDashboardOverview({
     debugPrint('[Dashboard Overview] $e');
     return {};
   }
+}
+
+/// GET /users/me → account currency ("USD"). Falls back to the value
+/// cached in prefs; null when neither is available.
+Future<String?> _fetchAccountCurrency() async {
+  final prefs = await SharedPreferences.getInstance();
+  final cached = prefs.getString('currency')?.trim().toUpperCase() ?? '';
+  try {
+    // Shared with the drawer / UserCubit for 2 min (SessionCache).
+    final data = await SessionCache.usersMe();
+    if (data is Map) {
+      // "currency" is top-level; also tolerate { user: {...} } / { data: {...} }
+      final source = data['currency'] != null
+          ? data
+          : (data['user'] is Map
+              ? data['user'] as Map
+              : (data['data'] is Map ? data['data'] as Map : data));
+      final live = source['currency']?.toString().trim().toUpperCase() ?? '';
+      if (live.isNotEmpty) return live;
+    }
+  } catch (e) {
+    debugPrint('[Dashboard] /users/me currency: $e');
+  }
+  return cached.isNotEmpty ? cached : null;
+}
+
+/// Overview's preferredCurrency when it matches /users/me; otherwise the
+/// /users/me currency. Keeps the overview value if /users/me is unknown.
+String _labelCurrency(String preferredCurrency, String? meCurrency) {
+  final me = meCurrency?.trim().toUpperCase() ?? '';
+  if (me.isEmpty) return preferredCurrency;
+  if (preferredCurrency.trim().toUpperCase() == me) return preferredCurrency;
+  debugPrint(
+    '[Revenue] preferredCurrency=$preferredCurrency ≠ /users/me=$me → using $me',
+  );
+  return me;
 }
 // ════════════════════════════════════════════════════════════
 // OVERVIEW CARD CALCULATIONS
@@ -499,7 +467,6 @@ int _getOverviewPendingInvoices(
       final cached = await LocalDb.instance.loadDashboard(userId: userId);
       if (cached == null || isClosed) return;
       emit(DashboardLoaded(
-        topPerformer: null,
         allLeads: cached.recentLeads,
         recentLeads: cached.recentLeads,
         summary: cached.summary,
@@ -589,12 +556,6 @@ final filteredDealRows = scopedDeals.where((deal) {
 );
 
 
-    List<InvoiceRecord> filtered = cur.invoices.where((inv) {
-      return _dateInWindow(inv.issueDate, window);
-    }).toList();
-
-    
-
     List<Lead> leadsInRange = cur.allLeads.where((l) {
       return _dateInWindow(l.createdAt, window);
     }).toList();
@@ -671,6 +632,12 @@ if (filteredRevenueByCurrency is Map) {
   }
 }
 
+// Value stays as-is; only the label follows /users/me when it differs.
+filteredPreferredCurrency = _labelCurrency(
+  filteredPreferredCurrency,
+  await _fetchAccountCurrency(),
+);
+
 debugPrint(
   '[FILTER REVENUE] '
   'range=$range '
@@ -679,90 +646,11 @@ debugPrint(
   'currency=$filteredPreferredCurrency '
   'total=$filteredTotalRevenue',
 );
-    
-    // Top Performer
-    Map<String, dynamic>? topPerformer;
-
-    try {
-      String? startDate;
-      String? endDate;
-
-      String filterType = range;
-
-      // TODAY
-      if (range == 'today') {
-        final now = DateTime.now();
-
-        startDate =
-            "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
-
-        endDate = startDate;
-      }
-
-      // YEAR
-if (range == 'year' && year != null) {
-  filterType = 'year';
-  startDate = "$year-01-01";
-  endDate = "$year-12-31";
-}
-
-      // MONTH
-      if (range == 'month' && month != null && year != null) {
-        filterType = 'month';
-
-        startDate = "$year-${month.toString().padLeft(2, '0')}-01";
-
-        final lastDay = DateTime(year, month + 1, 0).day;
-
-        endDate = "$year-${month.toString().padLeft(2, '0')}-$lastDay";
-      }
-
-      final leaderboard = await LeaderboardService.fetchLeaderboard(
-        token: _cachedToken ?? '',
-        filterType: filterType,
-        startDate: startDate,
-        endDate: endDate,
-      );
-
-      if (leaderboard.data.isNotEmpty) {
-  if (canViewAll) {
-    leaderboard.data.sort(
-      (a, b) => b.convertedLeads.compareTo(a.convertedLeads),
-    );
-    final top = leaderboard.data.first;
-    topPerformer = {
-      "name": top.name,
-      "email": top.email,
-      "conversionRate": top.conversionRate,
-      "convertedLeads": top.convertedLeads,
-      "totalLeads": top.totalLeads,
-      "productiveDays": top.productiveDays,
-    };
-  } else {
-    final mine = _findOwnLeaderboardEntry(
-      leaderboard.data,
-      userId: userId,
-      userName: userName,
-    );
-    if (mine != null) {
-      topPerformer = {
-        "name": mine.name,
-        "email": mine.email,
-        "conversionRate": mine.conversionRate,
-        "convertedLeads": mine.convertedLeads,
-        "totalLeads": mine.totalLeads,
-        "productiveDays": mine.productiveDays,
-      };
-    }
-  }
-}
-    } catch (_) {}
 
     if (isClosed) return;
 
     emit(
       DashboardLoaded(
-        topPerformer: topPerformer,
         allLeads: cur.allLeads,
         recentLeads: cur.recentLeads,
         summary: cur.summary.copyWith(
@@ -776,7 +664,7 @@ if (range == 'year' && year != null) {
 
 ),
         pipeline: filteredPipeline,
-invoices: filtered,
+invoices: const [],
 todaysFollowUps: cur.todaysFollowUps
     .where((f) => _dateInWindow(f.followUpDate, window))
     .toList(),
@@ -1089,104 +977,6 @@ if (range == 'today') {      final cur = _dealCountsInRange(
   }
 
   // ════════════════════════════════════════════════════════════
-  // REVENUE
-  // ════════════════════════════════════════════════════════════
-
-  Future<Map<String, double>> _fetchRatesForInvoices(
-      List<InvoiceRecord> invoices) async {
-    final currencies = invoices
-        .map((i) => i.currency.toUpperCase().trim())
-        .where((c) => c.isNotEmpty && c != 'INR')
-        .toSet();
-    if (currencies.isEmpty) return _rateCache;
-
-    await Future.wait(currencies.map((ccy) async {
-      if (_rateCache.containsKey(ccy)) return;
-      try {
-        final res = await _dio.get('/invoices/exchange-rate/$ccy');
-        final rate = double.tryParse(res.data?['rate']?.toString() ?? '');
-        if (rate != null && rate > 0) _rateCache[ccy] = rate;
-      } catch (_) {}
-    }));
-    return _rateCache;
-  }
-
-  _RevenueResult _computeRevenue(
-    List<InvoiceRecord> invoices, {
-    Map<String, double> rates = const {},
-  }) {
-    double paid = 0, unpaid = 0;
-    for (final inv in invoices) {
-      final ccy = inv.currency.toUpperCase();
-      double inrAmt = 0;
-
-      if (ccy == 'INR') {
-        inrAmt = inv.total;
-      } else if (inv.status == 'paid') {
-        if (inv.exchangeRate != null && inv.exchangeRate! > 0) {
-          inrAmt = inv.total * inv.exchangeRate!;
-        } else if (inv.inrAmount != null && inv.inrAmount! > 0) {
-          inrAmt = inv.inrAmount!;
-        } else if ((rates[ccy] ?? 0) > 0) {
-          inrAmt = inv.total * rates[ccy]!;
-        }
-      } else {
-        if (inv.exchangeRate != null && inv.exchangeRate! > 0) {
-          inrAmt = inv.total * inv.exchangeRate!;
-        } else if ((rates[ccy] ?? 0) > 0) {
-          inrAmt = inv.total * rates[ccy]!;
-        }
-      }
-
-      if (inv.status == 'paid') {
-        paid += inrAmt;
-      } else {
-        unpaid += inrAmt;
-      }
-    }
-    return _RevenueResult(paid: paid, unpaid: unpaid, total: paid + unpaid);
-  }
-
-  // ════════════════════════════════════════════════════════════
-  // INVOICES
-  // ════════════════════════════════════════════════════════════
-
-  Future<List<InvoiceRecord>> _fetchInvoices() async {
-    try {
-      final res = await _dio.get('/invoices/getInvoice');
-      final body = res.data;
-      debugPrint('[Invoice] status=${res.statusCode}');
-
-      List<dynamic> raw = [];
-      if (body is List) {
-        raw = body;
-      } else if (body is Map) {
-        for (final k in ['data', 'invoices', 'result', 'records', 'invoice']) {
-          if (body[k] is List) {
-            raw = body[k] as List;
-            break;
-          }
-        }
-        if (raw.isEmpty) {
-          for (final v in (body as Map).values) {
-            if (v is List) {
-              raw = v;
-              break;
-            }
-          }
-        }
-      }
-      return raw
-          .whereType<Map>()
-          .map((e) => InvoiceRecord.fromJson(Map<String, dynamic>.from(e)))
-          .toList();
-    } catch (e) {
-      debugPrint('[Invoice] error: $e');
-      return [];
-    }
-  }
-
-  // ════════════════════════════════════════════════════════════
   // LEADS
   // ════════════════════════════════════════════════════════════
 
@@ -1316,26 +1106,6 @@ if (range == 'today') {      final cur = _dealCountsInRange(
   return items;
 }
   // ════════════════════════════════════════════════════════════
-  // SUMMARY
-  // ════════════════════════════════════════════════════════════
-
-  Future<DashboardSummary> _fetchSummary() async {
-    try {
-      final res = await _dio.get('/dashboard/summary');
-      final body = res.data;
-      debugPrint('[Summary] ${res.statusCode}  body=$body');
-      if (body is Map) {
-        return DashboardSummary.fromSummaryJson(
-            Map<String, dynamic>.from(body as Map));
-      }
-      return const DashboardSummary();
-    } catch (e) {
-      debugPrint('[Summary] error: $e');
-      return const DashboardSummary();
-    }
-  }
-
-  // ════════════════════════════════════════════════════════════
   // PIPELINE
   // ════════════════════════════════════════════════════════════
 
@@ -1368,21 +1138,7 @@ if (range == 'today') {      final cur = _dealCountsInRange(
 
     return false;
   }
-T? _findOwnLeaderboardEntry<T>(
-  List<T> entries, {
-  required String userId,
-  required String userName,
-}) {
-  final uname = userName.trim().toLowerCase();
-  for (final e in entries) {
-    final dynamic d = e;
-    final id = (d.id ?? d.userId ?? '').toString();
-    final name = (d.name ?? '').toString().trim().toLowerCase();
-    if (userId.isNotEmpty && id == userId) return e;
-    if (uname.isNotEmpty && name == uname) return e;
-  }
-  return null;
-}
+
   List<PipelineStage> _applyPipelineStageRules(List<PipelineStage> input) {
     var proposalCount = 0;
     var proposalValue = 0.0;
@@ -1533,19 +1289,6 @@ T? _findOwnLeaderboardEntry<T>(
 
 
 
-// ════════════════════════════════════════════════════════════
-// INTERNAL HELPERS
-// ════════════════════════════════════════════════════════════
-
-
-class _RevenueResult {
-  final double paid, unpaid, total;
-  const _RevenueResult({
-    required this.paid,
-    required this.unpaid,
-    required this.total,
-  });
-}
 // ===========================
 // Leads total count extractor
 // ==========================

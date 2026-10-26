@@ -35,4 +35,3 @@ class EmailContactsError extends EmailContactsState {
 
   const EmailContactsError(this.message);
 }
-

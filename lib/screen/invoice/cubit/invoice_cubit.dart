@@ -83,7 +83,20 @@ Future<void> _initDio() async {
   // ================
   // get currency through me 
   // ================
+  /// Shared by every invoice card, so /users/me is fetched once per cubit
+  /// instead of once per card. A failure isn't cached (next call retries).
+  Future<String?>? _accountCurrencyFuture;
+
   Future<String> getAccountCurrency() async {
+    final value = await (_accountCurrencyFuture ??= _fetchAccountCurrency());
+    if (value == null) {
+      _accountCurrencyFuture = null;
+      return 'INR';
+    }
+    return value;
+  }
+
+  Future<String?> _fetchAccountCurrency() async {
   try {
     await _ensureDio();
 
@@ -101,19 +114,68 @@ Future<void> _initDio() async {
     debugPrint('Status: ${e.response?.statusCode}');
     debugPrint('Response: ${e.response?.data}');
 
-    return 'INR';
+    return null;
   } catch (e) {
     debugPrint('ACCOUNT CURRENCY ERROR: $e');
-    return 'INR';
+    return null;
   }
 }
+
+  // ================
+  // currency conversion (card's second amount)
+  // ================
+  /// Rates keyed by base currency, one request per base for all cards.
+  final Map<String, Future<Map<String, double>>> _ratesByBase = {};
+
+  /// How much 1 [from] is worth in [to] — open.er-api.com, the same source
+  /// the deal form uses for its "≈" conversion. Null when unavailable.
+  Future<double?> conversionRate(String from, String to) async {
+    final f = from.trim().toUpperCase();
+    final t = to.trim().toUpperCase();
+    if (f.isEmpty || t.isEmpty) return null;
+    if (f == t) return 1;
+    final rates = await (_ratesByBase[f] ??= _fetchRates(f));
+    if (rates.isEmpty) _ratesByBase.remove(f); // retry on the next call
+    return rates[t];
+  }
+
+  /// Factor turning [inv]'s own-currency amounts into [account]
+  /// (the /users/me currency) — the one rule the carousel and the cards'
+  /// "≈" line share, so their figures add up:
+  ///   same currency → 1; backend's locked rate when it was saved in
+  ///   [account]; otherwise today's rate. Null when no rate is available.
+  Future<double?> rateToAccount(Invoice inv, String account) async {
+    final own = inv.currency.trim().toUpperCase();
+    final target = account.trim().toUpperCase();
+    if (own == target) return 1;
+    return inv.savedRateTo(target) ?? await conversionRate(own, target);
+  }
+
+  Future<Map<String, double>> _fetchRates(String base) async {
+    try {
+      final res = await Dio().get('https://open.er-api.com/v6/latest/$base');
+      final rates = res.data is Map ? res.data['rates'] : null;
+      if (rates is! Map) return const {};
+      return {
+        for (final e in rates.entries)
+          if (e.value is num) e.key.toString(): (e.value as num).toDouble(),
+      };
+    } catch (e) {
+      debugPrint('[InvoiceCubit] exchange rates for $base failed: $e');
+      return const {};
+    }
+  }
 
   // ─────────────────────────────────────────────────────────────
   // LOAD
   // ─────────────────────────────────────────────────────────────
-  Future<void> load() async {
+  /// [silent] keeps the current list on screen (no full-screen spinner) and,
+  /// on failure, leaves it in place and returns the error instead of
+  /// emitting [InvoiceError]. Returns null on success.
+  Future<String?> load({bool silent = false}) async {
     await _ensureDio();
-    emit(InvoiceLoading());
+    final keepList = silent && state is InvoiceLoaded;
+    if (!keepList) emit(InvoiceLoading());
 
     // Permissions + current user (used to scope invoice visibility)
     await PermissionHelper.load();
@@ -178,17 +240,16 @@ Future<void> _initDio() async {
         salesUsers: users,
         deals: deals,
       ));
+      return null;
     } on DioException catch (e) {
-      // ✅ FIX 3: On any network failure emit the SQLite cache so the app
-      // remains fully usable offline — not just an empty list.
-
-      {
-        emit(InvoiceError(e.response?.statusCode == 404
-            ? 'Invoice endpoint not found (404).'
-            : _dioMsg(e)));
-      }
+      final msg = e.response?.statusCode == 404
+          ? 'Invoice endpoint not found (404).'
+          : _dioMsg(e);
+      if (!keepList) emit(InvoiceError(msg));
+      return msg;
     } catch (e) {
-      emit(InvoiceError(e.toString()));
+      if (!keepList) emit(InvoiceError(e.toString()));
+      return e.toString();
     }
   }
 
@@ -507,6 +568,16 @@ Future<String?> recordPayment(
             customFields: data['customFields'] is List
                 ? data['customFields'] as List
                 : null,
+
+            breakdown: data['breakdown'] is List
+                ? (data['breakdown'] as List)
+                    .whereType<Map>()
+                    .map((m) => InvoiceBreakdownItem.fromJson(
+                        Map<String, dynamic>.from(m)))
+                    .toList()
+                : null,
+
+            quantityLabel: data['quantityLabel']?.toString(),
           );
         }).toList(),
       ),
@@ -570,13 +641,18 @@ Future<String?> recordPayment(
   // ─────────────────────────────────────────────────────────────
   // BULK DELETE
   // ─────────────────────────────────────────────────────────────
-  Future<String?> bulkDeleteInvoices(List<String> ids) async {
+  /// DELETE /{tenant}/api/invoices/bulk-delete  body: { "ids": [...] }
+  /// → { "success": true, "message": "N invoice(s) deleted successfully",
+  ///     "deletedCount": N }
+  ///
+  /// Removes the invoices from the list straight away; on any failure
+  /// (offline included — nothing is queued) they're put back. Returns the
+  /// API's message on success, or throws with the error message.
+  Future<String> bulkDeleteInvoices(List<String> ids) async {
     await _ensureDio();
-    if (ids.isEmpty) return null;
+    if (ids.isEmpty) return 'Nothing to delete';
     final prevState = state;
     final idSet = ids.toSet();
-
-    // ✅ FIX 11: Delete from SQLite first so offline bulk-delete works.
 
     if (state is InvoiceLoaded) {
       final s = state as InvoiceLoaded;
@@ -585,15 +661,27 @@ Future<String?> recordPayment(
     }
 
     try {
-      await _dio.delete('/Invoices/bulk-delete', data: {'ids': ids});
-      return null;
+      final res = await _dio.delete('/invoices/bulk-delete', data: {'ids': ids});
+      final body = res.data;
+      if (body is Map && body['success'] == false) {
+        throw Exception(body['message']?.toString() ?? 'Bulk delete failed');
+      }
+      final deleted = body is Map ? body['deletedCount'] : null;
+      if (deleted is num && deleted < ids.length) {
+        // Some weren't deleted on the server — resync the real list.
+        await load(silent: true);
+      }
+      return body is Map && body['message'] != null
+          ? body['message'].toString()
+          : '${ids.length} invoice(s) deleted successfully';
     } on DioException catch (e) {
-      if (_isOfflineError(e)) return null;
       emit(prevState);
-      return _dioMsg(e);
+      throw Exception(_isOfflineError(e)
+          ? 'You are offline — invoices were not deleted'
+          : _dioMsg(e));
     } catch (e) {
       emit(prevState);
-      return e.toString();
+      rethrow;
     }
   }
 
@@ -615,9 +703,10 @@ Future<String?> recordPayment(
   // ─────────────────────────────────────────────────────────────
   // REFRESH
   // ─────────────────────────────────────────────────────────────
-  Future<void> refresh() async {
-    await _ensureDio();
-    if (state is! InvoiceLoading) load();
+  /// Pull-to-refresh / app-bar refresh. Returns an error message on failure.
+  Future<String?> refresh() async {
+    if (state is InvoiceLoading) return null;
+    return load(silent: true);
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -688,6 +777,13 @@ Future<String?> recordPayment(
       body['customFields'] = data['customFields'] is List
           ? data['customFields']
           : <dynamic>[];
+    }
+    if (data.containsKey('breakdown')) {
+      body['breakdown'] =
+          data['breakdown'] is List ? data['breakdown'] : <dynamic>[];
+    }
+    if (data.containsKey('quantityLabel')) {
+      body['quantityLabel'] = data['quantityLabel']?.toString() ?? '';
     }
 
     // Preferred-currency display values, if the caller supplied them.
@@ -1056,18 +1152,23 @@ Future<String?> recordPayment(
   // ==================
   // invoice email
   // ==================
-  Future<String?> sendInvoiceEmail(String invoiceId) async {
+  /// [ok] tells the caller whether to show a success (green) or an error
+  /// (red) snackbar — both outcomes come back with a message.
+  Future<({bool ok, String message})> sendInvoiceEmail(String invoiceId) async {
   try {
     final res = await _dio.post(
       '/invoices/sendEmail/$invoiceId',
     );
 
-    return res.data['message']?.toString() ??
-        'Invoice email sent successfully!';
+    return (
+      ok: true,
+      message: res.data['message']?.toString() ??
+          'Invoice email sent successfully!',
+    );
   } on DioException catch (e) {
-    return _dioMsg(e,);
+    return (ok: false, message: _dioMsg(e));
   } catch (e) {
-    return 'Failed to send invoice email';
+    return (ok: false, message: 'Failed to send invoice email');
   }
 }
 

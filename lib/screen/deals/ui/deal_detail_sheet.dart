@@ -1,8 +1,12 @@
+import 'dart:convert';
+
+import 'package:crm_app/modals/modals.dart' show CustomField;
 import 'package:crm_app/screen/deals/cubit/attachment_deals_cubit.dart';
 import 'package:crm_app/screen/deals/cubit/deals_attachment_state.dart';
 import 'package:crm_app/screen/deals/cubit/deals_cubit.dart';
 import 'package:crm_app/screen/deals/modal/deal_modal.dart';
 import 'package:crm_app/screen/deals/ui/deal_form_modal.dart';
+import 'package:crm_app/screen/deals/ui/deal_proposals_tab.dart';
 import 'package:crm_app/screen/deals/ui/deal_screen.dart';
 import 'package:crm_app/screen/deals/ui/deals_shared_widget.dart';
 import 'package:crm_app/screen/invoice/cubit/invoice_cubit.dart';
@@ -10,12 +14,18 @@ import 'package:crm_app/screen/invoice/modal/invoice_model.dart';
 import 'package:crm_app/screen/invoice/ui/invoice_details_screen.dart';
 import 'package:crm_app/screen/invoice/ui/invoice_screen.dart';
 import 'package:crm_app/screen/leads/ui/meeting.dart' show MeetingCard;
-import 'package:crm_app/screen/meeting/UI/meeting.dart' show CreateMeetingSheet;
+import 'package:crm_app/screen/meeting/UI/meeting.dart' show CreateMeetingSheet, showConnectGoogleDialog;
 import 'package:crm_app/screen/meeting/cubit/meeting_cubit.dart';
 import 'package:crm_app/screen/meeting/cubit/meeting_state.dart';
+import 'package:crm_app/shareWidgets/actitvity_timeline_ui.dart';
+import 'package:crm_app/shareWidgets/contact_actions.dart';
+import 'package:crm_app/shareWidgets/linked_work_tab.dart';
+import 'package:crm_app/shareWidgets/record_emails_tab.dart';
+import 'package:crm_app/utils/permission_helper.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:phone_numbers_parser/phone_numbers_parser.dart';
 
@@ -53,6 +63,25 @@ class DealDetailSheet extends StatefulWidget {
 }
 
 class _DealDetailSheetState extends State<DealDetailSheet> {
+  // Optional tabs, by role permission.
+  bool get _showTasks => PermissionHelper.can('assigned_tasks');
+  bool get _showTargets => PermissionHelper.can('my_targets');
+  bool get _showLinkedWork => _showTasks || _showTargets;
+  bool get _showInvoices => PermissionHelper.can('invoices');
+  bool get _showMeetings => PermissionHelper.can('meetings');
+  bool get _showProposals => PermissionHelper.can('proposal');
+  // Emails tab = the Email Campaign module.
+  bool get _showEmails => PermissionHelper.can('email_campaigns');
+  int get _tabCount => 6 + // incl. Images
+      (_showLinkedWork ? 1 : 0) +
+      (_showInvoices ? 1 : 0) +
+      (_showProposals ? 1 : 0) +
+      (_showMeetings ? 1 : 0) +
+      (_showEmails ? 1 : 0);
+
+  /// Details, Activity, [Tasks & Targets], Follow-up history.
+  int get _followUpTabIndex => _showLinkedWork ? 3 : 2;
+
   // CHANGED: mutable local copy of the deal, updated after schedule/complete
   late Future<List<Invoice>> _invoiceFuture;
   late Deal _deal;
@@ -225,7 +254,7 @@ for (final item in updated!.followUpHistory) {
   child: ScaffoldMessenger(
     key: _detailMessengerKey,
     child: DefaultTabController(
-  length: 7,
+  length: _tabCount,
   child: Scaffold(
     backgroundColor: Colors.transparent,
     floatingActionButton: Builder(
@@ -235,7 +264,10 @@ for (final item in updated!.followUpHistory) {
         return AnimatedBuilder(
           animation: tabController,
           builder: (_, __) {
-            if (tabController.index != 2) return const SizedBox.shrink();
+            // "+" only on the Follow-up history tab.
+            if (tabController.index != _followUpTabIndex) {
+              return const SizedBox.shrink();
+            }
             return Padding(padding: const EdgeInsets.only(bottom: 60),
             child: FloatingActionButton(
               heroTag: 'dealDetailFab',
@@ -377,22 +409,34 @@ Future.delayed(const Duration(milliseconds: 200), () {
                     ]),
                   ),
                   const SizedBox(height: 10),
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 20),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
                     child: TabBar(
                       isScrollable: true,
                       tabAlignment: TabAlignment.start,
                       labelColor: AppColors.primary,
                       unselectedLabelColor: AppColors.textSecondary,
                       indicatorColor: AppColors.primary,
+                      // Tasks & Targets, Invoice and Meetings follow the
+                      // role's permissions; keep in step with TabBarView.
                       tabs: [
-                        Tab(text: 'Details'),
-                        Tab(text: 'Activity'),
-                        Tab(text: 'Follow-up history'),
-                        Tab(text:'Attachments'),
-                        Tab(text:'Invoice'),
-                        Tab(text:'Notes'),
-                        Tab(text:'Meetings'),
+                        const Tab(text: 'Details'),
+                        const Tab(text: 'Activity'),
+                        if (_showLinkedWork)
+                          Tab(
+                            text: LinkedWorkTab.labelFor(
+                              tasks: _showTasks,
+                              targets: _showTargets,
+                            ),
+                          ),
+                        const Tab(text: 'Follow-up history'),
+                        const Tab(text:'Attachments'),
+                        const Tab(text: 'Images'),
+                        if (_showInvoices) const Tab(text:'Invoice'),
+                        if (_showProposals) const Tab(text: 'Proposals'),
+                        const Tab(text:'Notes'),
+                        if (_showMeetings) const Tab(text:'Meetings'),
+                        if (_showEmails) const Tab(text: 'Emails'),
                       ],
                     ),
                   ),
@@ -402,11 +446,36 @@ Future.delayed(const Duration(milliseconds: 200), () {
                       children: [
                         _buildDetailsTab(ctrl),
                         _buildActivityTab(ctrl),
+                        if (_showLinkedWork)
+                        LinkedWorkTab(
+                          key: ValueKey('linked-work-${_deal.id}'),
+                          kind: LinkedWorkKind.deal,
+                          id: _deal.id,
+                          showTasks: _showTasks,
+                          showTargets: _showTargets,
+                        ),
                         _buildFollowupHistoryTab(ctrl),
                          _buildAttachements(ctrl), // new
-                         _buildInvoiceTab(ctrl), // new
+                         _buildImagesTab(ctrl),
+                         if (_showInvoices) _buildInvoiceTab(ctrl), // new
+                         // GET /deals/:id/proposals
+                         if (_showProposals)
+                           DealProposalsTab(
+                             key: ValueKey('proposals-${_deal.id}'),
+                             deal: _deal,
+                             controller: ctrl,
+                           ),
                          _buildNewTab3(ctrl), // new
-                         _buildMeetingsTab(),
+                         if (_showMeetings) _buildMeetingsTab(),
+                         // GET /deals/:id/emails
+                         if (_showEmails)
+                         RecordEmailsTab(
+                           key: ValueKey('emails-${_deal.id}'),
+                           kind: LinkedWorkKind.deal,
+                           id: _deal.id,
+                           recipientName: _deal.name,
+                           recipientEmail: _deal.email,
+                         ),
                       ],
                     ),
                   ),
@@ -418,136 +487,283 @@ Future.delayed(const Duration(milliseconds: 200), () {
       )
   );
 
-  Widget _buildDetailsTab(ScrollController ctrl) => ListView(
-        controller: ctrl,
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-        children: [
-          _row(Icons.payments_outlined, 'Deal Value',
-              fmtVal(_deal.currency, _deal.value)),
-          if (_followUpLocal(_deal.followUpDate) != null)
-            _row(
-              Icons.event_outlined,
-              'Follow Up',
-              DateFormat('dd MMM yyyy, hh:mm a')
-                  .format(_followUpLocal(_deal.followUpDate)!),
-            ),
-          _row(
-              Icons.person_outline,
-              'Assigned To',
-              _deal.assignTo.trim().isEmpty
-                  ? 'Unassigned'
-                  : _deal.assignTo.trim()),
-          _row(
-            Icons.phone_outlined,
-            'Phone',
-            _deal.phone.trim().isEmpty
-                ? '-'
-                : _formatPhone(_deal.phone, _deal.countryCode),
+  // ── Details — same layout as lead details: every field is shown,
+  // blanks read "Not specified"; two columns on wide screens.
+  Widget _buildDetailsTab(ScrollController ctrl) {
+    String valueOrDash(String? value) {
+      final v = value?.trim() ?? '';
+      return v.isEmpty ? 'Not specified' : v;
+    }
+
+    String formatDate(DateTime? date) {
+      if (date == null) return 'Not specified';
+      return DateFormat('M/d/yyyy').format(date.toLocal());
+    }
+
+    final followUp = _followUpLocal(_deal.followUpDate);
+    final phone = _deal.phone.trim();
+    final altPhone = _deal.alternativeNumber.trim();
+    final email = _deal.email.trim();
+    final altEmail = _deal.alternativeEmail.trim();
+
+    // Phone / email are links: tap → call/copy or mail/copy.
+    final leftColumn = [
+      _infoItem(Icons.handshake_outlined, 'Deal Name', valueOrDash(_deal.name)),
+      _infoItem(Icons.business_outlined, 'Company',
+          valueOrDash(_deal.companyName)),
+      _infoItem(Icons.email_outlined, 'Email', valueOrDash(email),
+          onTap: email.isEmpty
+              ? null
+              : () => showEmailActions(context, email: email)),
+      _infoItem(Icons.email_outlined, 'Alternate Email', valueOrDash(altEmail),
+          onTap: altEmail.isEmpty
+              ? null
+              : () => showEmailActions(context, email: altEmail)),
+      _infoItem(
+        Icons.phone_outlined,
+        'Phone',
+        phone.isEmpty
+            ? 'Not specified'
+            : _formatPhone(phone, _deal.countryCode),
+        onTap: phone.isEmpty
+            ? null
+            : () => showPhoneActions(
+                  context,
+                  number: dialableNumber(phone, countryCode: _deal.countryCode),
+                  display: _formatPhone(phone, _deal.countryCode),
+                ),
+      ),
+      _infoItem(
+        Icons.phone_outlined,
+        'Alternate Phone',
+        altPhone.isEmpty
+            ? 'Not specified'
+            : _formatPhone(altPhone, _deal.countryCode),
+        onTap: altPhone.isEmpty
+            ? null
+            : () => showPhoneActions(
+                  context,
+                  number:
+                      dialableNumber(altPhone, countryCode: _deal.countryCode),
+                  display: _formatPhone(altPhone, _deal.countryCode),
+                ),
+      ),
+      _infoItem(Icons.corporate_fare_outlined, 'Client Type',
+          valueOrDash(_deal.clientType)),
+      _infoItem(Icons.public_outlined, 'Source', valueOrDash(_deal.source)),
+      _infoItem(Icons.business_center_outlined, 'Industry',
+          valueOrDash(_deal.industry)),
+      _infoItem(Icons.people_outline, 'Company Size',
+          valueOrDash(_deal.companySize)),
+      _infoItem(Icons.payments_outlined, 'Deal Value',
+          fmtVal(_deal.currency, _deal.value)),
+    ];
+
+    final rightColumn = [
+      _infoItem(Icons.flag_outlined, 'Stage',
+          valueOrDash(DealConstants.canonicalStage(_deal.stage))),
+      _infoItem(Icons.person_outline, 'Assigned To',
+          _deal.assignTo.trim().isEmpty ? 'Unassigned' : _deal.assignTo.trim()),
+      _infoItem(Icons.description_outlined, 'Requirement',
+          valueOrDash(_deal.requirement)),
+      _infoItem(Icons.location_on_outlined, 'Address',
+          valueOrDash(_deal.address)),
+      _infoItem(Icons.location_on_outlined, 'City', valueOrDash(_deal.city)),
+      _infoItem(Icons.location_on_outlined, 'State', valueOrDash(_deal.state)),
+      _infoItem(
+          Icons.location_on_outlined, 'Pincode', valueOrDash(_deal.pincode)),
+      _infoItem(Icons.public_outlined, 'Country', valueOrDash(_deal.country)),
+      _infoItem(
+          Icons.my_location_outlined,
+          'Latitude',
+          _deal.latitude == null
+              ? 'Not specified'
+              : _deal.latitude.toString()),
+      _infoItem(
+          Icons.my_location_outlined,
+          'Longitude',
+          _deal.longitude == null
+              ? 'Not specified'
+              : _deal.longitude.toString()),
+      // Deals keep the follow-up time too, so show it.
+      _infoItem(
+          Icons.calendar_today_outlined,
+          'Follow-up Date',
+          followUp == null
+              ? 'Not specified'
+              : DateFormat('M/d/yyyy, h:mm a').format(followUp)),
+      _infoItem(Icons.calendar_today_outlined, 'Created',
+          formatDate(_deal.createdAt)),
+    ];
+
+    return ListView(
+      controller: ctrl,
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      children: [
+        const Text(
+          'Client Information',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+            color: AppColors.textPrimary,
           ),
-          if (_deal.alternativeNumber.trim().isNotEmpty)
-            _row(Icons.phone_forwarded_outlined, 'Alternative Number',
-                _deal.alternativeNumber.trim()),
-          _row(Icons.email_outlined, 'Email',
-              _deal.email.trim().isEmpty ? '-' : _deal.email),
-          if (_deal.alternativeEmail.trim().isNotEmpty)
-            _row(Icons.alternate_email_outlined, 'Alternative Email',
-                _deal.alternativeEmail.trim()),
-          _row(Icons.public_outlined, 'Country',
-              _deal.country.trim().isEmpty ? '-' : _deal.country),
-          if (_deal.industry.isNotEmpty)
-            _row(Icons.business_outlined, 'Industry', _deal.industry),
-          if (_deal.source.isNotEmpty)
-            _row(Icons.radar_outlined, 'Source', _deal.source),
-          if (_deal.address.isNotEmpty)
-            _row(Icons.location_on_outlined, 'Address', _deal.address),
-          if (_deal.notes.isNotEmpty)
-            _row(Icons.notes_outlined, 'Notes', _deal.notes),
-          if (_deal.attachments.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            const Text(
-              'Attachments',
-              style: TextStyle(
+        ),
+        const SizedBox(height: 24),
+
+        LayoutBuilder(
+          builder: (context, constraints) {
+            if (constraints.maxWidth >= 600) {
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: leftColumn,
+                    ),
+                  ),
+                  const SizedBox(width: 45),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: rightColumn,
+                    ),
+                  ),
+                ],
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [...leftColumn, ...rightColumn],
+            );
+          },
+        ),
+
+        // ── Notes ──
+        if (_deal.notes.trim().isNotEmpty) ...[
+          const SizedBox(height: 8),
+          const Divider(),
+          const SizedBox(height: 16),
+          const Text(
+            'Notes',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Text(
+              _deal.notes,
+              style: const TextStyle(
                 fontSize: 14,
-                fontWeight: FontWeight.w700,
                 color: AppColors.textPrimary,
+                height: 1.4,
               ),
             ),
-            const SizedBox(height: 10),
-            ..._deal.attachments.map(
-              (a) => Builder(
-                builder: (tileCtx) => Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: AppColors.background,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: AppColors.border),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(
-                        Icons.insert_drive_file,
-                        size: 18,
-                        color: AppColors.textSecondary,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              a.name,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 13,
-                                color: AppColors.textPrimary,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            Text(
-                              '${(a.size / 1024).toStringAsFixed(1)} KB',
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: AppColors.textHint,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.visibility,
-                          size: 14,
-                          color: AppColors.primary,
-                        ),
-                        tooltip: 'Preview',
-onPressed: () {
-  tileCtx.read<DealsAttachmentCubit>().previewAttachment(
-    a.path,
-  );
-},                      ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.download,
-                          size: 12,
-                          color: AppColors.primary,
-                        ),
-                        tooltip: 'Download',
-onPressed: () {
- tileCtx.read<DealsAttachmentCubit>().downloadAttachment(
-  rawPath: a.path,
-  fileName: a.name,
-);
-},                      ),
-                    ],
+          ),
+        ],
+
+        // ── Custom Fields ──
+        if (_customFields.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          const Text(
+            'Custom Fields',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          ..._customFields.map(
+            (field) => _row(
+              field.type == 'date'
+                  ? Icons.calendar_today_outlined
+                  : (field.type == 'dropdown' || field.type == 'select')
+                      ? Icons.arrow_drop_down_circle_outlined
+                      : Icons.tune_outlined,
+              field.name,
+              field.value.trim().isEmpty ? 'Not specified' : field.value,
+            ),
+          ),
+        ],
+        // Attachments and images have their own tabs.
+      ],
+    );
+  }
+
+  /// Lead-details style row: plain icon, UPPERCASE label, larger value.
+  /// [onTap] makes the value a link (phone → call/copy, email → mail/copy).
+  Widget _infoItem(
+    IconData icon,
+    String label,
+    String value, {
+    VoidCallback? onTap,
+  }) {
+    final row = Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: AppColors.primary.withOpacity(.65)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label.toUpperCase(),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textSecondary,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: .3,
                   ),
                 ),
-              ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: onTap != null
+                        ? AppColors.primary
+                        : AppColors.textPrimary,
+                    fontWeight: FontWeight.w500,
+                    decoration:
+                        onTap != null ? TextDecoration.underline : null,
+                    decorationColor: AppColors.primary.withOpacity(0.4),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ],
-      );
+      ),
+    );
+    if (onTap == null) return row;
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: onTap,
+      child: row,
+    );
+  }
+
+  List<CustomField> get _customFields => _deal.customFields
+      .whereType<Map>()
+      .map((m) => CustomField.fromJson(Map<String, dynamic>.from(m)))
+      .where((f) => f.name.trim().isNotEmpty)
+      .toList();
 
   String _formatPhone(String phone, String countryCode) {
     if (phone.trim().isEmpty) return '-';
@@ -582,72 +798,22 @@ onPressed: () {
         );
       }
       final activities = snapshot.data ?? [];
-      if (activities.isEmpty) {
-        return const Center(
-          child: Text('No activity yet',
-              style: TextStyle(color: AppColors.textSecondary, fontSize: 13)),
-        );
-      }
 
-      IconData iconFor(String type) {
-        switch (type) {
-          case 'followup':
-            return Icons.event_available_outlined;
-          case 'stage_change':
-            return Icons.swap_horiz_outlined;
-          default:
-            return Icons.circle_outlined;
-        }
-      }
-
-      return ListView.separated(
+      // Deal entries carry only a description, so it doubles as the title.
+      return ActivityTimeline(
         controller: ctrl,
-        padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-        itemCount: activities.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 10),
-        itemBuilder: (_, i) {
-          final item = activities[i];
-          return Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: AppColors.background,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppColors.border),
+        subtitle: 'Recent activity and updates for this deal',
+        emptyMessage: 'No activity yet',
+        activities: [
+          for (final item in activities)
+            ActivityTimelineItem(
+              type: item.type,
+              title: item.description,
+              description: '',
+              performedBy: item.performedByName,
+              timestamp: item.timestamp,
             ),
-            child: Row(children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: AppColors.primaryLight,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(iconFor(item.type), size: 16, color: AppColors.primary),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(item.description,
-                        style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textPrimary)),
-                    const SizedBox(height: 3),
-                    Text(
-                      DateFormat('dd MMM yyyy, hh:mm a').format(item.timestamp.toLocal()) +
-                          (item.performedByName.isNotEmpty ? '  ·  ${item.performedByName}' : ''),
-                      style: const TextStyle(
-                          fontSize: 12,
-                          color: AppColors.textSecondary,
-                          fontWeight: FontWeight.w500),
-                    ),
-                  ],
-                ),
-              ),
-            ]),
-          );
-        },
+        ],
       );
     },
   );
@@ -1380,7 +1546,9 @@ if (history.isEmpty &&
     );
   }
 
-  Widget _row(IconData icon, String lbl, String val) => Padding(
+  /// [onTap] makes the value a link (shown in blue, underlined).
+  Widget _row(IconData icon, String lbl, String val, {VoidCallback? onTap}) {
+    final row = Padding(
         padding: const EdgeInsets.only(bottom: 14),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Container(
@@ -1401,200 +1569,512 @@ if (history.isEmpty &&
                         fontWeight: FontWeight.w500)),
                 const SizedBox(height: 2),
                 Text(val.isEmpty ? '-' : val,
-                    style: const TextStyle(
+                    style: TextStyle(
                         fontSize: 14,
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w500)),
+                        color: onTap != null
+                            ? AppColors.primary
+                            : AppColors.textPrimary,
+                        fontWeight: FontWeight.w500,
+                        decoration:
+                            onTap != null ? TextDecoration.underline : null,
+                        decorationColor:
+                            AppColors.primary.withOpacity(0.4))),
               ])),
         ]),
       );
+    if (onTap == null) return row;
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: onTap,
+      child: row,
+    );
+  }
       
-Widget _buildAttachements(ScrollController ctrl) => ListView(
+// ── Attachments & Images — same layout as the lead detail sheet ──
+
+/// Per deal, as in the deal form.
+static const int _maxFiles = 5;
+
+List<String> _paths(List<Attachment> files) =>
+    files.map((f) => f.path).where((p) => p.isNotEmpty).toList();
+
+/// PATCH /deals/update-deal/:id with new uploads plus the existing files
+/// to keep (existingAttachments / existingImages as JSON, like the form).
+/// Anything left out of the keep lists is removed from the deal.
+Future<bool> _saveDealFiles({
+  List<PlatformFile> attachments = const [],
+  List<XFile> images = const [],
+  required List<String> keepAttachments,
+  required List<String> keepImages,
+}) async {
+  final dealsCubit = context.read<DealsCubit>();
+  final rootNav = Navigator.of(context, rootNavigator: true);
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => const Center(child: CircularProgressIndicator()),
+  );
+  try {
+    await dealsCubit.updateDeal(
+      _deal.id,
+      {
+        'dealName': _deal.name,
+        'companyName': _deal.companyName,
+        'phoneNumber': _deal.phone,
+        'email': _deal.email,
+        'stage': _deal.stage,
+        'value': _deal.value,
+        'currency': _deal.currency,
+        'existingAttachments': jsonEncode(keepAttachments),
+        'existingImages': jsonEncode(keepImages),
+      },
+      attachments: attachments,
+      images: images,
+    );
+  } finally {
+    rootNav.pop();
+  }
+  if (!mounted) return false;
+  final state = dealsCubit.state;
+  if (state is DealsError) {
+    _showSnack(
+      context,
+      SnackBar(content: Text(state.message), backgroundColor: Colors.red),
+    );
+    return false;
+  }
+  await _refreshDeal(dealsCubit);
+  return true;
+}
+
+Future<bool> _confirmDelete(String what) async =>
+    await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Delete $what?'),
+        content: Text('Are you sure you want to delete this $what?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    ) ==
+    true;
+
+void _toast(String message) => _showSnack(
+      context,
+      SnackBar(content: Text(message), backgroundColor: Colors.green),
+    );
+
+Widget _uploadFab({
+  required String tooltip,
+  required IconData icon,
+  required VoidCallback onPressed,
+}) =>
+    Positioned(
+      right: 20,
+      bottom: 20,
+      child: FloatingActionButton(
+        heroTag: tooltip,
+        mini: true,
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        elevation: 4,
+        tooltip: tooltip,
+        onPressed: onPressed,
+        child: Icon(icon, size: 20),
+      ),
+    );
+
+Widget _emptyTab(ScrollController ctrl, String text) => ListView(
       controller: ctrl,
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
       children: [
-        /// Upload Card
-        InkWell(
-          onTap: () async {
+        const SizedBox(height: 80),
+        Center(
+          child: Text(
+            text,
+            style: const TextStyle(
+              fontSize: 13,
+              color: AppColors.textSecondary,
+            ),
+          ),
+        ),
+      ],
+    );
+
+// ── Attachments ──
+
+Widget _buildAttachements(ScrollController ctrl) => Stack(
+      children: [
+        _attachmentsList(ctrl),
+        _uploadFab(
+          tooltip: 'Upload attachment',
+          icon: Icons.attach_file,
+          onPressed: _uploadAttachment,
+        ),
+      ],
+    );
+
+Widget _attachmentsList(ScrollController ctrl) {
+  final files = _deal.attachments;
+  if (files.isEmpty) return _emptyTab(ctrl, 'No attachments');
+
+  return ListView.builder(
+    controller: ctrl,
+    padding: const EdgeInsets.fromLTRB(20, 12, 20, 80),
+    itemCount: files.length,
+    itemBuilder: (context, index) {
+      final a = files[index];
+      return Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppColors.background,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          children: [
+            Icon(_fileIcon(a.name), size: 22, color: AppColors.primary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    displayFileName(a.name),
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '${(a.size / 1024).toStringAsFixed(1)} KB',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppColors.textHint,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: 'Preview',
+              icon: const Icon(Icons.visibility_outlined,
+                  size: 19, color: AppColors.primary),
+              onPressed: () => context
+                  .read<DealsAttachmentCubit>()
+                  .previewAttachment(a.path),
+            ),
+            IconButton(
+              tooltip: 'Download',
+              icon: const Icon(Icons.download_outlined,
+                  size: 19, color: AppColors.primary),
+              onPressed: () =>
+                  context.read<DealsAttachmentCubit>().downloadAttachment(
+                        rawPath: a.path,
+                        fileName: a.name,
+                      ),
+            ),
+            IconButton(
+              tooltip: 'Delete',
+              icon: const Icon(Icons.delete_outline,
+                  size: 19, color: Colors.red),
+              onPressed: () => _deleteAttachment(a),
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+Future<void> _uploadAttachment() async {
+  final room = _maxFiles - _deal.attachments.length;
+  if (room <= 0) {
+    _showSnack(
+      context,
+      const SnackBar(
+        content: Text('Maximum $_maxFiles attachments allowed'),
+        backgroundColor: Colors.red,
+      ),
+    );
+    return;
+  }
+
   final result = await FilePicker.platform.pickFiles(
     allowMultiple: true,
     withData: true,
     type: FileType.any,
   );
+  if (result == null || result.files.isEmpty || !mounted) return;
 
-  if (result == null || result.files.isEmpty) return;
-
-  final dealsCubit = context.read<DealsCubit>();
-
-  final payload = {
-    "dealName": _deal.name,
-    "companyName": _deal.companyName,
-    "phoneNumber": _deal.phone,
-    "email": _deal.email,
-    "stage": _deal.stage,
-    "value": _deal.value,
-    "currency": _deal.currency,
-
-    // Keep existing attachments
-    "retainedAttachmentPaths":
-        _deal.attachments.map((e) => e.path).toList(),
-  };
-
-  await dealsCubit.updateDeal(
-    _deal.id,
-    payload,
-    attachments: result.files,
+  final picked = result.files.take(room).toList();
+  final ok = await _saveDealFiles(
+    attachments: picked,
+    keepAttachments: _paths(_deal.attachments),
+    keepImages: _paths(_deal.images),
   );
+  if (!ok || !mounted) return;
+  _toast(picked.length == 1
+      ? 'Attachment uploaded successfully'
+      : '${picked.length} attachments uploaded successfully');
+}
 
-  if (!mounted) return;
-
-  await _refreshDeal(dealsCubit);
-
-  _showSnack(
-    context,
-    const SnackBar(
-      content: Text("Attachments uploaded successfully"),
-      backgroundColor: Colors.green,
-    ),
+Future<void> _deleteAttachment(Attachment file) async {
+  if (!await _confirmDelete('attachment') || !mounted) return;
+  final ok = await _saveDealFiles(
+    keepAttachments: _paths(
+        _deal.attachments.where((a) => a.path != file.path).toList()),
+    keepImages: _paths(_deal.images),
   );
-},
-          borderRadius: BorderRadius.circular(14),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 18),
-            decoration: BoxDecoration(
-              color: AppColors.primaryLight,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: AppColors.primary.withOpacity(.25),
-              ),
-            ),
-            child: const Column(
-              children: [
-                Icon(
-                  Icons.cloud_upload_outlined,
-                  color: AppColors.primary,
-                  size: 25,
-                ),
-                SizedBox(height: 8),
-                Text(
-                  "Upload Attachment",
-                  style: TextStyle(
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.primary,
-                  ),
-                ),
-                SizedBox(height: 4),
-                Text(
-                  "PDF, Image, Excel, Word, ZIP...",
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ],
-            ),
-          ),
+  if (ok && mounted) _toast('Attachment deleted successfully');
+}
+
+// ── Images ──
+
+String _imageUrl(String path) {
+  if (path.startsWith('http://') || path.startsWith('https://')) return path;
+  final normalized = path.startsWith('/') ? path : '/$path';
+  return 'https://crm-backend-api.techzarinfo.cloud$normalized';
+}
+
+Widget _buildImagesTab(ScrollController ctrl) => Stack(
+      children: [
+        _imagesGrid(ctrl),
+        _uploadFab(
+          tooltip: 'Upload image',
+          icon: Icons.upload_rounded,
+          onPressed: _uploadImage,
         ),
-
-        const SizedBox(height: 22),
-
-        const Text(
-          "Existing Attachments",
-          style: TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-
-        const SizedBox(height: 12),
-
-        if (_deal.attachments.isEmpty)
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 50),
-            child: const Column(
-              children: [
-                Icon(
-                  Icons.folder_open,
-                  size: 60,
-                  color: Colors.grey,
-                ),
-                SizedBox(height: 12),
-                Text(
-                  "No attachments available",
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ],
-            ),
-          )
-        else
-          ..._deal.attachments.map(
-            (a) => Card(
-              elevation: 0,
-              margin: const EdgeInsets.only(bottom: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-                side: const BorderSide(
-                  color: AppColors.border,
-                ),
-              ),
-              child: ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: AppColors.primaryLight,
-                  child: Icon(
-                    _fileIcon(a.name),
-                    color: AppColors.primary,
-                  ),
-                ),
-                title: Text(
-                 displayFileName(a.name),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  "${(a.size / 1024).toStringAsFixed(1)} KB",
-                ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      tooltip: "Preview",
-                      icon: const Icon(
-                        Icons.visibility,
-                        color: AppColors.primary,
-                        size: 20,
-                      ),
-                      onPressed: () {
-                        context
-                            .read<DealsAttachmentCubit>()
-                            .previewAttachment(a.path);
-                      },
-                    ),
-                    IconButton(
-                      tooltip: "Download",
-                      icon: const Icon(
-                        Icons.download_outlined,
-                        color: AppColors.primary,
-                        size: 20,
-                      ),
-                      onPressed: () {
-                        context
-                            .read<DealsAttachmentCubit>()
-                            .downloadAttachment(
-                              rawPath: a.path,
-                              fileName: a.name,
-                            );
-                      },
-                    ),
-                    
-                  ],
-                ),
-              ),
-            ),
-          ),
       ],
     );
+
+Widget _imagesGrid(ScrollController ctrl) {
+  final images = _deal.images.where((i) => i.path.isNotEmpty).toList();
+  if (images.isEmpty) return _emptyTab(ctrl, 'No images');
+
+  return GridView.builder(
+    controller: ctrl,
+    padding: const EdgeInsets.fromLTRB(20, 12, 20, 80),
+    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+      crossAxisCount: 3,
+      crossAxisSpacing: 10,
+      mainAxisSpacing: 10,
+    ),
+    itemCount: images.length,
+    itemBuilder: (context, index) {
+      final image = images[index];
+      final imageUrl = _imageUrl(image.path);
+
+      return Stack(
+        children: [
+          GestureDetector(
+            onTap: () => _showImagePreview(imageUrl),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.network(
+                imageUrl,
+                width: double.infinity,
+                height: double.infinity,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  color: AppColors.background,
+                  child: const Icon(Icons.broken_image, color: Colors.grey),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            right: 5,
+            bottom: 5,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _imageAction(
+                  color: Colors.black54,
+                  tooltip: 'Download',
+                  icon: Icons.download,
+                  onPressed: () =>
+                      context.read<DealsAttachmentCubit>().downloadAttachment(
+                            rawPath: image.path,
+                            fileName: image.name.isNotEmpty
+                                ? image.name
+                                : image.path.split('/').last,
+                          ),
+                ),
+                const SizedBox(width: 6),
+                _imageAction(
+                  color: Colors.red,
+                  tooltip: 'Delete',
+                  icon: Icons.delete_outline,
+                  onPressed: () => _deleteImage(image),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+Widget _imageAction({
+  required Color color,
+  required String tooltip,
+  required IconData icon,
+  required VoidCallback onPressed,
+}) =>
+    Container(
+      width: 32,
+      height: 32,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      child: IconButton(
+        padding: EdgeInsets.zero,
+        tooltip: tooltip,
+        iconSize: 18,
+        onPressed: onPressed,
+        icon: Icon(icon, color: Colors.white),
+      ),
+    );
+
+void _showImagePreview(String imageUrl) {
+  showDialog(
+    context: context,
+    barrierColor: Colors.black87,
+    builder: (dialogContext) => Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.all(10),
+      child: Stack(
+        children: [
+          Center(
+            child: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 4.0,
+              child: Image.network(
+                imageUrl,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Icon(
+                  Icons.broken_image,
+                  color: Colors.white,
+                  size: 60,
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            top: 10,
+            right: 10,
+            child: IconButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              icon: const Icon(Icons.close, color: Colors.white, size: 30),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+Future<void> _uploadImage() async {
+  if (_deal.images.length >= _maxFiles) {
+    _showSnack(
+      context,
+      const SnackBar(
+        content: Text('Maximum $_maxFiles images allowed'),
+        backgroundColor: Colors.red,
+      ),
+    );
+    return;
+  }
+
+  final source = await showModalBottomSheet<ImageSource>(
+    context: context,
+    backgroundColor: AppColors.surface,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (sheetContext) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Upload Image',
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 16),
+            ListTile(
+              leading: const CircleAvatar(
+                child: Icon(Icons.camera_alt_outlined),
+              ),
+              title: const Text('Camera'),
+              subtitle: const Text('Take a new photo'),
+              onTap: () => Navigator.pop(sheetContext, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const CircleAvatar(
+                child: Icon(Icons.photo_library_outlined),
+              ),
+              title: const Text('Gallery'),
+              subtitle: const Text('Choose from gallery'),
+              onTap: () => Navigator.pop(sheetContext, ImageSource.gallery),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    ),
+  );
+  if (source == null || !mounted) return;
+
+  final XFile? image;
+  try {
+    image = await ImagePicker().pickImage(source: source, imageQuality: 85);
+  } catch (e) {
+    if (!mounted) return;
+    _showSnack(
+      context,
+      SnackBar(
+        content: Text('Failed to select image: $e'),
+        backgroundColor: Colors.red,
+      ),
+    );
+    return;
+  }
+  if (image == null || !mounted) return;
+
+  final ok = await _saveDealFiles(
+    images: [image],
+    keepAttachments: _paths(_deal.attachments),
+    keepImages: _paths(_deal.images),
+  );
+  if (ok && mounted) _toast('Image uploaded successfully');
+}
+
+Future<void> _deleteImage(Attachment image) async {
+  if (!await _confirmDelete('image') || !mounted) return;
+  final ok = await _saveDealFiles(
+    keepAttachments: _paths(_deal.attachments),
+    keepImages:
+        _paths(_deal.images.where((i) => i.path != image.path).toList()),
+  );
+  if (ok && mounted) _toast('Image deleted successfully');
+}
 
 IconData _fileIcon(String name) {
   final file = name.toLowerCase();
@@ -1669,6 +2149,17 @@ Widget _buildInvoiceTab(ScrollController ctrl) {
             ),
             child: ListTile(
 onTap: () async {
+  // Fully paid invoices are final: show details, not the edit form.
+  if (invoice.isFullyPaid) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => InvoiceDetailsModal(invoice: invoice),
+    );
+    return;
+  }
+
   final cubit = context.read<InvoiceCubit>();
 
   if (cubit.state is! InvoiceLoaded) {
@@ -1774,12 +2265,16 @@ trailing: Row(
       onTap: loading
           ? null
           : () async {
-              final msg = await cubit.sendInvoiceEmail(invoice.id);
+              final result = await cubit.sendInvoiceEmail(invoice.id);
 
               if (!mounted) return;
 
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(msg ?? 'Email sent',)),
+                SnackBar(
+                  content: Text(result.message),
+                  backgroundColor:
+                      result.ok ? AppColors.success : AppColors.danger,
+                ),
               );
             },
       child: Container(
@@ -1981,7 +2476,9 @@ Widget _buildMeetingsTab() {
                 tooltip: connected
                     ? 'Create meeting'
                     : 'Connect Google to create meetings',
-                onPressed: connected ? _createMeetingForDeal : null,
+                onPressed: connected
+                    ? _createMeetingForDeal
+                    : () => showConnectGoogleDialog(context),
                 child: Icon(
                   connected ? Icons.add : Icons.lock_outline,
                   size: 20,
@@ -2106,23 +2603,26 @@ void _createMeetingForDeal() {
 
           if (!mounted) return;
 
-          if (success) {
-            Navigator.pop(context);
-
-            await context
-                .read<MeetingsCubit>()
-                .loadMeetings();
-
-            if (!mounted) return;
-
-            _showSnack(
-              context,
-              const SnackBar(
-                content: Text('Meeting created successfully'),
-                backgroundColor: Colors.green,
-              ),
-            );
+          if (!success) {
+            throw Exception(context.read<MeetingsCubit>().lastError ??
+                'Failed to create meeting.');
           }
+
+          Navigator.pop(context);
+
+          await context
+              .read<MeetingsCubit>()
+              .loadMeetings();
+
+          if (!mounted) return;
+
+          _showSnack(
+            context,
+            const SnackBar(
+              content: Text('Meeting created successfully'),
+              backgroundColor: Colors.green,
+            ),
+          );
         },
       );
     },

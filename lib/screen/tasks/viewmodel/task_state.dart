@@ -125,6 +125,10 @@ class TaskState {
   /// Pipeline board — every stage, even empty ones.
   final List<TaskPipelineColumn<TaskCardData>> pipeline;
 
+  /// Overdue tasks still waiting for the user's delay reason, oldest due
+  /// first — the View asks for them one at a time.
+  final List<TaskModel> overdueTasks;
+
   // Notifications — loaded separately so a failure never hides tasks.
   final TaskViewStatus notificationStatus;
   final String? notificationError;
@@ -142,6 +146,7 @@ class TaskState {
     this.viewMode = TaskViewMode.grid,
     this.visibleTasks = const [],
     this.pipeline = const [],
+    this.overdueTasks = const [],
     this.notificationStatus = TaskViewStatus.initial,
     this.notificationError,
     this.notifications = const [],
@@ -164,6 +169,7 @@ class TaskState {
     TaskViewMode? viewMode,
     List<TaskCardData>? visibleTasks,
     List<TaskPipelineColumn<TaskCardData>>? pipeline,
+    List<TaskModel>? overdueTasks,
     TaskViewStatus? notificationStatus,
     String? notificationError,
     List<TaskNotificationModel>? notifications,
@@ -180,6 +186,7 @@ class TaskState {
       viewMode: viewMode ?? this.viewMode,
       visibleTasks: visibleTasks ?? this.visibleTasks,
       pipeline: pipeline ?? this.pipeline,
+      overdueTasks: overdueTasks ?? this.overdueTasks,
       notificationStatus: notificationStatus ?? this.notificationStatus,
       notificationError: notificationError ?? this.notificationError,
       notifications: notifications ?? this.notifications,

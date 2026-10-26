@@ -9,6 +9,7 @@ import '../cubit/draft_proposal_state.dart';
 import '../modal/proposal_modal.dart';
 
 class DraftProposalListScreen extends StatefulWidget {
+  
   const DraftProposalListScreen({
     super.key,
   });
@@ -20,6 +21,7 @@ class DraftProposalListScreen extends StatefulWidget {
 
 class _DraftProposalListScreenState
     extends State<DraftProposalListScreen> {
+
 
   @override
   void initState() {
@@ -591,39 +593,57 @@ onPressed: () async {
 
                   const SizedBox(width: 8),
 
+                  // ------------------------------------------------
+// SEND BUTTON
 // ------------------------------------------------
-// EDIT BUTTON
-// ------------------------------------------------
+
+
+
+ // ------------------------------------------------
+ // SEND BUTTON
+ // ------------------------------------------------
 
 SizedBox(
   height: 30,
   child: ElevatedButton.icon(
-    onPressed: () async {
-      final result = await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => BlocProvider.value(
-            value: context.read<DealsCubit>(),
-            child: CreateProposalScreen(
-              proposal: draft,
-            ),
-          ),
-        ),
-      );
+    onPressed: isSending
+        ? null
+        : () async {
+            final success = await context
+                .read<DraftProposalCubit>()
+                .sendDraftProposal(draft.id);
 
-      if (result == true && context.mounted) {
-        context.read<DraftProposalCubit>().getDraftProposals();
-      }
-    },
-    icon: const Icon(
-      Icons.edit_outlined,
-      size: 13,
-    ),
-    label: const Text(
-      'Edit',
-      style: TextStyle(
-        fontSize: 12.5,
-      ),
+            if (!context.mounted) return;
+
+            ScaffoldMessenger.of(context)
+                .showSnackBar(
+              SnackBar(
+                content: Text(
+                  success
+                      ? 'Draft proposal sent successfully'
+                      : 'Failed to send draft proposal',
+                ),
+                backgroundColor:
+                    success ? Colors.green : Colors.red,
+              ),
+            );
+          },
+    icon: isSending
+        ? const SizedBox(
+            width: 13,
+            height: 13,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Colors.white,
+            ),
+          )
+        : const Icon(
+            Icons.send_outlined,
+            size: 13,
+          ),
+    label: Text(
+      isSending ? 'Sending...' : 'Send',
+      style: const TextStyle(fontSize: 12.5),
     ),
     style: ElevatedButton.styleFrom(
       padding: const EdgeInsets.symmetric(
@@ -632,7 +652,8 @@ SizedBox(
       elevation: 0,
     ),
   ),
-),                ],
+),
+                ],
               ),
             ],
           ),

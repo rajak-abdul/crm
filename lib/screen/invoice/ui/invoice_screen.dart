@@ -10,6 +10,7 @@ import 'package:crm_app/screen/invoice/cubit/invoice_cubit.dart';
 import 'package:crm_app/screen/invoice/modal/invoice_model.dart';
 import 'package:crm_app/screen/invoice/ui/dealOption.dart';
 import 'package:crm_app/screen/invoice/ui/invoice_details_screen.dart';
+import 'package:crm_app/screen/invoice/ui/item_breakdown_section.dart';
 import 'package:crm_app/services/invoice_excel_exporter.dart';
 import 'package:crm_app/shareWidgets/missed_followup.dart';
 import 'package:crm_app/shareWidgets/share_widgets.dart'
@@ -104,6 +105,60 @@ String _q = '';
 late String _statusFilter;
 DateTime? _selectedDate;
 
+/// Bulk-select: long-press a card to start, tap to toggle. Empty = off.
+final Set<String> _selectedIds = {};
+bool get _selecting => _selectedIds.isNotEmpty;
+bool _bulkDeleting = false;
+
+void _toggleSelected(String id) => setState(() {
+      if (!_selectedIds.remove(id)) _selectedIds.add(id);
+    });
+
+Future<void> _confirmBulkDelete(BuildContext ctx) async {
+  final ids = _selectedIds.toList();
+  final n = ids.length;
+  final ok = await showDialog<bool>(
+    context: ctx,
+    builder: (dialogCtx) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Text('Delete $n invoice${n == 1 ? '' : 's'}?'),
+      content: const Text('These invoices will be permanently removed.'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogCtx, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(dialogCtx, true),
+          child: const Text(
+            'Delete',
+            style: TextStyle(color: AppColors.danger),
+          ),
+        ),
+      ],
+    ),
+  );
+  if (ok != true || !ctx.mounted) return;
+
+  setState(() => _bulkDeleting = true);
+  try {
+    // DELETE /invoices/bulk-delete { ids }
+    final message = await ctx.read<InvoiceCubit>().bulkDeleteInvoices(ids);
+    if (!mounted) return;
+    setState(_selectedIds.clear);
+    showApiSnack(context, message);
+  } catch (e) {
+    if (!mounted) return;
+    showApiSnack(
+      context,
+      e.toString().replaceFirst('Exception: ', ''),
+      isError: true,
+    );
+  } finally {
+    if (mounted) setState(() => _bulkDeleting = false);
+  }
+}
+
 @override
 void initState() {
   super.initState();
@@ -118,6 +173,14 @@ void initState() {
   ];
   String _userFilter = 'All Users';
 List<String> _users = ['All Users'];
+  /// Pull-to-refresh — reloads invoices while keeping the list on screen.
+  Future<void> _refresh() async {
+    final err = await context.read<InvoiceCubit>().refresh();
+    if (!mounted) return;
+    if (err != null) {
+      showApiSnack(context, 'Refresh failed: $err', isError: true);
+    }
+  }
 
   @override
   void dispose() {
@@ -237,7 +300,13 @@ List<String> _users = ['All Users'];
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    // Back while selecting clears the selection instead of leaving.
+    return PopScope(
+      canPop: !_selecting,
+      onPopInvoked: (didPop) {
+        if (!didPop && _selecting) setState(_selectedIds.clear);
+      },
+      child: Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text('Invoices'),
@@ -267,6 +336,11 @@ List<String> _users = ['All Users'];
   }
 ];
             final filtered = _filtered(state.invoices);
+            // Selection only covers what's on screen (filters may hide some).
+            final visibleIds = {for (final i in filtered) i.id};
+            _selectedIds.retainWhere(visibleIds.contains);
+            final allSelected =
+                filtered.isNotEmpty && _selectedIds.length == filtered.length;
             return Column(
               children: [
                 _SummaryCarousel(
@@ -615,7 +689,67 @@ SizedBox(
 ),
                 Container(height: 1, color: AppColors.divider),
 
-                // Count row
+                // Count row — becomes the bulk-action bar while selecting
+                if (_selecting)
+                  Container(
+                    color: AppColors.primaryLight,
+                    padding: const EdgeInsets.fromLTRB(4, 2, 8, 2),
+                    child: Row(
+                      children: [
+                        IconButton(
+                          tooltip: 'Cancel selection',
+                          icon: const Icon(Icons.close, size: 20),
+                          color: AppColors.primary,
+                          onPressed: _bulkDeleting
+                              ? null
+                              : () => setState(_selectedIds.clear),
+                        ),
+                        Text(
+                          '${_selectedIds.length} selected',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: _bulkDeleting
+                              ? null
+                              : () => setState(() {
+                                    if (allSelected) {
+                                      _selectedIds.clear();
+                                    } else {
+                                      _selectedIds.addAll(visibleIds);
+                                    }
+                                  }),
+                          child: Text(
+                            allSelected ? 'Deselect all' : 'Select all',
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        ),
+                        _bulkDeleting
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: AppColors.danger,
+                                  ),
+                                ),
+                              )
+                            : IconButton(
+                                tooltip: 'Delete selected',
+                                icon: const Icon(Icons.delete_outline),
+                                color: AppColors.danger,
+                                onPressed: () => _confirmBulkDelete(ctx),
+                              ),
+                      ],
+                    ),
+                  )
+                else
                 Padding(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 16,
@@ -658,28 +792,34 @@ SizedBox(
 
                 // Invoice list
                 Expanded(
+                  child: RefreshIndicator(
+                    onRefresh: _refresh,
+                    color: AppColors.primary,
                   child: filtered.isEmpty
-                      ? const Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.receipt_long_outlined,
-                                size: 52,
-                                color: AppColors.textHint,
-                              ),
-                              SizedBox(height: 10),
-                              Text(
+                      // Scrollable so pull-to-refresh works on an empty list
+                      ? ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          children: const [
+                            SizedBox(height: 80),
+                            Icon(
+                              Icons.receipt_long_outlined,
+                              size: 52,
+                              color: AppColors.textHint,
+                            ),
+                            SizedBox(height: 10),
+                            Center(
+                              child: Text(
                                 'No invoices found',
                                 style: TextStyle(
                                   color: AppColors.textSecondary,
                                   fontSize: 15,
                                 ),
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                         )
                       : ListView.builder(
+                          physics: const AlwaysScrollableScrollPhysics(),
                           padding: const EdgeInsets.symmetric(
                             horizontal: 14,
                             vertical: 4,
@@ -687,6 +827,10 @@ SizedBox(
                           itemCount: filtered.length,
                           itemBuilder: (_, i) => _InvoiceCard(
                             invoice: filtered[i],
+                            selecting: _selecting,
+                            selected: _selectedIds.contains(filtered[i].id),
+                            onToggleSelect: () =>
+                                _toggleSelected(filtered[i].id),
                             onEdit: () => _openEdit(filtered[i], state),
                             onDelete: () =>
                                 _confirmDelete(ctx, filtered[i].id),
@@ -694,6 +838,7 @@ SizedBox(
                             onSendEmail: () => _sendEmail(ctx, filtered[i]),
                           ),
                         ),
+                  ),
                 ),
               ],
             );
@@ -718,6 +863,7 @@ SizedBox(
     );
   },
 ),
+    ),
     );
   }
 
@@ -799,13 +945,20 @@ SizedBox(
 /// elsewhere in this file for per-invoice amounts (_fmtTotal, _fmtBalance,
 /// _fmtAmountPaid) so the carousel's totals render consistently with them.
 String _currencySymbolFor(String currency) => switch (currency.toUpperCase()) {
+      'INR' => '₹',
       'USD' => '\$',
       'EUR' => '€',
       'GBP' => '£',
       'JPY' || 'CNY' => '¥',
       'AED' => 'د.إ ',
       'SAR' => '﷼ ',
-      _ => '₹',
+      'AUD' => 'A\$',
+      'CAD' => 'C\$',
+      'SGD' => 'S\$',
+      'MYR' => 'RM ',
+      'ZAR' => 'R ',
+      // Unknown code: show the code itself rather than a wrong ₹.
+      _ => '${currency.toUpperCase()} ',
     };
 
 class _SummaryCarousel extends StatefulWidget {
@@ -824,10 +977,21 @@ class _SummaryCarousel extends StatefulWidget {
 class _SummaryCarouselState extends State<_SummaryCarousel> {
   int _page = 0;
 
-  /// Account's preferred currency, e.g. "USD" — cached locally by UserCubit
-  /// from GET /users/me. inv.totalInInr is already backend-converted into
-  /// this currency, so no client-side re-conversion is needed here.
+  /// Account currency from GET /users/me — every carousel figure is shown
+  /// in it.
   String _currency = 'INR';
+
+  /// Conversion factor into [_currency] per invoice id, from
+  /// InvoiceCubit.rateToAccount (same rule as the cards' "≈" line, so the
+  /// carousel equals the sum of the cards). Missing id = no rate.
+  final Map<String, double> _rates = {};
+  bool _loadingRates = true;
+  int _ratesRequest = 0;
+
+  /// Changes when the on-screen list changes (search, filters, reload).
+  String get _listKey => widget.invoices
+      .map((i) => '${i.id}:${i.updatedAt.millisecondsSinceEpoch}')
+      .join(',');
 
   @override
   void initState() {
@@ -835,99 +999,138 @@ class _SummaryCarouselState extends State<_SummaryCarousel> {
     _loadCurrency();
   }
 
+  @override
+  void didUpdateWidget(covariant _SummaryCarousel old) {
+    super.didUpdateWidget(old);
+    final oldKey = old.invoices
+        .map((i) => '${i.id}:${i.updatedAt.millisecondsSinceEpoch}')
+        .join(',');
+    if (oldKey != _listKey) _loadRates(notify: false);
+  }
+
   Future<void> _loadCurrency() async {
     // Show the cached value immediately (if any) so there's no flash of
-    // "INR", then refresh it live from /users/me in case it was stale or
-    // never cached (e.g. Invoice screen opened before the Dashboard tab's
-    // UserCubit had a chance to fetch and cache it).
+    // "INR", then refresh it live from /users/me.
     final prefs = await SharedPreferences.getInstance();
     final cached = prefs.getString('currency')?.trim();
     if (cached != null && cached.isNotEmpty && mounted) {
       setState(() => _currency = cached.toUpperCase());
     }
 
+    if (!mounted) return;
     final live = await context.read<InvoiceCubit>().getAccountCurrency();
     if (mounted && live.isNotEmpty) {
-      setState(() => _currency = live);
+      setState(() => _currency = live.toUpperCase());
     }
+    await _loadRates();
   }
 
-  Map<String, dynamic> get _summary {
-    int totalCount = widget.invoices.length;
-    int paidCount = 0;
-    int unpaidCount = 0;
-    int partialCount = 0;
+  /// Fetches a rate for every on-screen invoice; a newer request wins.
+  Future<void> _loadRates({bool notify = true}) async {
+    if (!mounted) return;
+    final request = ++_ratesRequest;
+    final cubit = context.read<InvoiceCubit>();
+    final currency = _currency;
+    final invoices = widget.invoices;
 
-    double totalValue = 0;
-    double paidValue = 0;
-    double unpaidValue = 0;
-    double partialValue = 0;
+    if (notify) {
+      setState(() => _loadingRates = true);
+    } else {
+      _loadingRates = true; // called from didUpdateWidget; build follows
+    }
 
-    for (final inv in widget.invoices) {
-  final preferredValue = inv.totalInInr;
+    final entries = await Future.wait(invoices.map(
+      (inv) async => MapEntry(inv.id, await cubit.rateToAccount(inv, currency)),
+    ));
+    if (!mounted || request != _ratesRequest) return;
 
-  totalValue += preferredValue;
-
-  switch (inv.status) {
-    case 'Paid':
-      paidCount++;
-      paidValue += preferredValue;
-      break;
-
-    case 'Partially Paid':
-      partialCount++;
-      partialValue += preferredValue;
-      break;
-
-    case 'Unpaid':
-    default:
-      unpaidCount++;
-      unpaidValue += preferredValue;
-      break;
-  }
-}    return {
-      'totalCount': totalCount,
-      'paidCount': paidCount,
-      'partialCount': partialCount,
-      'unpaidCount': unpaidCount,
-      'totalValue': totalValue,
-      'paidValue': paidValue,
-      'partialValue': partialValue,
-      'unpaidValue': unpaidValue,
-    };
+    setState(() {
+      _rates
+        ..clear()
+        ..addEntries(entries
+            .where((e) => e.value != null)
+            .map((e) => MapEntry(e.key, e.value!)));
+      _loadingRates = false;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final s = _summary;
-    final pendingValue = widget.pendingInvoices.fold<double>(
-      0,
-      (sum, e) => sum + e.balanceDue,
-    );
+    // Every amount is the invoice's own-currency figure × its rate.
+    // A card whose invoices can't all be converted shows "—", never a
+    // partial sum; unknown statuses only count towards Total.
+    var totalCount = 0, paidCount = 0, unpaidCount = 0, partialCount = 0;
+    double invoiced = 0, collected = 0, outstanding = 0;
+    double partialDue = 0, partialPaid = 0;
+    var totalMissing = false,
+        paidMissing = false,
+        unpaidMissing = false,
+        partialMissing = false;
+
+    for (final inv in widget.invoices) {
+      final rate = _rates[inv.id];
+      final total = inv.originalTotal * (rate ?? 0);
+      final paid = inv.amountPaid * (rate ?? 0);
+
+      totalCount++;
+      invoiced += total;
+      if (rate == null) totalMissing = true;
+
+      switch (inv.status) {
+        case 'Paid':
+          paidCount++;
+          collected += paid;
+          if (rate == null) paidMissing = true;
+          break;
+        case 'Unpaid':
+          unpaidCount++;
+          outstanding += total;
+          if (rate == null) unpaidMissing = true;
+          break;
+        case 'Partially Paid':
+          partialCount++;
+          partialPaid += paid;
+          partialDue += (total - paid).clamp(0, double.infinity);
+          if (rate == null) partialMissing = true;
+          break;
+      }
+    }
+
+    double? shown(double v, bool missing) =>
+        (_loadingRates || missing) ? null : v;
 
     final slides = [
       {
         'title': 'Total Invoices',
-        'count': s['totalCount'] as int,
-        'value': s['totalValue'] as double,
+        'count': totalCount,
+        'label': 'Invoiced',
+        'value': shown(invoiced, totalMissing),
         'colors': [const Color(0xFF1D4ED8), const Color(0xFF0EA5E9)],
       },
       {
         'title': 'Paid Invoices',
-        'count': s['paidCount'] as int,
-        'value': s['paidValue'] as double,
+        'count': paidCount,
+        'label': 'Collected',
+        'value': shown(collected, paidMissing),
         'colors': [const Color(0xFF047857), const Color(0xFF10B981)],
       },
       {
         'title': 'Unpaid Invoices',
-        'count': s['unpaidCount'] as int,
-        'value': s['unpaidValue'] as double,
+        'count': unpaidCount,
+        'label': 'Outstanding',
+        'value': shown(outstanding, unpaidMissing),
         'colors': [const Color(0xFFD97706), const Color(0xFFF59E0B)],
       },
       {
         'title': 'Partially Paid',
-        'count': s['partialCount'] as int,
-        'value': s['partialValue'] as double,
+        'count': partialCount,
+        'label': 'Due',
+        'value': shown(partialDue, partialMissing),
+        // What's already been received on these invoices.
+        'note': (partialCount == 0 || shown(partialPaid, partialMissing) == null)
+            ? null
+            : '${_currencySymbolFor(_currency)}'
+                '${NumberFormat('#,##,##0.00', 'en_IN').format(partialPaid)} paid',
         'colors': [const Color(0xFF7C3AED), const Color(0xFFA855F7)],
       },
     ];
@@ -938,8 +1141,11 @@ class _SummaryCarouselState extends State<_SummaryCarousel> {
           child: PageView.builder(
             itemCount: slides.length,
             onPageChanged: (i) => setState(() => _page = i),
-            itemBuilder: (_, i) =>
-                _SummaryCard(slide: slides[i], currency: _currency),
+            itemBuilder: (_, i) => _SummaryCard(
+              slide: slides[i],
+              currency: _currency,
+              loading: _loadingRates,
+            ),
           ),
         ),
         if (slides.length > 1)
@@ -970,7 +1176,15 @@ class _SummaryCarouselState extends State<_SummaryCarousel> {
 class _SummaryCard extends StatelessWidget {
   final Map<String, dynamic> slide;
   final String currency;
-  const _SummaryCard({required this.slide, required this.currency});
+
+  /// Rates still loading → amount shows "…" (a null value otherwise means
+  /// some invoice couldn't be converted → "—").
+  final bool loading;
+  const _SummaryCard({
+    required this.slide,
+    required this.currency,
+    this.loading = false,
+  });
 
   String _fmt(double v) {
     return NumberFormat.currency(
@@ -984,7 +1198,12 @@ class _SummaryCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final title = slide['title'] as String? ?? 'Invoices';
     final count = (slide['count'] as int?) ?? 0;
-    final value = (slide['value'] as double?) ?? 0;
+    final label = slide['label'] as String? ?? 'Total';
+    final value = slide['value'] as double?;
+    final note = slide['note'] as String?;
+    final amount = value != null
+        ? '${_currencySymbolFor(currency)}${_fmt(value)}'
+        : (loading ? '…' : '—');
     final colors = (slide['colors'] as List<Color>?) ??
         [const Color(0xFF1D4ED8), const Color(0xFF0EA5E9)];
     return _gradientCard(
@@ -1021,6 +1240,17 @@ class _SummaryCard extends StatelessWidget {
                   ),
                 ),
               ),
+              // e.g. Partially Paid: "₹4,000.00 paid" — kept in the title
+              // row so the card's height doesn't change.
+              if (note != null)
+                Text(
+                  note,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white.withOpacity(0.9),
+                  ),
+                ),
             ],
           ),
           Container(
@@ -1038,8 +1268,8 @@ class _SummaryCard extends StatelessWidget {
               ),
               Expanded(
                 child: _metric(
-                  'Total ($currency)',
-                  '${_currencySymbolFor(currency)}${_fmt(value)}',
+                  '$label ($currency)',
+                  amount,
                   alignStart: false,
                 ),
               ),
@@ -1108,12 +1338,21 @@ class _SummaryCard extends StatelessWidget {
 class _InvoiceCard extends StatefulWidget {
   final Invoice invoice;
   final VoidCallback onEdit, onDelete, onDownload, onSendEmail;
+
+  /// Bulk-select: long-press starts it; while [selecting], a tap toggles
+  /// [selected] instead of opening the details sheet.
+  final bool selecting;
+  final bool selected;
+  final VoidCallback onToggleSelect;
   const _InvoiceCard({
     required this.invoice,
     required this.onEdit,
     required this.onDelete,
     required this.onDownload,
     required this.onSendEmail,
+    this.selecting = false,
+    this.selected = false,
+    required this.onToggleSelect,
   });
   @override
   State<_InvoiceCard> createState() => _InvoiceCardState();
@@ -1145,6 +1384,33 @@ class _InvoiceCardState extends State<_InvoiceCard> {
     if (mounted && live.isNotEmpty) {
       setState(() => _accountCurrency = live.toUpperCase());
     }
+    await _loadRate();
+  }
+
+  /// 1 unit of the invoice's currency in [_accountCurrency] — same rule
+  /// as the carousel (InvoiceCubit.rateToAccount), so the carousel equals
+  /// the sum of these "≈" figures. Null while loading / when unavailable
+  /// ([_rateFailed]).
+  double? _rate;
+  bool _rateFailed = false;
+
+  Future<void> _loadRate() async {
+    if (!mounted) return;
+    final rate = await context
+        .read<InvoiceCubit>()
+        .rateToAccount(widget.invoice, _accountCurrency);
+    if (!mounted) return;
+    setState(() {
+      _rate = rate;
+      _rateFailed = rate == null;
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _InvoiceCard old) {
+    super.didUpdateWidget(old);
+    // Reloaded/edited invoice → its saved rate or currency may differ.
+    if (!identical(old.invoice, widget.invoice)) _loadRate();
   }
 
   Color get _statusColor => switch (widget.invoice.status) {
@@ -1253,7 +1519,13 @@ final due = CurrencyService.convert(
   inv.currency,
 );
     return GestureDetector(
+      // Long-press starts bulk selection; while selecting, tap toggles.
+      onLongPress: widget.selecting ? null : widget.onToggleSelect,
       onTap: () {
+        if (widget.selecting) {
+          widget.onToggleSelect();
+          return;
+        }
         showModalBottomSheet(
           context: context,
           isScrollControlled: true,
@@ -1264,8 +1536,12 @@ final due = CurrencyService.convert(
       child: Container(
         margin: const EdgeInsets.only(bottom: 10),
         decoration: BoxDecoration(
-          color: AppColors.surface,
+          color: widget.selected ? AppColors.primaryLight : AppColors.surface,
           borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: widget.selected ? AppColors.primary : Colors.transparent,
+            width: 1.5,
+          ),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity(0.04),
@@ -1284,6 +1560,21 @@ final due = CurrencyService.convert(
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      if (widget.selecting) ...[
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Icon(
+                            widget.selected
+                                ? Icons.check_circle
+                                : Icons.radio_button_unchecked,
+                            size: 20,
+                            color: widget.selected
+                                ? AppColors.primary
+                                : AppColors.textHint,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 10,
@@ -1353,15 +1644,19 @@ final due = CurrencyService.convert(
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _fmtInrExact(inv),
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textSecondary,
+                      // Same currency as the account → nothing to convert.
+                      if (inv.currency.trim().toUpperCase() !=
+                          _accountCurrency) ...[
+                        const SizedBox(width: 8),
+                        Text(
+                          _fmtConverted(inv),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textSecondary,
+                          ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
                   if (inv.status != 'Paid') ...[
@@ -1478,7 +1773,8 @@ final due = CurrencyService.convert(
             AnimatedSize(
               duration: const Duration(milliseconds: 200),
               curve: Curves.easeOutCubic,
-              child: _expanded
+              // Per-card actions stay hidden while bulk-selecting.
+              child: (_expanded && !widget.selecting)
                   ? Container(
                       decoration: const BoxDecoration(
                         border:
@@ -1489,6 +1785,8 @@ final due = CurrencyService.convert(
                       ),
                       child: Row(
                         children: [
+  // Fully paid invoices are final — no Edit.
+  if (!widget.invoice.isFullyPaid) ...[
   Expanded(
     child: TextButton.icon(
       onPressed: widget.onEdit,
@@ -1508,7 +1806,8 @@ final due = CurrencyService.convert(
     height: 36,
     color: AppColors.divider,
   ),
-                          
+  ],
+
                           Expanded(
                             child: TextButton.icon(
                               onPressed: widget.onDownload,
@@ -1583,7 +1882,17 @@ final due = CurrencyService.convert(
     return DateFormat('dd MMM yyyy').format(dt.toLocal());
   }
 
-  String _fmtInrExact(Invoice inv) {
+  /// The figure behind the big headline amount, in the invoice's own
+  /// currency: what's been paid for Paid / Partially Paid, else the total.
+  double _bigAmountValue(Invoice inv) =>
+      (inv.status == 'Paid' || inv.status == 'Partially Paid')
+          ? inv.amountPaid
+          : inv.originalTotal;
+
+  /// Second line: the headline amount converted into the account currency
+  /// from /users/me. (The backend's totalPreferredCurrencyValue isn't used
+  /// — it's always the full total and can be in a stale currency.)
+  String _fmtConverted(Invoice inv) {
     final sym = switch (_accountCurrency.toUpperCase()) {
     'USD' => '\$',
     'EUR' => '€',
@@ -1598,21 +1907,15 @@ final due = CurrencyService.convert(
     'SGD' => 'S\$',
     'ZAR' => 'R',
     'SAR' => '﷼',
-      _ => '₹',
+      _ => '$_accountCurrency ',
     };
-    // hasBackendConversion gates on exchangeRate/inrAmount, which the
-    // backend only sets at payment time — Unpaid invoices never get them
-    // even though totalPreferredCurrencyValue (used below) is already
-    // populated for every status. So Unpaid is shown the same way
-    // Paid/Partially Paid already are, keyed off the total alone.
-    if (inv.totalPreferredCurrencyValue <= 0 && !inv.hasBackendConversion) {
-      return '$sym—';
-    }
-    return NumberFormat.currency(
+    if (_rate == null) return _rateFailed ? '$sym—' : '…';
+    final value = NumberFormat.currency(
       locale: 'en_IN',
       symbol: sym,
       decimalDigits: 2,
-    ).format(inv.totalInInr);
+    ).format(_bigAmountValue(inv) * _rate!);
+    return '≈ $value';
   }
 
   String _fmtBalance(Invoice inv) {
@@ -1803,6 +2106,11 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
   // Custom fields
   final List<_CustomFieldRow> _customFields = [];
 
+  // Item breakdown (optional) — must add up to the price when present
+  final List<InvoiceBreakdownRow> _breakdown = [];
+  String _quantityLabel = kQuantityLabels.first;
+  String? _breakdownError;
+
   SalesUser? _selectedUser; // ← replaces _assignTo + _assignToId
   String _issueDate = '';
   String _dueDate = '';
@@ -1839,6 +2147,74 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
     'SAR',
   ];
   static const _customFieldTypes = ['Text', 'Number', 'Date'];
+
+  /// Date custom fields are stored as "yyyy-MM-dd" (same as the deal form
+  /// and a web date input); older values typed as "dd MMM yyyy" still parse.
+  static DateTime? _parseCustomDate(String raw) {
+    final v = raw.trim();
+    if (v.isEmpty) return null;
+    final iso = DateTime.tryParse(v);
+    if (iso != null) return iso;
+    try {
+      return DateFormat('dd MMM yyyy').parseStrict(v);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Value box for a Date custom field: opens a date picker instead of
+  /// accepting typed text.
+  Widget _customDateField(_CustomFieldRow row) {
+    final date = _parseCustomDate(row.valueCtrl.text);
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () async {
+        final picked = await showDatePicker(
+          context: context,
+          initialDate: date ?? DateTime.now(),
+          firstDate: DateTime(2000),
+          lastDate: DateTime(2100),
+        );
+        if (picked == null || !mounted) return;
+        setState(() =>
+            row.valueCtrl.text = DateFormat('yyyy-MM-dd').format(picked));
+      },
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(14, 13, 8, 13),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                date == null
+                    ? 'Select date'
+                    : DateFormat('dd MMM yyyy').format(date),
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 14,
+                  color:
+                      date == null ? AppColors.textHint : AppColors.textPrimary,
+                ),
+              ),
+            ),
+            if (date != null)
+              GestureDetector(
+                onTap: () => setState(row.valueCtrl.clear),
+                child: const Icon(Icons.close,
+                    size: 16, color: AppColors.textSecondary),
+              )
+            else
+              const Icon(Icons.calendar_today_outlined,
+                  size: 16, color: AppColors.textSecondary),
+          ],
+        ),
+      ),
+    );
+  }
 
   bool get _isEdit => widget.existing != null;
 
@@ -1930,6 +2306,11 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
           _customFields.add(row);
         }
       }
+
+      _breakdown.addAll(e.breakdown.map(InvoiceBreakdownRow.fromItem));
+      if (e.quantityLabel.trim().isNotEmpty) {
+        _quantityLabel = e.quantityLabel.trim();
+      }
     }
   }
 
@@ -1977,6 +2358,9 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
     for (final f in _customFields) {
       f.dispose();
     }
+    for (final r in _breakdown) {
+      r.dispose();
+    }
     super.dispose();
   }
 
@@ -2013,13 +2397,15 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
     _dealError = _selectedDeal == null ? 'Select a Deal' : null;
     _priceError =
         _priceCtrl.text.trim().isEmpty ? 'Price is required' : null;
+    _breakdownError = _validateBreakdown();
   });
 
   if (_assignToError != null ||
       _issueDateError != null ||
       _dueDateError != null ||
       _dealError != null ||
-      _priceError != null) {
+      _priceError != null ||
+      _breakdownError != null) {
     return;
   }
 
@@ -2053,6 +2439,11 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
                 'value': f.valueCtrl.text.trim(),
               })
           .toList(),
+      'breakdown': _breakdown
+          .where((r) => !r.isBlank)
+          .map((r) => r.toJson())
+          .toList(),
+      'quantityLabel': _quantityLabel,
     });
   } catch (e) {
     setState(() {
@@ -2060,6 +2451,33 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
     });
   }
 }
+  /// Target for the item breakdown: the selected deal's value, falling back
+  /// to the price when the deal has no value.
+  double get _dealAmount {
+    final v = _selectedDeal?.value ?? 0;
+    return v > 0 ? v : _price;
+  }
+
+  /// Blank rows are ignored; any other row needs a name and an amount, and
+  /// together they must equal the deal amount exactly — not more, not less.
+  String? _validateBreakdown() {
+    final rows = _breakdown.where((r) => !r.isBlank).toList();
+    if (rows.isEmpty) return null;
+    if (rows.any((r) => !r.isComplete)) {
+      return 'Each item needs a name and an amount.';
+    }
+    if (!breakdownBalanced(_breakdown, _dealAmount)) {
+      final total = breakdownTotal(_breakdown);
+      final sym = _symFor(_currency);
+      return total > _dealAmount
+          ? 'Items total ($sym${_fmtCur(total)}) exceeds the deal amount '
+              '($sym${_fmtCur(_dealAmount)}).'
+          : 'Items total ($sym${_fmtCur(total)}) is below the deal amount '
+              '($sym${_fmtCur(_dealAmount)}).';
+    }
+    return null;
+  }
+
   void _snack(String msg) {
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
 
@@ -2576,6 +2994,35 @@ class InvoiceFormModalState extends State<InvoiceFormModal> {
 
                   const SizedBox(height: 8),
 
+                  _InvoiceAccordion(
+                    title: 'Item Breakdown',
+                    icon: Icons.format_list_bulleted_rounded,
+                    initiallyExpanded: _breakdown.isNotEmpty,
+                    trailing: BreakdownCountPill(
+                      rows: _breakdown,
+                      dealAmount: _dealAmount,
+                    ),
+                    child: ItemBreakdownSection(
+                      rows: _breakdown,
+                      quantityLabel: _quantityLabel,
+                      dealAmount: _dealAmount,
+                      currencyCode: _currency.isEmpty ? 'INR' : _currency,
+                      currencySymbol: _symFor(_currency),
+                      error: _breakdownError,
+                      onAdd: () => setState(
+                        () => _breakdown.add(InvoiceBreakdownRow()),
+                      ),
+                      onRemove: (row) => setState(() {
+                        _breakdown.remove(row);
+                        row.dispose();
+                        _breakdownError = null;
+                      }),
+                      onQuantityLabelChanged: (v) =>
+                          setState(() => _quantityLabel = v),
+                      onChanged: () => setState(() => _breakdownError = null),
+                    ),
+                  ),
+
                   // Financial Details comes NEXT
 
 _InvoiceAccordion(
@@ -2877,12 +3324,21 @@ _InvoiceAccordion(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Each field is two lines — name + remove, then type + value —
+                  // so the type dropdown gets enough width to show its label.
                   for (final row in _customFields) ...[
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(10, 10, 4, 10),
+                      decoration: BoxDecoration(
+                        color: AppColors.background,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: Column(
+                        children: [
                     Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Expanded(
-                          flex: 3,
                           child: TextField(
                             controller: row.nameCtrl,
                             style: const TextStyle(fontSize: 14),
@@ -2914,28 +3370,51 @@ _InvoiceAccordion(
                             ),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          flex: 2,
+                        IconButton(
+                          onPressed: () => setState(() {
+                            row.dispose();
+                            _customFields.remove(row);
+                          }),
+                          icon: const Icon(Icons.close, size: 18),
+                          color: AppColors.textSecondary,
+                          tooltip: 'Remove field',
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: Row(
+                      children: [
+                        SizedBox(
+                          width: 130,
                           child: _FullDrop(
                             value: row.type,
                             items: _customFieldTypes,
                             icon: Icons.text_fields,
-                            onChanged: (v) => setState(() => row.type = v),
+                            onChanged: (v) => setState(() {
+                              row.type = v;
+                              // Switching to Date: drop text that isn't a
+                              // date so the picker starts clean.
+                              if (v == 'Date' &&
+                                  _parseCustomDate(row.valueCtrl.text) ==
+                                      null) {
+                                row.valueCtrl.clear();
+                              }
+                            }),
                           ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          flex: 3,
                           child: row.type == 'Number'
                               ? _tfNum(row.valueCtrl, 'Value')
+                              : row.type == 'Date'
+                              ? _customDateField(row)
                               : TextField(
                                   controller: row.valueCtrl,
                                   style: const TextStyle(fontSize: 14),
                                   decoration: InputDecoration(
-                                    hintText: row.type == 'Date'
-                                        ? 'dd MMM yyyy'
-                                        : 'Value',
+                                    hintText: 'Value',
                                     contentPadding:
                                         const EdgeInsets.symmetric(
                                       horizontal: 14,
@@ -2963,15 +3442,11 @@ _InvoiceAccordion(
                                   ),
                                 ),
                         ),
-                        IconButton(
-                          onPressed: () => setState(() {
-                            row.dispose();
-                            _customFields.remove(row);
-                          }),
-                          icon: const Icon(Icons.close, size: 18),
-                          color: AppColors.textSecondary,
-                        ),
                       ],
+                      ),
+                    ),
+                        ],
+                      ),
                     ),
                     const SizedBox(height: 10),
                   ],
@@ -3020,6 +3495,18 @@ _InvoiceAccordion(
             ),
 
             const SizedBox(height: 14),
+                  if (_breakdownError != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10, left: 2),
+                      child: Text(
+                        'Item Breakdown: $_breakdownError',
+                        style: const TextStyle(
+                          color: AppColors.danger,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
                   Row(
                     children: [
                       Expanded(

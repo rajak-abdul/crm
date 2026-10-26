@@ -78,6 +78,28 @@ class EmailHistoryCubit extends Cubit<EmailHistoryState> {
       );
     }
   }
+  
+  // delete th email history 
+
+  Future<bool> deleteSentEmail(String emailId) async {
+  try {
+    if (_tenantSlug.isEmpty) {
+      await initialize();
+    }
+
+    final response = await dio.delete(
+      'https://crm-backend-api.techzarinfo.cloud/'
+      '$_tenantSlug/api/email/delete/$emailId',
+    );
+
+    return response.data['success'] == true;
+  } on DioException catch (e) {
+    throw Exception(
+      e.response?.data?['message'] ??
+          'Failed to delete email',
+    );
+  }
+}
 
   // ============================================================
   // GET EMAIL HISTORY

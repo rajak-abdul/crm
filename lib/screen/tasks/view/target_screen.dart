@@ -290,11 +290,11 @@ class _TargetView extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            OverviewPeriodDropdown(
-              value: state.period,
-              onChanged: (period) =>
-                  _runAction(context, () => vm.changePeriod(period)),
-            ),
+            // OverviewPeriodDropdown(
+            //   value: state.period,
+            //   onChanged: (period) =>
+            //       _runAction(context, () => vm.changePeriod(period)),
+            // ),
           ],
         ),
         const SizedBox(height: 14),
@@ -331,7 +331,7 @@ class _TargetView extends StatelessWidget {
   Widget _buildFilters(TargetViewModel vm, TargetState state) {
     final chips = SingleChildScrollView(
       scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.only(left: 18, right: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 18),
       child: Row(
         children: [
           for (final f in TargetFilter.values)
@@ -354,14 +354,20 @@ class _TargetView extends StatelessWidget {
 
     if (state.filter == TargetFilter.notifications) return chips;
 
-    return Row(
+    // Card | Pipeline toggle sits on its own line under the chips.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(child: chips),
-        Padding(
-          padding: const EdgeInsets.only(right: 18),
-          child: TargetViewToggle(
-            value: state.viewMode,
-            onChanged: vm.setViewMode,
+        chips,
+        const SizedBox(height: 10),
+        Align(
+          alignment: Alignment.centerRight,
+          child: Padding(
+            padding: const EdgeInsets.only(right: 18),
+            child: TargetViewToggle(
+              value: state.viewMode,
+              onChanged: vm.setViewMode,
+            ),
           ),
         ),
       ],

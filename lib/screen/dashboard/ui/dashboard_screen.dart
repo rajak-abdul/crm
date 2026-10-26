@@ -8,40 +8,25 @@ import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:crm_app/modals/followup_model.dart';
-import 'package:crm_app/screen/LeaderBoard/ui/leader_board.dart';
-import 'package:crm_app/screen/calendar/UI/calendar_screen.dart';
 import 'package:crm_app/screen/dashboard/cubit/dashboard.dart';
-import 'package:crm_app/screen/dashboard/cubit/notification_cubit.dart';
 import 'package:crm_app/screen/dashboard/ui/dashboard_followup_page.ui.dart';
 import 'package:crm_app/screen/dashboard/ui/meeting_summary_card.dart';
-import 'package:crm_app/screen/document/deal/cubit/deal_doc_cubit.dart';
-import 'package:crm_app/screen/document/deal/ui/deal_doc_ui.dart' show DealDocumentScreen;
-import 'package:crm_app/screen/document/lead/cubit/leads_document_cubit.dart';
-import 'package:crm_app/screen/document/lead/ui/lead_document_ui.dart';
-import 'package:crm_app/screen/email/cubit/email_cubit.dart';
-import 'package:crm_app/screen/email/cubit/email_history_cubit.dart';
-import 'package:crm_app/screen/email/cubit/scheduled_email_cubit.dart';
-import 'package:crm_app/screen/email/ui/EmailContactsScreen.dart';
 import 'package:crm_app/screen/leads/ui/lead_screen.dart';
 import 'package:crm_app/screen/message/cubit/chat_cubit.dart'
     show chatUnreadTotal, refreshChatUnreadTotal;
-import 'package:crm_app/screen/message/ui/message_screen.dart';
-import 'package:crm_app/screen/meeting/UI/meeting.dart';
 import 'package:crm_app/screen/meeting/cubit/meeting_cubit.dart';
-import 'package:crm_app/screen/proposal/UI/proposal_screen.dart';
-import 'package:crm_app/screen/proposal/cubit/proposal_cubit.dart';
-import 'package:crm_app/screen/tasks/view/target_screen.dart'
-    show TargetScreen;
-import 'package:crm_app/screen/tasks/view/task_screen.dart' show TaskScreen;
+import 'package:crm_app/screen/notification/cubit/notification_cubit.dart';
+import 'package:crm_app/screen/notification/cubit/notification_state.dart';
+import 'package:crm_app/screen/notification/ui/notifiication.dart';
 import 'package:crm_app/screen/users/user_cubit.dart';
-import 'package:crm_app/services/auth_interceptor.dart';
+import 'package:crm_app/shareWidgets/crm_drawer.dart';
 import 'package:crm_app/shareWidgets/crm_header.dart';
-import 'package:crm_app/utils/missed_followup_timer.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:equatable/equatable.dart';
 import 'package:crm_app/thems/app_themes.dart' show AppColors;
+import 'package:crm_app/utils/data_sync.dart';
+import 'package:crm_app/utils/permission_helper.dart';
 import 'package:crm_app/modals/modals.dart' show Lead, AppConstants;
 import 'package:crm_app/shareWidgets/share_widgets.dart'
     show StatusBadge, EmptyState, LoadingState, ErrorState;
@@ -366,7 +351,6 @@ class DashboardInitial extends DashboardState {}
 class DashboardLoading extends DashboardState {}
 
 class DashboardLoaded extends DashboardState {
-  final Map<String, dynamic>? topPerformer;
   final List<Lead> allLeads;
   final List<Lead> recentLeads;
   final DashboardSummary summary;
@@ -382,7 +366,6 @@ class DashboardLoaded extends DashboardState {
   
 
   const DashboardLoaded({
-    required this.topPerformer,
     required this.allLeads,
     required this.recentLeads,
     required this.summary,
@@ -399,7 +382,6 @@ class DashboardLoaded extends DashboardState {
 
   @override
   List<Object?> get props => [
-        topPerformer,
         allLeads,
         recentLeads,
         summary,
@@ -423,6 +405,12 @@ class DashboardError extends DashboardState {
 // ══════════════════════════════════════════════════════════════
 // SCREEN SHELL
 // ══════════════════════════════════════════════════════════════
+
+/// True while the dashboard's own drawer is open. MainShell hides its
+/// bottom nav then, so the drawer runs the full height like the one on
+/// the Leads / Deals tabs.
+final ValueNotifier<bool> dashboardDrawerOpen = ValueNotifier<bool>(false);
+
 class DashboardScreen extends StatelessWidget {
   const DashboardScreen({super.key});
   @override
@@ -433,8 +421,32 @@ class DashboardScreen extends StatelessWidget {
           BlocProvider(create: (_) => UserCubit()..loadUser()),
           BlocProvider(create: (_) => MeetingsCubit()..loadMeetings())
         ],
-        child: const _DashboardShell(),
+        // Silent reload when you come back after 2+ min, or after leads /
+        // deals changed anywhere in the app (bottom-nav tab 0).
+        child: Builder(
+          builder: (ctx) => TabRefreshScope<DashboardCubit, DashboardState>(
+            area: SyncArea.dashboard,
+            tabIndex: 0,
+            isLoaded: (s) => s is DashboardLoaded,
+            onRefresh: () => _refreshKeepingPeriod(ctx.read<DashboardCubit>()),
+            child: const _DashboardShell(),
+          ),
+        ),
       );
+
+  /// loadDashboard() resets the period filter to "all" — re-apply the
+  /// period that was selected so a background refresh doesn't change it.
+  static Future<void> _refreshKeepingPeriod(DashboardCubit cubit) async {
+    final before = cubit.state;
+    await cubit.loadDashboard();
+    if (before is DashboardLoaded && before.filterRange != 'all') {
+      await cubit.filterByPeriod(
+        range: before.filterRange,
+        month: before.filterMonth,
+        year: before.filterYear,
+      );
+    }
+  }
 }
 
 class _DashboardShell extends StatefulWidget {
@@ -445,7 +457,6 @@ class _DashboardShell extends StatefulWidget {
 
 class _DashboardShellState extends State<_DashboardShell>
     with SingleTickerProviderStateMixin {
-  String _authToken = '';
   static const _drawerFraction = 0.72;
   late final AnimationController _ctrl;
   late final Animation<double> _anim;
@@ -508,7 +519,6 @@ Future<void> _loadAuthToken() async {
           '')
       .trim();
   setState(() {
-    _authToken = prefs.getString('token') ?? '';
     if (name.isNotEmpty) _userName = name;
     _profileImage = _resolveProfileImageUrl(rawImage);
   });
@@ -523,6 +533,7 @@ Future<void> _loadAuthToken() async {
 
   @override
   void dispose() {
+    dashboardDrawerOpen.value = false;
     _notifAutoRefreshTimer?.cancel();
     _ctrl.dispose();
     super.dispose();
@@ -530,6 +541,7 @@ Future<void> _loadAuthToken() async {
 
   void _open() {
     setState(() => _isOpen = true);
+    dashboardDrawerOpen.value = true;
     _ctrl.forward();
     // Keep the drawer's Messages badge current.
     refreshChatUnreadTotal();
@@ -537,7 +549,10 @@ Future<void> _loadAuthToken() async {
 
   void _close() {
     setState(() => _isOpen = false);
-    _ctrl.reverse();
+    // Bring the bottom nav back once the drawer has slid shut.
+    _ctrl.reverse().whenComplete(() {
+      if (!_isOpen) dashboardDrawerOpen.value = false;
+    });
   }
 
   void _toggle() => _isOpen ? _close() : _open();
@@ -565,98 +580,22 @@ Future<void> _loadAuthToken() async {
     Future.delayed(const Duration(milliseconds: 260), () {
       if (!mounted) return;
 
+      // '/dashboard' only closes the drawer — this is the Dashboard.
       if (route == '/leads') {
-        Navigator.of(context, rootNavigator: true)
-    .push(_slide(
-      const LeadsScreen(
-        showBackButton: true,
-      ),
-    ));
+        Navigator.of(context, rootNavigator: true).push(_slide(
+          const LeadsScreen(
+            showBackButton: true,
+          ),
+        ));
       } else if (route == '/deals') {
         Navigator.of(context, rootNavigator: true)
             .push(_slide(DealsScreen(initialTab: tab)));
-      } else if (route == '/invoice') {
-  Navigator.of(context, rootNavigator: true)
-      .push(_slide(const InvoiceScreen()));
-
-} else if (route == '/proposals') {
-  Navigator.of(context, rootNavigator: true).push(
-    _slide(
-      BlocProvider(
-        create: (_) => ProposalCubit(),
-        child: const ProposalListScreen(),
-      ),
-    ),
-  );
-} else if (route == '/meetings') {
-  Navigator.of(context, rootNavigator: true)
-      .push(_slide(const MeetingsScreen()));
-
-} else if (route == '/calendar') {
-  Navigator.of(context, rootNavigator: true)
-      .push(_slide(const CalendarScreen()));
-
-} else if (route == '/messages') {
-  Navigator.of(context, rootNavigator: true)
-      .push(_slide(const MessagesScreen()));
-
-} else if (route == '/tasks') {
-  Navigator.of(context, rootNavigator: true)
-      .push(_slide(const TaskScreen()));
-
-} else if (route == '/targets') {
-  final notifCubit = context.read<NotificationCubit>();
-  Navigator.of(context, rootNavigator: true).push(_slide(TargetScreen(
-    onOpenNotifications: () => Navigator.of(context, rootNavigator: true)
-        .push(_slide(NotificationsScreen(cubit: notifCubit))),
-  )));
-
-} else if (route == '/lead-documents') {
-  Navigator.of(context, rootNavigator: true).push(
-    _slide(
-      BlocProvider(
-        create: (_) => LeadsCubit(),
-        child: const LeadsDoc(),
-      ),
-    ),
-  );
-}  else if (route == '/deal-documents') {
-  Navigator.of(context, rootNavigator: true).push(
-    _slide(
-      BlocProvider(
-        create: (_) => DealDocCubit(
-          Dio(),
-        ),
-        child: const DealDocumentScreen(),
-      ),
-    ),
-  );
-}
-
-else if (route == '/email') {
-  Navigator.of(
-    context,
-    rootNavigator: true,
-  ).push(
-    _slide(
-      MultiBlocProvider(
-        providers: [
-          BlocProvider(
-            create: (_) => EmailContactsCubit(),
-          ),
-          BlocProvider(
-            create: (_) => EmailHistoryCubit(),
-          ),
-        ],
-        child: const EmailContactsScreen(),
-      ),
-    ),
-  );
-}
-
- else if (route == '/LeaderboardPage') {
-        Navigator.of(context, rootNavigator: true)
-            .push(_slide(LeaderboardPage(authToken: _authToken)));
+      } else {
+        pushDrawerScreen(
+          context,
+          route,
+          notifCubit: context.read<NotificationCubit>(),
+        );
       }
     });
   }
@@ -712,33 +651,6 @@ else if (route == '/email') {
     );
   }
 
-  Future<void> _openProfile() async {
-    final result = await Connectivity().checkConnectivity();
-
-    if (result == ConnectivityResult.none) {
-      _close();
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            "You are offline. Profile is not available.",
-          ),
-        ),
-      );
-
-      return;
-    }
-
-    _close();
-
-    Future.delayed(const Duration(milliseconds: 260), () {
-      if (!mounted) return;
-
-      Navigator.of(context, rootNavigator: true)
-          .push(_slide(const ProfileScreen()));
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     final sw = MediaQuery.of(context).size.width;
@@ -756,10 +668,10 @@ else if (route == '/email') {
                 top: 0,
                 bottom: 0,
                 width: dw,
-                child: _CrmDrawer(
+                child: CrmDrawer(
                     onNavigate: _onDrawerNav,
                     onClose: _close,
-                    onProfileTap: _openProfile)),
+                    isOpen: _isOpen)),
             Transform(
               transform: Matrix4.identity()
                 ..translate(t * dw, 0.0)
@@ -792,636 +704,6 @@ else if (route == '/email') {
       ),
     );
   }
-}
-
-// ══════════════════════════════════════════════════════════════
-// DRAWER
-// ══════════════════════════════════════════════════════════════
-class _CrmDrawer extends StatefulWidget {
-  final void Function(String route, {int tab}) onNavigate;
-
-  final VoidCallback onClose;
-  final VoidCallback onProfileTap;
-
-  const _CrmDrawer({
-    required this.onNavigate,
-    required this.onClose,
-    required this.onProfileTap,
-  });
-  @override
-  State<_CrmDrawer> createState() => _CrmDrawerState();
-}
-
-class _CrmDrawerState extends State<_CrmDrawer> {
-  String _active = '/dashboard';
-  bool _dealsExpanded = false;
-  bool _documentsExpanded = false;
-  bool _emailExpanded = false;
-  String _drawerName = 'CRM User';
-  String _drawerEmail = 'crm.stagingzar.com';
-  String? _drawerImage;
-  String _userRole = '';
-  Map<String, dynamic> _permissions = {};
-
-  @override
-  void initState() {
-    super.initState();
-    _loadDrawerProfile();
-  }
-
-  Future<void> _loadDrawerProfile() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final savedRole = (prefs.getString('role') ?? '').trim();
-      final savedName = (prefs.getString('user_name') ?? '').trim();
-      final savedEmail = (prefs.getString('email') ?? '').trim();
-      final savedImage = ((prefs.getString('profile_image') ??
-                  prefs.getString('profileImage')) ??
-              '')
-          .trim();
-
-      if (mounted &&
-          (savedName.isNotEmpty ||
-              savedEmail.isNotEmpty ||
-              savedImage.isNotEmpty)) {
-        setState(() {
-          _userRole = savedRole;
-          if (savedName.isNotEmpty) _drawerName = savedName;
-          if (savedEmail.isNotEmpty) _drawerEmail = savedEmail;
-          _drawerImage = _resolveImageUrl(savedImage);
-        });
-      }
-
-      final token = prefs.getString('token') ?? '';
-      if (token.isEmpty) return;
-
-      final dio = Dio(BaseOptions(
-        baseUrl: 'https://crm-backend-api.techzarinfo.cloud/api',
-        connectTimeout: const Duration(seconds: 20),
-        receiveTimeout: const Duration(seconds: 20),
-      ))
-        ..interceptors.add(AuthInterceptor());
-      final res = await dio.get(
-        '/users/me',
-        options: Options(headers: {'Authorization': 'Bearer $token'}),
-      );
-
-      var map = _extractUserMap(res.data);
-     final role = map['role'];
-
-Map<String, dynamic> permissions = {};
-
-if (role is Map) {
-  final roleMap = Map<String, dynamic>.from(role);
-
-  final rolePermissions = roleMap['permissions'];
-
-  if (rolePermissions is Map) {
-    permissions = Map<String, dynamic>.from(rolePermissions);
-  }
-}
-      if (map['user'] is Map) {
-        map = Map<String, dynamic>.from(map['user'] as Map);
-      }
-      var firstName =
-          (map['firstName'] ?? map['first_name'] ?? '').toString().trim();
-      var lastName =
-          (map['lastName'] ?? map['last_name'] ?? '').toString().trim();
-      final nameRaw = (map['name'] ?? map['fullName'] ?? '').toString().trim();
-      if (firstName.isEmpty && lastName.isEmpty && nameRaw.isNotEmpty) {
-        final parts =
-            nameRaw.split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
-        firstName = parts.isNotEmpty ? parts.first : '';
-        lastName = parts.length > 1 ? parts.sublist(1).join(' ') : '';
-      }
-      final email = (map['email'] ?? '').toString().trim();
-      var imageRaw = _extractImagePath(map);
-      if (imageRaw.isEmpty) imageRaw = savedImage;
-
-      final fullName = '$firstName $lastName'.trim();
-      final resolvedName = fullName.isNotEmpty
-          ? fullName
-          : (savedName.isNotEmpty
-              ? savedName
-              : (email.isNotEmpty && email.contains('@')
-                  ? email.split('@').first
-                  : 'User'));
-      if (!mounted) return;
-      setState(() {
-        _drawerName = resolvedName;
-        _drawerEmail = email.isEmpty ? 'crm.stagingzar.com' : email;
-        _drawerImage = _resolveImageUrl(imageRaw);
-        _permissions = permissions;
-      });
-    } catch (_) {}
-  }
-
-  Map<String, dynamic> _extractUserMap(dynamic body) {
-    if (body is Map) {
-      if (body['data'] is Map) {
-        return Map<String, dynamic>.from(body['data'] as Map);
-      }
-      if (body['user'] is Map) {
-        return Map<String, dynamic>.from(body['user'] as Map);
-      }
-      if (body['result'] is Map) {
-        return Map<String, dynamic>.from(body['result'] as Map);
-      }
-      return Map<String, dynamic>.from(body);
-    }
-    return <String, dynamic>{};
-  }
-
-  String _extractImagePath(Map<String, dynamic> map) {
-    final raw = map['profileImage'] ?? map['avatarUrl'] ?? map['avatar'];
-    if (raw is Map) {
-      return (raw['url'] ??
-              raw['path'] ??
-              raw['location'] ??
-              raw['secure_url'] ??
-              '')
-          .toString()
-          .trim();
-    }
-    return (raw ?? '').toString().trim();
-  }
-
-  String? _resolveImageUrl(String? rawInput) {
-    final raw = rawInput?.trim() ?? '';
-    if (raw.isEmpty) return null;
-
-    var path = raw.replaceAll('\\', '/');
-
-    if (path.startsWith('http://') || path.startsWith('https://')) {
-      return path;
-    }
-
-    if (!path.contains('/')) {
-      path = '/uploads/users/$path';
-    }
-
-    if (!path.startsWith('/')) {
-      path = '/$path';
-    }
-
-    return 'https://crm-backend-api.techzarinfo.cloud/$path';
-  }
-
-  Future<void> _logout() async {
-      final prefs = await SharedPreferences.getInstance();
-
-    MissedFollowupTimer.instance.stop();
-
-    await prefs.remove('global_missed_followup_last_shown');
-    await prefs.remove('token');
-    await prefs.remove('user_id');
-    await prefs.remove('user_name');
-    await prefs.remove('email');
-    await prefs.remove('role');
-    await prefs.remove('permissions');
-    await prefs.remove('profileImage');
-    await prefs.remove('profile_image');
-    if (!mounted) return;
-    Navigator.of(context, rootNavigator: true)
-        .pushNamedAndRemoveUntil('/login', (route) => false);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-final showDashboard = _permissions['dashboard'] == true;
-final showLeads = _permissions['leads'] == true;
-final showDeals = _permissions['deals_all'] == true;
-final showDeal_pipeline = _permissions['deals_pipeline'] == true;
-final showInvoices = _permissions['invoices'] == true;
-final showDocuments = _permissions['documents'] == true;
-final showMeetings = _permissions['meetings'] == true;
-final showLeaderboard = _permissions['streak_leaderboard'] == true;
-final showProposals = _permissions['proposal'] == true;
-final showEmailCampaign = _permissions['email_campaigns'] == true;
-final showEmail = _permissions['email_chat'] == true;
-
- return  Container(
-        color: const Color(0xFF0F172A),
-        child: SafeArea(
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          
-          const Padding(
-            padding: EdgeInsets.fromLTRB(22, 0, 22, 8),
-            child: Text('MENU',
-                style: TextStyle(
-                    color: Color(0xFF475569),
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 1.4)),
-          ),
-          if (showDashboard)
-          _Item(
-              icon: Icons.dashboard_outlined,
-              activeIcon: Icons.dashboard_rounded,
-              label: 'Dashboard',
-              active: _active == '/dashboard',
-              activeColor: AppColors.primary,
-              onTap: () {
-                setState(() => _active = '/dashboard');
-                widget.onClose();
-              }),
-              if (showLeads)
-          _Item(
-              icon: Icons.people_outline,
-              activeIcon: Icons.people_rounded,
-              label: 'Leads',
-              active: _active == '/leads',
-              activeColor: AppColors.success,
-              onTap: () {
-                setState(() => _active = '/leads');
-                widget.onNavigate('/leads');
-              }),
-              if (showDeals || showDeal_pipeline)
-          _ExpandItem(
-            icon: Icons.handshake_outlined,
-            activeIcon: Icons.handshake_rounded,
-            label: 'Deals',
-            expanded: _dealsExpanded,
-            active: _active.startsWith('/deals'),
-            activeColor: const Color(0xFF8B5CF6),
-            onToggle: () => setState(() => _dealsExpanded = !_dealsExpanded),
-            children: [
-              if (showDeal_pipeline)
-
-              _SubItem(
-                  icon: Icons.filter_alt_outlined,
-                  label: 'Deal Stages',
-                  active: _active == '/deals/stages',
-                  onTap: () {
-                    setState(() => _active = '/deals/stages');
-                    widget.onNavigate('/deals', tab: 1);
-                  }),
-                  if (showDeals)
-              _SubItem(
-                  icon: Icons.view_list_rounded,
-                  label: 'All Deals',
-                  active: _active == '/deals/all',
-                  onTap: () {
-                    setState(() => _active = '/deals/all');
-                    widget.onNavigate('/deals', tab: 0);
-                  }),
-            ],
-          ),
-          if(showInvoices)
-          _Item(
-              icon: Icons.receipt_long_outlined,
-              activeIcon: Icons.receipt_long_rounded,
-              label: 'Invoice',
-              active: _active == '/invoice',
-              activeColor: AppColors.warning,
-              onTap: () {
-                setState(() => _active = '/invoice');
-                widget.onNavigate('/invoice');
-              }),
-      if (showProposals)
-  _Item(
-    icon: Icons.description_outlined,
-    activeIcon: Icons.description_rounded,
-    label: 'Proposals',
-    active: _active == '/proposals',
-    activeColor: const Color(0xFF3B82F6),
-    onTap: () {
-      setState(() => _active = '/proposals');
-      widget.onNavigate('/proposals');
-    },
-  ),
-              if(showMeetings)
-              _Item(
-    icon: Icons.calendar_month_outlined,
-    activeIcon: Icons.calendar_month_rounded,
-    label: 'Meetings',
-    active: _active == '/meetings',
-    activeColor: const Color(0xFF3B82F6),
-    onTap: () {
-      setState(() => _active = '/meetings');
-      widget.onNavigate('/meetings');
-    }),
-    _Item(
-    icon: Icons.event_outlined,
-    activeIcon: Icons.event_rounded,
-    label: 'Calendar',
-    active: _active == '/calendar',
-    activeColor: const Color(0xFF06B6D4),
-    onTap: () {
-      setState(() => _active = '/calendar');
-      widget.onNavigate('/calendar');
-    }),
-    _Item(
-    icon: Icons.assignment_outlined,
-    activeIcon: Icons.assignment_rounded,
-    label: 'My Tasks',
-    active: _active == '/tasks',
-    activeColor: const Color(0xFF0B6FB5),
-    onTap: () {
-      setState(() => _active = '/tasks');
-      widget.onNavigate('/tasks');
-    }),
-    _Item(
-    icon: Icons.track_changes_outlined,
-    activeIcon: Icons.track_changes_rounded,
-    label: 'My Targets',
-    active: _active == '/targets',
-    activeColor: const Color(0xFF0369A1),
-    onTap: () {
-      setState(() => _active = '/targets');
-      widget.onNavigate('/targets');
-    }),
-    ValueListenableBuilder<int>(
-      valueListenable: chatUnreadTotal,
-      builder: (_, unread, __) => _Item(
-        icon: Icons.chat_bubble_outline_rounded,
-        activeIcon: Icons.chat_bubble_rounded,
-        label: 'Messages',
-        active: _active == '/messages',
-        activeColor: const Color(0xFF2563EB),
-        badgeCount: unread,
-        onTap: () {
-          setState(() => _active = '/messages');
-          widget.onNavigate('/messages');
-        }),
-    ),
-    if(showDocuments)
-    _ExpandItem(
-      icon: Icons.folder_outlined,
-      activeIcon: Icons.folder_rounded,
-      label: 'Documents',
-      expanded: _documentsExpanded,
-      active: _active == '/lead-documents' || _active == '/deal-documents',
-      activeColor: AppColors.success,
-      onToggle: () =>
-          setState(() => _documentsExpanded = !_documentsExpanded),
-      children: [
-        _SubItem(
-            icon: Icons.description_outlined,
-            label: 'Lead Documents',
-            active: _active == '/lead-documents',
-            onTap: () {
-              setState(() => _active = '/lead-documents');
-              widget.onNavigate('/lead-documents');
-            }),
-        _SubItem(
-            icon: Icons.folder_copy_outlined,
-            label: 'Deal Documents',
-            active: _active == '/deal-documents',
-            onTap: () {
-              setState(() => _active = '/deal-documents');
-              widget.onNavigate('/deal-documents');
-            }),
-      ],
-    ),
-    if (showEmail)
-  _ExpandItem(
-    icon: Icons.email_outlined,
-    activeIcon: Icons.email_rounded,
-    label: 'Email',
-    expanded: _emailExpanded,
-    active: _active.startsWith('/email'),
-    activeColor: const Color(0xFF3B82F6),
-    onToggle: () => setState(
-      () => _emailExpanded = !_emailExpanded,
-    ),
-    children: [
-      _SubItem(
-        icon: Icons.contacts_outlined,
-        label: 'Contacts',
-        active: _active == '/email/contacts',
-        onTap: () {
-          setState(
-            () => _active = '/email/contacts',
-          );
-
-          widget.onNavigate('/email');
-        },
-      ),
-
-      _SubItem(
-        icon: Icons.campaign_outlined,
-        label: 'Campaigns',
-        active: _active == '/email/campaigns',
-        onTap: () {
-          setState(
-            () => _active = '/email/campaigns',
-          );
-
-          // Add campaign navigation here
-        },
-      ),
-    ],
-  ),
-
-    if(showLeaderboard)
-          _Item(
-              icon: Icons.leaderboard_outlined,
-              activeIcon: Icons.leaderboard_outlined,
-              label: 'Leaderboard',
-              active: _active == '/LeaderboardPage',
-              activeColor: AppColors.warning,
-              onTap: () {
-                setState(() => _active = '/LeaderboardPage');
-                widget.onNavigate('/LeaderboardPage');
-              }),
-          const Spacer(),
-          const Divider(
-              color: Color(0xFF1E293B), height: 1, indent: 20, endIndent: 20),
-          _Item(
-              icon: Icons.logout_outlined,
-              activeIcon: Icons.logout_rounded,
-              label: 'Logout',
-              active: false,
-              activeColor: AppColors.danger,
-              onTap: _logout),
-          const SizedBox(height: 8),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(22, 4, 22, 16),
-          ),
-        ])),
-
-      );
-  }
-}
-
-class _Item extends StatelessWidget {
-  final IconData icon, activeIcon;
-  final String label;
-  final bool active;
-  final Color activeColor;
-  final VoidCallback onTap;
-
-  /// Shown as a count pill when greater than 0 (e.g. unread messages).
-  final int badgeCount;
-  const _Item(
-      {required this.icon,
-      required this.activeIcon,
-      required this.label,
-      required this.active,
-      required this.activeColor,
-      required this.onTap,
-      this.badgeCount = 0});
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap: onTap,
-        behavior: HitTestBehavior.opaque,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          decoration: BoxDecoration(
-              color:
-                  active ? activeColor.withOpacity(0.14) : Colors.transparent,
-              borderRadius: BorderRadius.circular(12)),
-          child: Row(children: [
-            Icon(active ? activeIcon : icon,
-                size: 20,
-                color: active ? activeColor : const Color(0xFF64748B)),
-            const SizedBox(width: 12),
-            Expanded(
-                child: Text(label,
-                    style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color:
-                            active ? Colors.white : const Color(0xFF94A3B8)))),
-            if (badgeCount > 0) ...[
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                decoration: BoxDecoration(
-                    color: activeColor,
-                    borderRadius: BorderRadius.circular(10)),
-                child: Text(badgeCount > 99 ? '99+' : '$badgeCount',
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700)),
-              ),
-              if (active) const SizedBox(width: 8),
-            ],
-            if (active)
-              Container(
-                  width: 7,
-                  height: 7,
-                  decoration: BoxDecoration(
-                      color: activeColor, shape: BoxShape.circle)),
-          ]),
-        ),
-      );
-}
-
-class _ExpandItem extends StatelessWidget {
-  final IconData icon, activeIcon;
-  final String label;
-  final bool expanded, active;
-  final Color activeColor;
-  final VoidCallback onToggle;
-  final List<Widget> children;
-  const _ExpandItem(
-      {required this.icon,
-      required this.activeIcon,
-      required this.label,
-      required this.expanded,
-      required this.active,
-      required this.activeColor,
-      required this.onToggle,
-      required this.children});
-  @override
-  Widget build(BuildContext context) => Column(children: [
-        GestureDetector(
-            onTap: onToggle,
-            behavior: HitTestBehavior.opaque,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                  color: active
-                      ? activeColor.withOpacity(0.14)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(12)),
-              child: Row(children: [
-                Icon(active ? activeIcon : icon,
-                    size: 20,
-                    color: active ? activeColor : const Color(0xFF64748B)),
-                const SizedBox(width: 12),
-                Expanded(
-                    child: Text(label,
-                        style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: active
-                                ? Colors.white
-                                : const Color(0xFF94A3B8)))),
-                AnimatedRotation(
-                    turns: expanded ? 0.25 : 0,
-                    duration: const Duration(milliseconds: 220),
-                    child: const Icon(Icons.chevron_right_rounded,
-                        size: 18, color: Color(0xFF475569))),
-              ]),
-            )),
-        AnimatedSize(
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
-            child: expanded
-                ? Column(children: children)
-                : const SizedBox.shrink()),
-      ]);
-}
-
-class _SubItem extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final bool active;
-  final VoidCallback onTap;
-  const _SubItem(
-      {required this.icon,
-      required this.label,
-      required this.active,
-      required this.onTap});
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap: onTap,
-        behavior: HitTestBehavior.opaque,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          margin: const EdgeInsets.only(left: 30, right: 14, top: 2, bottom: 2),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-              color: active
-                  ? const Color(0xFF8B5CF6).withOpacity(0.12)
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                  color: active
-                      ? const Color(0xFF8B5CF6).withOpacity(0.3)
-                      : Colors.transparent)),
-          child: Row(children: [
-            Container(
-                width: 6,
-                height: 6,
-                margin: const EdgeInsets.only(right: 10),
-                decoration: BoxDecoration(
-                    color: active
-                        ? const Color(0xFF8B5CF6)
-                        : const Color(0xFF334155),
-                    shape: BoxShape.circle)),
-            Icon(icon,
-                size: 15,
-                color:
-                    active ? const Color(0xFF8B5CF6) : const Color(0xFF64748B)),
-            const SizedBox(width: 9),
-            Text(label,
-                style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: active ? Colors.white : const Color(0xFF64748B))),
-          ]),
-        ),
-      );
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1475,12 +757,17 @@ Widget _buildHeroCard(
   final pendingInvoiceCount =
       sm.pendingInvoices;
 
+  // Each stat opens its module only when the role allows that module.
+  final canLeads = PermissionHelper.can('leads');
+  final canDeals = PermissionHelper.can('deals_all');
+  final canInvoices = PermissionHelper.can('invoices');
+
   return _HeroOverviewCard(
     s: s,
     totalLeads: totalLeads,
     paidRev: totalRev,
     pendingInvoiceCount: pendingInvoiceCount,
-    onTodayFollowUpsTap: () async {
+    onTodayFollowUpsTap: !canLeads ? null : () async {
       if (!await _canNavigate(context)) return;
 
       Navigator.of(
@@ -1495,19 +782,19 @@ Widget _buildHeroCard(
       );
     },
 
-    onTotalLeadsTap: () async {
+    onTotalLeadsTap: !canLeads ? null : () async {
       if (!await _canNavigate(context)) return;
       Navigator.of(context, rootNavigator: true).push(
         _slide(const LeadsScreen(showBackButton: true)),
       );
     },
-    onDealsWonTap: () async {
+    onDealsWonTap: !canDeals ? null : () async {
   if (!await _canNavigate(context)) return;
   Navigator.of(context, rootNavigator: true).push(
     _slide(const DealsScreen( initialStageFilter: 'Closed Won')),
   );
 },
-onPendingInvoicesTap: () async {
+onPendingInvoicesTap: !canInvoices ? null : () async {
   if (!await _canNavigate(context)) return;
   Navigator.of(context, rootNavigator: true).push(
     _slide(const InvoiceScreen(initialStatusFilter: 'Unpaid')),
@@ -1675,18 +962,6 @@ class _DashboardBody extends StatelessWidget {
 final pendingInvoiceCount =
     sm.pendingInvoices;
 
-   
-
-    final topUser = s.topPerformer ??
-        {
-          "name": "No Performer",
-          "email": "",
-          "conversionRate": 0,
-          "convertedLeads": 0,
-          "totalLeads": 0,
-          "productiveDays": 0,
-        };
-
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1701,6 +976,8 @@ final pendingInvoiceCount =
   const SizedBox(height: 20),
 ],
                 // ── Recent Leads ──────────────────────────────────────
+        // Sections follow the role's module permissions.
+        if (PermissionHelper.can('leads')) ...[
         const _SectionTitle('Recent Leads'),
         const SizedBox(height: 12),
         s.recentLeads.isEmpty
@@ -1729,14 +1006,18 @@ final pendingInvoiceCount =
                     .toList()),
 
         const SizedBox(height: 20),
-        
+        ],
+
         // ── Deal Pipeline ─────────────────────────────────────
+        if (PermissionHelper.can('deals_all') ||
+            PermissionHelper.can('deals_pipeline')) ...[
         Row(
   mainAxisAlignment: MainAxisAlignment.spaceBetween,
   children: [
     const _SectionTitle('Deal Pipeline'),
 
-    if (s.hasPipeline)
+    // "View Deals" opens the Deal Stages tab.
+    if (s.hasPipeline && PermissionHelper.can('deals_pipeline'))
       Material(
         color: Colors.transparent,
         child: InkWell(
@@ -1811,29 +1092,22 @@ final pendingInvoiceCount =
         _PipelineCard(s: s),
 
         const SizedBox(height: 24),
+        ],
 
                 // ── Meetings ────────────────────────────────────────
+        if (PermissionHelper.can('meetings')) ...[
         const _SectionTitle('Meetings'),
- 
+
         const SizedBox(height: 12),
- 
+
         MeetingsCard(
   filterRange: s.filterRange,
   filterMonth: s.filterMonth,
   filterYear: s.filterYear,
-),           
- 
+),
+
         const SizedBox(height: 24),
-
-        // // ── Top Performer ─────────────────────────────────────
-        // const _SectionTitle('Top Performer'),
-
-        // const SizedBox(height: 12),
-
-        // _TopPerformerCard(user: topUser),
-
-        // const SizedBox(height: 24),
-  
+        ],
             ]),
     );
   }
@@ -2976,225 +2250,6 @@ class _MiniLeadCard extends StatelessWidget {
           ]),
         ]),
   ),
-      );
-}
-
-class _TopPerformerCard extends StatelessWidget {
-  final Map<String, dynamic> user;
-
-  const _TopPerformerCard({required this.user});
-
-  @override
-  Widget build(BuildContext context) {
-    final name = user['name'] ?? '';
-    final email = user['email'] ?? '';
-    final conversion = (user['conversionRate'] ?? 0).toDouble();
-    final converted = user['convertedLeads'] ?? 0;
-    final total = user['totalLeads'] ?? 0;
-    final activeDays = user['productiveDays'] ?? 0;
-
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: () async {
-          final result = await Connectivity().checkConnectivity();
-
-          if (result == ConnectivityResult.none) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                  "You are offline. Leaderboard is not available.",
-                ),
-              ),
-            );
-
-            return;
-          }
-
-          final prefs = await SharedPreferences.getInstance();
-
-          final token = prefs.getString('token') ?? '';
-
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => LeaderboardPage(
-                authToken: token,
-              ),
-            ),
-          );
-        },
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [Color(0xFFFFF7ED), Color(0xFFFFFBF5)],
-            ),
-            borderRadius: BorderRadius.circular(18),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              )
-            ],
-          ),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            // ── Header ──
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.orange,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(Icons.emoji_events,
-                      color: Colors.white, size: 18),
-                ),
-                const SizedBox(width: 10),
-                const Text(
-                  "Top Performer",
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 16),
-
-            // ── User Info ──
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.orange,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Text("#1",
-                      style: TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.bold)),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(name,
-                            style: const TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.w700)),
-                        Text(email,
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.grey)),
-                        const SizedBox(height: 4),
-                        Row(children: [
-                          const Icon(Icons.flash_on,
-                              size: 14, color: Colors.orange),
-                          Text(" ${conversion.toStringAsFixed(1)}%",
-                              style: const TextStyle(fontSize: 12)),
-                          const SizedBox(width: 10),
-                          const Icon(Icons.local_fire_department,
-                              size: 14, color: Colors.orange),
-                          Text(" $activeDays d",
-                              style: const TextStyle(fontSize: 12)),
-                        ])
-                      ]),
-                ),
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.shade200,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(Icons.workspace_premium,
-                      size: 18, color: Colors.orange),
-                )
-              ],
-            ),
-
-            const SizedBox(height: 16),
-
-            // ── Stats ──
-            Row(
-              children: [
-                Expanded(
-                  child: _tpBox(
-                    title: "Conversion",
-                    value: "${conversion.toStringAsFixed(1)}%",
-                    sub: "$converted/$total",
-                    color: Colors.orange,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _tpBox(
-                    title: "Active Days",
-                    value: "$activeDays",
-                    sub: "—",
-                    color: Colors.blue,
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 16),
-
-            // ── Progress ──
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text("Performance",
-                    style: TextStyle(fontSize: 12, color: Colors.grey)),
-                Text("${conversion.toStringAsFixed(1)}%",
-                    style: const TextStyle(
-                        fontSize: 12, fontWeight: FontWeight.w600)),
-              ],
-            ),
-            const SizedBox(height: 6),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: LinearProgressIndicator(
-                value: conversion / 100,
-                minHeight: 6,
-                backgroundColor: Colors.orange.shade100,
-                valueColor: const AlwaysStoppedAnimation<Color>(Colors.orange),
-              ),
-            )
-          ]),
-        ),
-      ),
-    );
-  }
-}
-
-class _tpBox extends StatelessWidget {
-  final String title, value, sub;
-  final Color color;
-
-  const _tpBox({
-    required this.title,
-    required this.value,
-    required this.sub,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.08),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-          const SizedBox(height: 4),
-          Text(value,
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-          Text(sub, style: const TextStyle(fontSize: 11, color: Colors.grey)),
-        ]),
       );
 }
 

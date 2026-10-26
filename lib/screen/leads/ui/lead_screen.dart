@@ -8,6 +8,7 @@
 // ║  FOLLOW  → 🌐 PATCH /leads/:id/followup                      ║
 // ║  CONVERT → 🌐 PATCH /leads/:id/convert                       ║
 // ╚══════════════════════════════════════════════════════════════
+import 'dart:async';
 import 'dart:io';
 import 'package:crm_app/modals/modals.dart'
     show
@@ -21,6 +22,11 @@ import 'package:crm_app/modals/modals.dart'
 import 'package:crm_app/screen/leads/cubit/call_cubit.dart';
 import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
 import 'package:crm_app/screen/leads/ui/lead.dart';
+import 'package:crm_app/shareWidgets/actitvity_timeline_ui.dart';
+import 'package:crm_app/shareWidgets/contact_actions.dart';
+import 'package:crm_app/shareWidgets/linked_work_index.dart';
+import 'package:crm_app/shareWidgets/linked_work_tab.dart';
+import 'package:crm_app/shareWidgets/record_emails_tab.dart';
 import 'package:crm_app/screen/leads/ui/meeting.dart';
 import 'package:crm_app/screen/leads/ui/reject_lead_screen.dart';
 import 'package:crm_app/screen/leads/ui/convert_lead_dialog.dart';
@@ -28,8 +34,6 @@ import 'package:crm_app/screen/leads/ui/status_reason_sheet.dart';
 import 'package:crm_app/screen/meeting/UI/meeting.dart';
 import 'package:crm_app/screen/meeting/cubit/meeting_cubit.dart';
 import 'package:crm_app/screen/meeting/cubit/meeting_state.dart';
-import 'package:crm_app/shareWidgets/missed_followup.dart';
-import 'package:crm_app/shareWidgets/missed_followup_helper.dart';
 import 'package:crm_app/shareWidgets/share_widgets.dart'
     show
         SectionHeader,
@@ -41,6 +45,7 @@ import 'package:crm_app/shareWidgets/share_widgets.dart'
         StatusBadge,
         CrmDropdown;
 import 'package:crm_app/thems/app_themes.dart' show AppColors;
+import 'package:crm_app/utils/data_sync.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
@@ -169,12 +174,16 @@ class LeadsScreen extends StatelessWidget {
   final bool showBackButton;
   final VoidCallback? onLeadOpened;
 
+  /// Set only when this is the bottom-nav Leads tab: enables silent
+  /// refresh when stale / changed (TabRefreshScope). Null when pushed.
+  final int? tabIndex;
+
   const LeadsScreen({
   super.key,
   this.selectedLeadId,
   this.showBackButton = false,
   this.onLeadOpened,
-
+  this.tabIndex,
 });
   @override
   Widget build(BuildContext context) => MultiBlocProvider(
@@ -191,7 +200,7 @@ class LeadsScreen extends StatelessWidget {
           selectedLeadId: selectedLeadId,
           showBackButton: showBackButton,
           onLeadOpened: onLeadOpened,
-
+          tabIndex: tabIndex,
         ),
       );
 }
@@ -200,14 +209,14 @@ class _LeadsView extends StatefulWidget {
     final String? selectedLeadId;
     final bool showBackButton;
     final VoidCallback? onLeadOpened;
-
+    final int? tabIndex;
 
 const _LeadsView({
     super.key,
     this.selectedLeadId,
     required this.showBackButton,
     this.onLeadOpened,
-
+    this.tabIndex,
   });
  @override
   State<_LeadsView> createState() => _LeadsViewState();
@@ -231,13 +240,95 @@ class _LeadsViewState extends State<_LeadsView> {
 ];
   bool _showRejectedOnly = false;
 
+  // "Tasks" filter — leads with an open linked task / running target.
+  static const _linkedAll = 'All Linked Work';
+  static const _linkedTasks = 'Active Tasks';
+  static const _linkedTargets = 'Active Targets';
+  String _linkedFilter = _linkedAll;
+
+  /// Only the options the role can see (assigned_tasks / my_targets).
+  List<String> get _linkedItems => [
+        _linkedAll,
+        if (PermissionHelper.can('assigned_tasks')) _linkedTasks,
+        if (PermissionHelper.can('my_targets')) _linkedTargets,
+      ];
+
+  /// Re-filter when the task/target lookup changes while this filter is on.
+  void _onLinkedWorkChanged() {
+    if (mounted && _linkedFilter != _linkedAll) _loadLinkedLeads();
+  }
+
+  // Linked mode (Active Tasks / Active Targets): the matching leads can sit
+  // on any server page, so they're loaded by id, then filtered and paged
+  // here — the count and pagination follow the filtered result.
+  final Map<String, Lead> _linkedCache = {};
+  bool _linkedLoading = false;
+  String? _linkedError;
+  int _linkedPage = 1;
+
+  bool get _linkedMode => _linkedFilter != _linkedAll;
+
+  Set<String> get _linkedIds => LinkedWorkIndex.notifier.value.activeIds(
+        LinkedWorkKind.lead,
+        tasks: _linkedFilter == _linkedTasks,
+      );
+
+  /// Loads any matching leads not cached yet. [reload] refetches them all.
+  Future<void> _loadLinkedLeads({bool reload = false}) async {
+    if (!_linkedMode) return;
+    if (reload) _linkedCache.clear();
+    final missing =
+        _linkedIds.where((id) => !_linkedCache.containsKey(id)).toList();
+    if (missing.isEmpty) {
+      if (mounted) setState(() {});
+      return;
+    }
+    setState(() {
+      _linkedLoading = true;
+      _linkedError = null;
+    });
+    try {
+      final leads = await context.read<LeadCubit>().fetchLeadsByIds(missing);
+      if (!mounted) return;
+      setState(() {
+        for (final l in leads) {
+          _linkedCache[l.id] = l;
+        }
+        _linkedLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _linkedLoading = false;
+        _linkedError = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  /// Pull-to-refresh in linked mode: fresh tasks/targets, then fresh leads.
+  Future<void> _refreshLinked() async {
+    await LinkedWorkIndex.refresh();
+    await _loadLinkedLeads(reload: true);
+  }
+
+  void _setLinkedFilter(String v) {
+    setState(() {
+      _linkedFilter = v;
+      _linkedPage = 1;
+    });
+    if (v != _linkedAll) {
+      // Current tasks/targets first, then the leads they point at.
+      LinkedWorkIndex.refresh().then((_) => _loadLinkedLeads());
+      _loadLinkedLeads();
+    }
+  }
+
   final TextEditingController reasonController = TextEditingController();
 
   final Map<String, String> _assigneeIdToName = {};
   List<String> _assigneeDropdownItems = ['All Assignees'];
 
   int _currentPage = 1;
-  bool _missedPopupShown = false;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 DateTime? _fromDate;
 DateTime? _toDate;
@@ -245,40 +336,17 @@ DateTime? _toDate;
   void initState() {
     super.initState();
     _loadAssignees();
+    LinkedWorkIndex.refresh(); // task/target icons on the cards
+    LinkedWorkIndex.notifier.addListener(_onLinkedWorkChanged);
   }
 
   @override
   void dispose() {
+    LinkedWorkIndex.notifier.removeListener(_onLinkedWorkChanged);
     _searchController.dispose();
     super.dispose();
   }
-  
-Future<void> _showMissedFollowups(List<Lead> leads) async {
-  if (_missedPopupShown) return;
 
-  final prefs = await SharedPreferences.getInstance();
-  final userId = prefs.getString('user_id') ?? '';
-
-  final missedLeads = MissedFollowupHelper.getMissedFollowups(
-    leads: leads,
-    loggedInUserId: userId,
-  );
-
-  if (!mounted || missedLeads.isEmpty) return;
-
-  _missedPopupShown = true;
-
-  showDialog(
-    context: context,
-    builder: (_) => MissedFollowupDialog(
-      missedLeads: missedLeads,
-      onViewLead: (lead) {
-        
-        openDetail(context, lead);  
-      },
-    ),
-  );
-}
   Future<void> _loadAssignees() async {
   try {
     final prefs = await SharedPreferences.getInstance();
@@ -423,12 +491,20 @@ debugPrint(
   "selected=$_assigneeFilter",
 );    
 
+    final linked = LinkedWorkIndex.notifier.value;
+    final matchesLinked = _linkedFilter == _linkedAll ||
+        (_linkedFilter == _linkedTasks &&
+            linked.hasActiveTask(LinkedWorkKind.lead, l.id)) ||
+        (_linkedFilter == _linkedTargets &&
+            linked.hasActiveTarget(LinkedWorkKind.lead, l.id));
+
     return matchesSearch &&
     matchesStatus &&
     matchesSource &&
     matchesClientType &&
     matchesAssignee &&
     matchesFollowup &&
+    matchesLinked &&
     matchesDate;
         
         
@@ -463,6 +539,7 @@ debugPrint(
       _clientTypeFilter != 'All Client Types' ||
       _assigneeFilter != 'All Assignees' ||
       _followupFilter != 'All Follow-ups' ||
+      _linkedFilter != _linkedAll ||
       _fromDate != null ||
       _toDate != null;
 
@@ -473,6 +550,8 @@ debugPrint(
       _clientTypeFilter = 'All Client Types';
       _assigneeFilter = 'All Assignees';
       _followupFilter = 'All Follow-ups';
+      _linkedFilter = _linkedAll;
+      _linkedPage = 1;
       _fromDate = null;
       _toDate = null;
       _resetPage();
@@ -488,7 +567,14 @@ debugPrint(
       isScrollControlled: true,
       showDragHandle: true,
       builder: (_) {
-        return StatefulBuilder(
+        // Draggable so a swipe down anywhere on the sheet (when scrolled
+        // to the top) slides it down and closes it.
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.85,
+          minChildSize: 0.4,
+          maxChildSize: 0.95,
+          builder: (_, scrollCtrl) => StatefulBuilder(
           builder: (context, setSheetState) {
             return SafeArea(
               child: Padding(
@@ -499,6 +585,10 @@ debugPrint(
                   bottom: MediaQuery.of(context).viewInsets.bottom + 20,
                 ),
                 child: SingleChildScrollView(
+                  controller: scrollCtrl,
+                  // Content may fit without scrolling — still take the
+                  // drag so a swipe down moves the sheet.
+                  physics: const AlwaysScrollableScrollPhysics(),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -629,6 +719,27 @@ debugPrint(
                             ),
                         ],
                       ),
+                      // Tasks: leads with an open linked task / target.
+                      if (_linkedItems.length > 1) ...[
+                        const SizedBox(height: 16),
+                        const Text(
+                          "Tasks",
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 6),
+                        _FilterDrop(
+                          value: _linkedItems.contains(_linkedFilter)
+                              ? _linkedFilter
+                              : _linkedAll,
+                          items: _linkedItems,
+                          icon: Icons.task_alt_outlined,
+                          onChanged: (v) {
+                            if (v == null) return;
+                            setSheetState(() {});
+                            _setLinkedFilter(v);
+                          },
+                        ),
+                      ],
                       const SizedBox(height: 16),
                       const Text(
                         "From Date",
@@ -725,6 +836,8 @@ debugPrint(
                                   _clientTypeFilter = 'All Client Types';
                                   _assigneeFilter = 'All Assignees';
                                   _followupFilter = 'All Follow-ups';
+                                  _linkedFilter = _linkedAll;
+                                  _linkedPage = 1;
                                   _fromDate = null;
                                   _toDate = null;
                                   _resetPage();
@@ -755,20 +868,31 @@ debugPrint(
               ),
             );
           },
+          ),
         );
       },
     );
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      // Bottom-nav tab only: silent reload of the current page when you
+      // come back after 2+ min, or after leads changed elsewhere.
+      TabRefreshScope<LeadCubit, LeadState>(
+        area: SyncArea.leads,
+        tabIndex: widget.tabIndex,
+        isLoaded: (s) => s is LeadLoaded,
+        onRefresh: () => context.read<LeadCubit>().fetchAllLeads(
+              page: _currentPage,
+              limit: _kPageSize,
+              silent: true,
+            ),
+        child: Builder(builder: _buildLeads),
+      );
+
+  Widget _buildLeads(BuildContext context) {
     return BlocConsumer<LeadCubit, LeadState>(
       listener: (ctx, state) {
-        if (state is LeadLoaded && !PermissionHelper.can('users_roles')) {
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    _showMissedFollowups(state.leads);
-  });
-}
         if (state is LeadActionSuccess) showApiSnack(ctx, state.message);
         if (state is LeadError && _isSessionExpiredMessage(state.message)) {
           Navigator.of(ctx, rootNavigator: true)
@@ -800,9 +924,36 @@ debugPrint(
     }
   });
 }
-        final leads = allFiltered; // CHANGED — no more _paginate(); server already gave us one page
-        final allCount = state is LeadLoaded ? (state.totalCount ?? state.leads.length) : 0;
-        final totalPages = _totalPages(state);
+        // Normal: the server gives one page, filtered here.
+        // Linked mode: every matching lead (any page), filtered + paged here.
+        final List<Lead> filtered;
+        final List<Lead> leads;
+        final int allCount;
+        final int totalPages;
+        final int page;
+        if (_linkedMode) {
+          filtered = _filter([
+            for (final id in _linkedIds)
+              if (_linkedCache[id] != null) _linkedCache[id]!,
+          ])
+            ..sort((a, b) => (b.createdAt ?? DateTime(0))
+                .compareTo(a.createdAt ?? DateTime(0)));
+          allCount = filtered.length;
+          totalPages = (allCount / _kPageSize).ceil().clamp(1, 99999);
+          page = _linkedPage.clamp(1, totalPages);
+          leads = filtered.sublist(
+            (page - 1) * _kPageSize,
+            (page * _kPageSize).clamp(0, allCount),
+          );
+        } else {
+          filtered = allFiltered;
+          leads = allFiltered; // server already gave us one page
+          allCount = state is LeadLoaded
+              ? (state.totalCount ?? state.leads.length)
+              : 0;
+          totalPages = _totalPages(state);
+          page = _currentPage;
+        }
 
         return Scaffold(
             key: _scaffoldKey,
@@ -1024,7 +1175,7 @@ leading: widget.showBackButton
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               child: Row(children: [
                 Text(
-                    '${allFiltered.length} lead${allFiltered.length != 1 ? 's' : ''}',
+                    '${filtered.length} lead${filtered.length != 1 ? 's' : ''}',
                     style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
@@ -1032,7 +1183,8 @@ leading: widget.showBackButton
                 if (_statusFilter != 'All Status' ||
                     _sourceFilter != 'All Sources' ||
                     _clientTypeFilter != 'All Client Types' ||
-                    _assigneeFilter != 'All Assignees') ...[
+                    _assigneeFilter != 'All Assignees' ||
+                    _linkedFilter != _linkedAll) ...[
                   const Spacer(),
                   GestureDetector(
                     onTap: () => setState(() {
@@ -1040,6 +1192,8 @@ leading: widget.showBackButton
                       _sourceFilter = 'All Sources';
                       _clientTypeFilter = 'All Client Types';
                       _assigneeFilter = 'All Assignees';
+                      _linkedFilter = _linkedAll;
+                      _linkedPage = 1;
                       _showRejectedOnly = false;
                       _resetPage();
                     }),
@@ -1053,25 +1207,52 @@ leading: widget.showBackButton
               ]),
             ),
             Expanded(
-                child: _buildList(context, state, leads, allFiltered.length)),
-            if (state is LeadLoaded && allFiltered.isNotEmpty)
+                child: _linkedMode
+                    ? _buildList(
+                        context,
+                        state,
+                        leads,
+                        filtered.length,
+                        linkedLoading: _linkedLoading && leads.isEmpty,
+                        linkedError: leads.isEmpty ? _linkedError : null,
+                      )
+                    : _buildList(context, state, leads, filtered.length)),
+            if ((_linkedMode || state is LeadLoaded) && filtered.isNotEmpty)
   _PaginationBar(
-    page: _currentPage,
+    page: page,
     totalPages: totalPages,
     totalItems: allCount,
     pageSize: _kPageSize,
-    onPrev: _currentPage > 1 ? () => _goToPage(_currentPage - 1) : null,
-    onNext: _currentPage < totalPages ? () => _goToPage(_currentPage + 1) : null,
+    // Linked mode pages locally; normal mode asks the server.
+    onPrev: page > 1
+        ? () => _linkedMode
+            ? setState(() => _linkedPage = page - 1)
+            : _goToPage(page - 1)
+        : null,
+    onNext: page < totalPages
+        ? () => _linkedMode
+            ? setState(() => _linkedPage = page + 1)
+            : _goToPage(page + 1)
+        : null,
   ),
           ]),
           
+      // create_lead: true → enabled, false → shown but disabled.
       floatingActionButton:Padding(
         padding: const EdgeInsets.only(bottom: 60), // Move FAB up
-        child: FloatingActionButton(
-          onPressed: () => _openCreate(context),
-          backgroundColor: AppColors.primary,
-          foregroundColor: Colors.white,
-          child: const Icon(Icons.add),
+        child: Opacity(
+          opacity: PermissionHelper.can('create_lead') ? 1 : 0.45,
+          child: FloatingActionButton(
+            onPressed: PermissionHelper.can('create_lead')
+                ? () => _openCreate(context)
+                : null,
+            tooltip: PermissionHelper.can('create_lead')
+                ? 'Create Lead'
+                : 'You don\'t have permission to create leads',
+            backgroundColor: AppColors.primary,
+            foregroundColor: Colors.white,
+            child: const Icon(Icons.add),
+          ),
         ),
       )
     
@@ -1319,7 +1500,24 @@ Future<void> _pickAndImportLeads(BuildContext context) async {
   }
 }
   Widget _buildList(
-      BuildContext context, LeadState state, List<Lead> leads, int total) {
+      BuildContext context, LeadState state, List<Lead> leads, int total,
+      {bool linkedLoading = false, String? linkedError}) {
+    if (_linkedMode) {
+      if (linkedLoading) {
+        return const LoadingState(message: 'Fetching linked leads...');
+      }
+      if (linkedError != null) {
+        return ErrorState(
+            message: linkedError, onRetry: () => _loadLinkedLeads());
+      }
+      if (leads.isEmpty) {
+        return EmptyState(
+            message: _linkedFilter == _linkedTasks
+                ? 'No leads with active tasks'
+                : 'No leads with active targets',
+            icon: Icons.task_alt_outlined);
+      }
+    } else {
     if (state is LeadLoading) {
       return const LoadingState(message: 'Fetching leads...');
     }
@@ -1333,9 +1531,15 @@ Future<void> _pickAndImportLeads(BuildContext context) async {
           message: _search.isNotEmpty ? 'No matches' : 'No leads yet',
           icon: Icons.people_outline);
     }
+    }
     return RefreshIndicator(
       color: AppColors.primary,
-      onRefresh: () => context.read<LeadCubit>().fetchAllLeads(page: _currentPage, limit: _kPageSize), // CHANGED
+      onRefresh: () => _linkedMode
+          ? _refreshLinked()
+          : Future.wait([
+              context.read<LeadCubit>().fetchAllLeads(page: _currentPage, limit: _kPageSize), // CHANGED
+              LinkedWorkIndex.refresh(),
+            ]),
       child: ListView.builder(
         padding: const EdgeInsets.symmetric(horizontal: 16),
         itemCount: leads.length,
@@ -1943,11 +2147,20 @@ final isMissedFollowup =
                   child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                    Text(lead.name,
-                        style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textPrimary)),
+                    // Name + task/target icons when this lead is linked.
+                    Row(children: [
+                      Flexible(
+                        child: Text(lead.name,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.textPrimary)),
+                      ),
+                      const SizedBox(width: 6),
+                      LinkedWorkBadges(
+                          kind: LinkedWorkKind.lead, id: lead.id),
+                    ]),
                     if (lead.companyName.isNotEmpty)
                       Text(lead.companyName,
                           style: const TextStyle(
@@ -2885,13 +3098,26 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
   }
 }
 
+  // Optional tabs, by role permission.
+  bool get _showTasks => PermissionHelper.can('assigned_tasks');
+  bool get _showTargets => PermissionHelper.can('my_targets');
+  bool get _showLinkedWork => _showTasks || _showTargets;
+  bool get _showMeetings => PermissionHelper.can('meetings');
+  // Emails tab = the Email Campaign module.
+  bool get _showEmails => PermissionHelper.can('email_campaigns');
+  int get _tabCount =>
+      6 +
+      (_showLinkedWork ? 1 : 0) +
+      (_showMeetings ? 1 : 0) +
+      (_showEmails ? 1 : 0);
+
   @override
   Widget build(BuildContext ctx) => ScaffoldMessenger(
         key: _detailMessengerKey,
         child: Scaffold(
         backgroundColor: Colors.transparent,
         body: DefaultTabController(
-        length: 7,
+        length: _tabCount,
         child: DraggableScrollableSheet(
           initialChildSize: 0.75,
           maxChildSize: 0.95,
@@ -2944,50 +3170,63 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
                 ]),
               ),
               const SizedBox(height: 10),
-            const  Padding(
-  padding: EdgeInsets.symmetric(horizontal: 20),
+            Padding(
+  padding: const EdgeInsets.symmetric(horizontal: 20),
   child: TabBar(
     isScrollable: true,
     tabAlignment: TabAlignment.start,
     labelColor: AppColors.primary,
     unselectedLabelColor: AppColors.textSecondary,
     indicatorColor: AppColors.primary,
-    labelStyle: TextStyle(
+    labelStyle: const TextStyle(
       fontSize: 13,
       fontWeight: FontWeight.w600,
     ),
-    unselectedLabelStyle: TextStyle(
+    unselectedLabelStyle: const TextStyle(
       fontSize: 13,
       fontWeight: FontWeight.w400,
     ),
+    // Tasks & Targets and Meetings follow the role's permissions;
+    // keep in step with the TabBarView children below.
     tabs: [
-   Tab(
+   const Tab(
     icon: Icon(Icons.info_outline, size: 18),
     text: 'Details',
   ),
-   Tab(
+   const Tab(
     icon: Icon(Icons.timeline_outlined, size: 18),
     text: 'Activity',
   ),
+   if (_showLinkedWork)
    Tab(
+    icon: const Icon(Icons.task_alt_outlined, size: 18),
+    text: LinkedWorkTab.labelFor(tasks: _showTasks, targets: _showTargets),
+  ),
+   const Tab(
     icon: Icon(Icons.event_note_outlined, size: 18),
     text: 'Follow-ups',
   ),
-   Tab(
+   const Tab(
     icon: Icon(Icons.attach_file_outlined, size: 18),
     text: 'Attachments',
   ),
-   Tab(
+   const Tab(
     icon: Icon(Icons.image_outlined, size: 18),
     text: 'Images',
   ),
-   Tab(
+   const Tab(
     icon: Icon(Icons.notes_outlined, size: 18),
     text: 'Notes',
   ),
-   Tab(
+   if (_showMeetings)
+   const Tab(
     icon: Icon(Icons.meeting_room_outlined, size: 18),
     text: 'Meetings',
+  ),
+   if (_showEmails)
+   const Tab(
+    icon: Icon(Icons.mail_outline_rounded, size: 18),
+    text: 'Emails',
   ),
 ],
   ),
@@ -3001,6 +3240,16 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
 
       // 2. Activity
       _buildActivityTab(ctrl),
+
+      // 3. Tasks & Targets linked to this lead
+      if (_showLinkedWork)
+      LinkedWorkTab(
+        key: ValueKey('linked-work-${lead.id}'),
+        kind: LinkedWorkKind.lead,
+        id: lead.id,
+        showTasks: _showTasks,
+        showTargets: _showTargets,
+      ),
 
       // 3. Follow-ups
       _buildFollowUpsTab(),
@@ -3078,7 +3327,17 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
       ),
 
       // 7. Meetings
-      _buildMeetingsTab(),
+      if (_showMeetings) _buildMeetingsTab(),
+
+      // 8. Emails — GET /leads/:id/emails
+      if (_showEmails)
+      RecordEmailsTab(
+        key: ValueKey('emails-${lead.id}'),
+        kind: LinkedWorkKind.lead,
+        id: lead.id,
+        recipientName: lead.name,
+        recipientEmail: lead.email,
+      ),
     ],
   ),
 ),
@@ -3112,7 +3371,9 @@ class LeadDetailSheetState extends State<LeadDetailSheet> {
                 tooltip: connected
                     ? 'Create meeting'
                     : 'Connect Google to create meetings',
-                onPressed: connected ? _createMeetingForLead : null,
+                onPressed: connected
+                    ? _createMeetingForLead
+                    : () => showConnectGoogleDialog(context),
                 child: Icon(
                   connected ? Icons.add : Icons.lock_outline,
                   size: 20,
@@ -3236,17 +3497,20 @@ void _createMeetingForLead() {
 
           if (!mounted) return;
 
-          if (success) {
-            Navigator.pop(context);
-
-            await context
-                .read<MeetingsCubit>()
-                .loadMeetings();
-
-            if (!mounted) return;
-
-            showApiSnack(context, 'Meeting created successfully');
+          if (!success) {
+            throw Exception(context.read<MeetingsCubit>().lastError ??
+                'Failed to create meeting.');
           }
+
+          Navigator.pop(context);
+
+          await context
+              .read<MeetingsCubit>()
+              .loadMeetings();
+
+          if (!mounted) return;
+
+          showApiSnack(context, 'Meeting created successfully');
         },
       );
     },
@@ -4645,13 +4909,16 @@ Future<void> _openAddFollowUpDialog(BuildContext context) async {
     return DateFormat('M/d/yyyy').format(date.toLocal());
   }
 
+  /// [onTap] makes the value a link (phone → call/copy, email → mail/copy).
   Widget infoItem(
     IconData icon,
     String label,
     String value, {
     bool clickable = false,
+    VoidCallback? onTap,
   }) {
-    return Padding(
+    clickable = clickable || onTap != null;
+    final row = Padding(
       padding: const EdgeInsets.only(bottom: 18),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -4686,6 +4953,9 @@ Future<void> _openAddFollowUpDialog(BuildContext context) async {
                         ? AppColors.primary
                         : AppColors.textPrimary,
                     fontWeight: FontWeight.w500,
+                    decoration:
+                        onTap != null ? TextDecoration.underline : null,
+                    decorationColor: AppColors.primary.withOpacity(0.4),
                   ),
                 ),
               ],
@@ -4693,6 +4963,12 @@ Future<void> _openAddFollowUpDialog(BuildContext context) async {
           ),
         ],
       ),
+    );
+    if (onTap == null) return row;
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: onTap,
+      child: row,
     );
   }
 
@@ -4720,12 +4996,17 @@ Future<void> _openAddFollowUpDialog(BuildContext context) async {
       Icons.email_outlined,
       'Email',
       valueOrDash(lead.email),
-      clickable: lead.email.trim().isNotEmpty,
+      onTap: lead.email.trim().isEmpty
+          ? null
+          : () => showEmailActions(context, email: lead.email),
     ),
     infoItem(
       Icons.email_outlined,
       'Alternate Email',
       valueOrDash(lead.alternateEmail),
+      onTap: lead.alternateEmail.trim().isEmpty
+          ? null
+          : () => showEmailActions(context, email: lead.alternateEmail),
     ),
     infoItem(
       Icons.phone_outlined,
@@ -4733,7 +5014,13 @@ Future<void> _openAddFollowUpDialog(BuildContext context) async {
       lead.phone.trim().isEmpty
           ? 'Not specified'
           : _formatPhone(lead.phone),
-      clickable: lead.phone.trim().isNotEmpty,
+      onTap: lead.phone.trim().isEmpty
+          ? null
+          : () => showPhoneActions(
+                context,
+                number: dialableNumber(lead.phone),
+                display: _formatPhone(lead.phone),
+              ),
     ),
     infoItem(
       Icons.phone_outlined,
@@ -4741,6 +5028,13 @@ Future<void> _openAddFollowUpDialog(BuildContext context) async {
       lead.alternatePhoneNumber.trim().isEmpty
           ? 'Not specified'
           : _formatPhone(lead.alternatePhoneNumber),
+      onTap: lead.alternatePhoneNumber.trim().isEmpty
+          ? null
+          : () => showPhoneActions(
+                context,
+                number: dialableNumber(lead.alternatePhoneNumber),
+                display: _formatPhone(lead.alternatePhoneNumber),
+              ),
     ),
     infoItem(
       Icons.corporate_fare_outlined,
@@ -4946,210 +5240,6 @@ Future<void> _openAddFollowUpDialog(BuildContext context) async {
         ),
       ],
 
-      // ==========================================================
-      // IMAGES
-      // ==========================================================
-
-      if (lead.images.isNotEmpty) ...[
-        const SizedBox(height: 10),
-        const Divider(),
-        const SizedBox(height: 16),
-
-        const Text(
-          'Images',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w700,
-            color: AppColors.textPrimary,
-          ),
-        ),
-
-        const SizedBox(height: 12),
-
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: lead.images.map(
-            (image) {
-              final imageUrl = _getImageUrl(image.path);
-
-              return GestureDetector(
-  onTap: () {
-    showDialog(
-      context: context,
-      barrierColor: Colors.black87,
-      builder: (dialogContext) {
-        return Dialog(
-          backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.all(10),
-          child: Stack(
-            children: [
-              Center(
-                child: InteractiveViewer(
-                  minScale: 0.5,
-                  maxScale: 4.0,
-                  child: Image.network(
-                    imageUrl,
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) {
-                      return const Icon(
-                        Icons.broken_image,
-                        color: Colors.white,
-                        size: 60,
-                      );
-                    },
-                  ),
-                ),
-              ),
-
-              // Close button
-              Positioned(
-                top: 10,
-                right: 10,
-                child: IconButton(
-                  onPressed: () {
-                    Navigator.pop(dialogContext);
-                  },
-                  icon: const Icon(
-                    Icons.close,
-                    color: Colors.white,
-                    size: 30,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  },
-  child: ClipRRect(
-    borderRadius: BorderRadius.circular(10),
-    child: Image.network(
-      imageUrl,
-      width: 90,
-      height: 90,
-      fit: BoxFit.cover,
-      errorBuilder: (_, __, ___) {
-        return Container(
-          width: 90,
-          height: 90,
-          decoration: BoxDecoration(
-            color: AppColors.background,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: const Icon(
-            Icons.broken_image,
-            color: Colors.grey,
-          ),
-        );
-      },
-    ),
-  ),
-);
-            },
-          ).toList(),
-        ),
-      ],
-
-      // ==========================================================
-      // ATTACHMENTS
-      // ==========================================================
-
-      if (lead.attachments.isNotEmpty) ...[
-        const SizedBox(height: 24),
-        const Divider(),
-        const SizedBox(height: 16),
-
-        const Text(
-          'Attachments',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w700,
-            color: AppColors.textPrimary,
-          ),
-        ),
-
-        const SizedBox(height: 12),
-
-        ...lead.attachments.map(
-          (a) => Builder(
-            builder: (tileCtx) => Container(
-              margin: const EdgeInsets.only(bottom: 10),
-              padding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 10,
-              ),
-              decoration: BoxDecoration(
-                color: AppColors.background,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: AppColors.border,
-                ),
-              ),
-              child: Row(
-                children: [
-                  const Icon(
-                    Icons.insert_drive_file,
-                    size: 20,
-                    color: AppColors.textSecondary,
-                  ),
-
-                  const SizedBox(width: 10),
-
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment:
-                          CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          a.name,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: AppColors.textPrimary,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          '${(a.size / 1024).toStringAsFixed(1)} KB',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: AppColors.textHint,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  IconButton(
-                    icon: const Icon(
-                      Icons.visibility,
-                      size: 18,
-                      color: AppColors.primary,
-                    ),
-                    tooltip: 'Preview',
-                    onPressed: () =>
-                        _previewFile(tileCtx, a.path),
-                  ),
-
-                  IconButton(
-                    icon: const Icon(
-                      Icons.download,
-                      size: 18,
-                      color: AppColors.primary,
-                    ),
-                    tooltip: 'Download',
-                    onPressed: () =>
-                        _downloadFile(tileCtx, a.path, a.name),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
     ],
   );
 }
@@ -5171,165 +5261,21 @@ Future<void> _openAddFollowUpDialog(BuildContext context) async {
   }
 
   Widget _buildActivityTab(ScrollController ctrl) {
-  if (_activityLoading) {
-    return const Center(
-      child: CircularProgressIndicator(),
-    );
-  }
-
-  if (_activities.isEmpty) {
-    return const Center(
-      child: Text(
-        'No activity available',
-        style: TextStyle(
-          color: AppColors.textSecondary,
-        ),
-      ),
-    );
-  }
-
-  return ListView.separated(
+  return ActivityTimeline(
     controller: ctrl,
-    padding: const EdgeInsets.fromLTRB(
-      20,
-      4,
-      20,
-      20,
-    ),
-    itemCount: _activities.length,
-    separatorBuilder: (_, __) {
-      return const SizedBox(height: 10);
-    },
-    itemBuilder: (_, index) {
-      final activity = _activities[index];
-
-      return _buildActivityItem(activity);
-    },
-  );
-}
-
-Widget _buildActivityItem(LeadActivity activity) {
-  return Container(
-    padding: const EdgeInsets.all(12),
-    decoration: BoxDecoration(
-      color: AppColors.background,
-      borderRadius: BorderRadius.circular(10),
-      border: Border.all(
-        color: AppColors.border,
-      ),
-    ),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: AppColors.primaryLight,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Icon(
-            _activityIcon(activity.type),
-            size: 17,
-            color: AppColors.primary,
-          ),
+    isLoading: _activityLoading,
+    subtitle: 'Recent activity and updates for this lead',
+    activities: [
+      for (final a in _activities)
+        ActivityTimelineItem(
+          type: a.type,
+          title: _activityTitle(a.type),
+          description: a.description,
+          performedBy: a.performedByName,
+          timestamp: a.timestamp,
         ),
-
-        const SizedBox(width: 12),
-
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                _activityTitle(activity.type),
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-
-              const SizedBox(height: 4),
-
-              Text(
-                activity.description,
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textSecondary,
-                ),
-              ),
-
-              if (activity.performedByName != null &&
-                  activity.performedByName!.isNotEmpty) ...[
-                const SizedBox(height: 6),
-
-                Text(
-                  'By ${activity.performedByName}',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ],
-
-              if (activity.timestamp != null) ...[
-                const SizedBox(height: 3),
-
-                Text(
-                  DateFormat(
-                    'dd MMM yyyy, hh:mm a',
-                  ).format(
-                    activity.timestamp!.toLocal(),
-                  ),
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: AppColors.textHint,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ],
-    ),
+    ],
   );
-}
-IconData _activityIcon(String type) {
-  switch (type) {
-    case 'lead_created':
-      return Icons.person_add_outlined;
-
-    case 'lead_edited':
-      return Icons.edit_outlined;
-
-    case 'status_changed':
-      return Icons.sync_alt_outlined;
-
-    case 'lead_converted':
-      return Icons.swap_horiz_outlined;
-
-    case 'attachment_uploaded':
-      return Icons.attach_file_outlined;
-
-    case 'meeting_scheduled':
-      return Icons.event_outlined;
-
-    case 'notes_updated':
-      return Icons.note_alt_outlined;
-
-    case 'followup_rescheduled':
-      return Icons.event_repeat_outlined;
-
-    case 'target_linked':
-      return Icons.link_outlined;
-
-    case 'task_activity':
-      return Icons.task_alt_outlined;
-
-    default:
-      return Icons.history_outlined;
-  }
 }
 
 String _activityTitle(String type) {
@@ -5456,6 +5402,36 @@ String? _validatePhone(String value) {
 // ══════════════════════════════════════════════════════════════
 // LEAD FORM MODAL  — CREATE + EDIT
 // ══════════════════════════════════════════════════════════════
+/// Dashed rounded-rect outline (the "Add custom field" button).
+class _DashedRRectPainter extends CustomPainter {
+  final Color color;
+  final double radius;
+  _DashedRRectPainter({required this.color, required this.radius});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3;
+    final path = Path()
+      ..addRRect(RRect.fromRectAndRadius(
+        Offset.zero & size,
+        Radius.circular(radius),
+      ));
+    const dash = 6.0, gap = 4.0;
+    for (final metric in path.computeMetrics()) {
+      for (double d = 0; d < metric.length; d += dash + gap) {
+        canvas.drawPath(metric.extractPath(d, d + dash), paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DashedRRectPainter old) =>
+      old.color != color || old.radius != radius;
+}
+
 class _LeadFormModal extends StatefulWidget {
   final List<AppUser> salesUsers;
   final Lead? existingLead;
@@ -5476,8 +5452,11 @@ class _LeadFormModalState extends State<_LeadFormModal> {
 }
 
   String _phoneCountryCode = '+91';
+  String _alternatePhoneCountryCode = '+91';
     final List<XFile> _selectedImages = [];
     final List<PlatformFile> _leadImages = [];
+    late final TextEditingController _alternatePhone;
+    late final TextEditingController _alternateEmail;
 
   late final TextEditingController _name,
     _company,
@@ -5497,9 +5476,22 @@ class _LeadFormModalState extends State<_LeadFormModal> {
   String? _phoneError;
   String? _emailError;
 
+  /// Name of the lead already using the typed phone / email
+  /// (GET /leads/check-duplicate). Warning only — never blocks saving.
+  String? _phoneDupLead;
+  String? _emailDupLead;
+  Timer? _dupDebounce;
+  int _dupSeq = 0;
+
   final List<PlatformFile> _attachments = [];
   final List<Attachment> _existingAttachments = [];
   String? _country, _industry, _source;
+
+  /// Typed industry when "Other" is picked.
+  final TextEditingController _otherIndustry = TextEditingController();
+
+  /// Digits only — sent as `NumberOfEmployees`.
+  final TextEditingController _employees = TextEditingController();
 
   /// `B2B` | `B2C` | null = not chosen yet.
   String? _clientType;
@@ -5509,6 +5501,13 @@ class _LeadFormModalState extends State<_LeadFormModal> {
   bool _saving = false;
 
   String? _selectedAssignUserId;
+
+  /// Sales users can't reassign: on create the lead is theirs, on edit it
+  /// keeps its current owner. Same rule LeadCubit uses (no users_roles).
+  final bool _assigneeLocked = !PermissionHelper.can('users_roles');
+
+  /// Name shown in the locked Assign To field.
+  String _lockedAssigneeName = '';
   late final List<AppUser> _salesUsers;
   late final List<String> _countries;
   late final List<String> _industries;
@@ -5540,7 +5539,16 @@ class _LeadFormModalState extends State<_LeadFormModal> {
     _phone = TextEditingController(
       text: _extractLocalNumber(l?.phone ?? ''),
     );
+    _alternatePhone = TextEditingController(
+  text: _extractLocalNumber(l?.alternatePhoneNumber ?? ''),
+);
+    // Match the flags shown in the phone fields; otherwise saving without
+    // touching the number re-prefixes it with +91.
+    _phoneCountryCode = '+${_splitPhone(l?.phone ?? '').$2}';
+    _alternatePhoneCountryCode =
+        '+${_splitPhone(l?.alternatePhoneNumber ?? '').$2}';
     _email = TextEditingController(text: l?.email);
+    _alternateEmail = TextEditingController(text: l?.alternateEmail);
     _addr = TextEditingController(text: l?.address);
 _city = TextEditingController(text: l?.city);
 _state = TextEditingController(text: l?.state);
@@ -5555,12 +5563,17 @@ _req = TextEditingController(text: l?.requirement);
 _notes = TextEditingController(text: l?.notes);
     if (l != null) {
       _existingAttachments.addAll(l.attachments);
+      _employees.text = l.numberOfEmployees?.toString() ?? '';
       _country = (l.country.isNotEmpty && _countries.contains(l.country))
           ? l.country
           : null;
-      _industry = (l.industry.isNotEmpty && _industries.contains(l.industry))
-          ? l.industry
-          : null;
+      if (_industries.contains(l.industry)) {
+        _industry = l.industry;
+      } else if (l.industry.trim().isNotEmpty) {
+        // A custom industry was saved via "Other".
+        _industry = 'Other';
+        _otherIndustry.text = l.industry.trim();
+      }
       _source = (l.source.isNotEmpty && _sources.contains(l.source))
           ? l.source
           : null;
@@ -5579,15 +5592,113 @@ _notes = TextEditingController(text: l?.notes);
         _selectedAssignUserId = match?.id;
       }
     }
+
+    if (_assigneeLocked) {
+      if (l != null) {
+        // Edit: keep the current owner.
+        final id = (l.assignedToId?.trim().isNotEmpty ?? false)
+            ? l.assignedToId!.trim()
+            : _selectedAssignUserId;
+        _selectedAssignUserId = id;
+        _lockedAssigneeName = l.assignTo.trim().isNotEmpty
+            ? l.assignTo.trim()
+            : (_salesUsers.where((u) => u.id == id).firstOrNull?.fullName ??
+                'Unassigned');
+      } else {
+        _assignLoggedInUser();
+      }
+    }
   }
+
+  /// Create: the lead belongs to whoever is logged in.
+  Future<void> _assignLoggedInUser() async {
+    final prefs = await SharedPreferences.getInstance();
+    final id = prefs.getString('user_id')?.trim() ?? '';
+    if (!mounted || id.isEmpty) return;
+    final listed = _salesUsers.where((u) => u.id == id).firstOrNull?.fullName;
+    setState(() {
+      _selectedAssignUserId = id;
+      _lockedAssigneeName = (listed?.isNotEmpty ?? false)
+          ? listed!
+          : (prefs.getString('user_name')?.trim() ?? '');
+    });
+  }
+
+  /// Re-checks phone + email for duplicates 500ms after the user stops
+  /// typing. Values that are invalid, too short, or unchanged from the lead
+  /// being edited (it would match itself) aren't sent.
+  void _scheduleDuplicateCheck() {
+    _dupDebounce?.cancel();
+    _dupDebounce = Timer(const Duration(milliseconds: 500), () async {
+      final digits = RegExp(r'[^0-9]');
+      final local = _phone.text.trim().replaceAll(digits, '');
+      final fullPhone = _fullPhoneNumber().replaceAll(digits, '');
+      final email = _email.text.trim();
+
+      final original = widget.existingLead;
+      final checkPhone = local.length >= 6 &&
+          _validatePhone(local) == null &&
+          fullPhone != (original?.phone ?? '').replaceAll(digits, '');
+      final checkEmail = email.isNotEmpty &&
+          _validateEmail(email) == null &&
+          email.toLowerCase() !=
+              (original?.email ?? '').trim().toLowerCase();
+
+      final seq = ++_dupSeq;
+      final hits = (checkPhone || checkEmail)
+          ? await context.read<LeadCubit>().checkDuplicate(
+                phoneNumber: checkPhone ? fullPhone : null,
+                email: checkEmail ? email : null,
+              )
+          : const <String, String>{};
+      // A newer keystroke has started its own check.
+      if (!mounted || seq != _dupSeq) return;
+      setState(() {
+        _phoneDupLead = hits?['phoneNumber'];
+        _emailDupLead = hits?['email'];
+      });
+    });
+  }
+
+  Widget _duplicateWarning(String field, String? leadName) => leadName == null
+      ? const SizedBox.shrink()
+      : Padding(
+          padding: const EdgeInsets.only(top: 4, left: 2),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(top: 1),
+                child: Icon(Icons.warning_amber_rounded,
+                    size: 13, color: AppColors.warning),
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  leadName.isEmpty
+                      ? 'This $field is already used by another lead'
+                      : 'This $field is already used by "$leadName"',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFFB45309),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
 
   @override
   void dispose() {
+    _dupDebounce?.cancel();
     for (final c in [
   _name,
   _company,
   _phone,
+  _alternatePhone,
   _email,
+  _alternateEmail,
   _addr,
   _city,
   _state,
@@ -5596,35 +5707,43 @@ _notes = TextEditingController(text: l?.notes);
   _longitude,
   _req,
   _notes,
+  _otherIndustry,
+  _employees,
 ]) {
   c.dispose();
 }
     super.dispose();
   }
 
-  String _extractLocalNumber(String rawPhone) {
-    try {
-      final cleaned = rawPhone.replaceAll(RegExp(r'[^0-9]'), '');
+  /// Splits a stored phone into (ISO code, dial code, local number).
+  ///
+  /// Numbers saved from the app carry the country code ("919876543210"),
+  /// but imported / web leads are often bare national numbers
+  /// ("9876543210", "09876543210"). Parsing those as international used to
+  /// pick a wrong country (+98 Iran → "76543210") or fail and leave the raw
+  /// value, longer than the field's max length — so it couldn't be edited.
+  /// Only numbers with a "+" or more than 10 digits are treated as
+  /// international; the rest are Indian national numbers.
+  (String, String, String) _splitPhone(String rawPhone) {
+    final digits = rawPhone.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.isEmpty) return ('IN', '91', '');
 
-      final parsed = PhoneNumber.parse('+$cleaned');
-
-      return parsed.nsn;
-    } catch (e) {
-      return rawPhone;
+    final international = rawPhone.trim().startsWith('+') ||
+        (digits.length > 10 && !digits.startsWith('0'));
+    if (international) {
+      try {
+        final parsed = PhoneNumber.parse('+$digits');
+        if (parsed.nsn.isNotEmpty) {
+          return (parsed.isoCode.name, parsed.countryCode, parsed.nsn);
+        }
+      } catch (_) {}
     }
+    return ('IN', '91', digits.replaceFirst(RegExp(r'^0+'), ''));
   }
 
-  String _getInitialCountryCode(String rawPhone) {
-    try {
-      final cleaned = rawPhone.replaceAll(RegExp(r'[^0-9]'), '');
+  String _extractLocalNumber(String rawPhone) => _splitPhone(rawPhone).$3;
 
-      final parsed = PhoneNumber.parse('+$cleaned');
-
-      return parsed.isoCode.name;
-    } catch (e) {
-      return 'IN'; // safe fallback only
-    }
-  }
+  String _getInitialCountryCode(String rawPhone) => _splitPhone(rawPhone).$1;
 
   String _fullPhoneNumber() {
     final countryCode = _phoneCountryCode.replaceAll('+', '');
@@ -5851,20 +5970,31 @@ _notes = TextEditingController(text: l?.notes);
       name: _name.text.trim(),
       companyName: _company.text.trim(),
       phone: _fullPhoneNumber(),
+        alternatePhoneNumber: _alternatePhone.text.trim().isEmpty
+      ? ''
+      : '$_alternatePhoneCountryCode${_alternatePhone.text.trim()}',
+  alternateEmail: _alternateEmail.text.trim(),
+
       email: _email.text.trim(),
       address: _addr.text.trim(),
-city: _city.text.trim(),
-state: _state.text.trim(),
-pincode: _pincode.text.trim(),
+      city: _city.text.trim(),
+      state: _state.text.trim(),
+      pincode: _pincode.text.trim(),
 country: _country ?? '',
 latitude: double.tryParse(_latitude.text.trim()),
 longitude: double.tryParse(_longitude.text.trim()),
-      industry: _industry ?? '',
+      industry: _industry == 'Other' && _otherIndustry.text.trim().isNotEmpty
+          ? _otherIndustry.text.trim()
+          : _industry ?? '',
+      numberOfEmployees: int.tryParse(_employees.text.trim()),
       source: _source ?? '',
       clientType: _clientType ?? '',
       requirement: _req.text.trim(),
       status: _status,
       assignTo: _selectedAssignUserId ?? '',
+      // LeadCubit sends `assignedToId` as `assignTo` — without this the
+      // picked rep was never saved.
+      assignedToId: _selectedAssignUserId,
       followUpDate: _followUp,
       notes: _notes.text.trim(),
       customFields: _customFields,
@@ -5934,96 +6064,39 @@ if (err == null) {
                 decoration: BoxDecoration(
                     color: AppColors.border,
                     borderRadius: BorderRadius.circular(2))),
+            // ── Title + close ──
             Container(
               color: AppColors.surface,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+              padding: const EdgeInsets.fromLTRB(20, 14, 16, 6),
               child: Row(children: [
-                Text(_isEdit ? 'Edit Lead' : 'Create Lead',
-                    style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textPrimary)),
-                const SizedBox(width: 8),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                      color: AppColors.primaryLight,
-                      borderRadius: BorderRadius.circular(6)),
+                Expanded(
+                  child: Text(_isEdit ? 'Edit Lead' : 'Create Lead',
+                      style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textPrimary)),
                 ),
-                const Spacer(),
-                IconButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    icon: const Icon(Icons.close),
-                    style: IconButton.styleFrom(
-                        backgroundColor: AppColors.divider,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8)))),
+                SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: IconButton(
+                      tooltip: 'Close',
+                      padding: EdgeInsets.zero,
+                      onPressed: () => Navigator.pop(ctx),
+                      icon: const Icon(Icons.close,
+                          size: 20, color: AppColors.textPrimary),
+                      style: IconButton.styleFrom(
+                          backgroundColor: AppColors.divider,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)))),
+                ),
               ]),
             ),
+            // ── Step indicator ──
             Container(
               color: AppColors.surface,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                  children: [
-  'Basic',
-  'Business',
-  'Location',
-  'Manage',
-  'Notes',
-]                      .asMap()
-                      .entries
-                      .map((e) {
-                final i = e.key;
-                final done = i < _step;
-                final active = i == _step;
-                return Expanded(
-                    child: Row(children: [
-                  Expanded(
-                      child: GestureDetector(
-                    onTap: () => setState(() => _step = i),
-                    child: Column(children: [
-                      Container(
-                          width: 26,
-                          height: 26,
-                          decoration: BoxDecoration(
-                            color: done
-                                ? AppColors.success
-                                : active
-                                    ? AppColors.primary
-                                    : AppColors.divider,
-                            shape: BoxShape.circle,
-                          ),
-                          child: Center(
-                              child: done
-                                  ? const Icon(Icons.check,
-                                      color: Colors.white, size: 13)
-                                  : Text('${i + 1}',
-                                      style: TextStyle(
-                                          color: active
-                                              ? Colors.white
-                                              : AppColors.textHint,
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w700)))),
-                      const SizedBox(height: 3),
-                      Text(e.value,
-                          style: TextStyle(
-                              fontSize: 9,
-                              color: active
-                                  ? AppColors.primary
-                                  : AppColors.textHint,
-                              fontWeight:
-                                  active ? FontWeight.w600 : FontWeight.w400)),
-                    ]),
-                  )),
-                  if (i < 3)
-                    Container(
-                        height: 1.5,
-                        width: 12,
-                        color:
-                            i < _step ? AppColors.success : AppColors.border),
-                ]));
-              }).toList()),
+              padding: const EdgeInsets.fromLTRB(8, 10, 8, 14),
+              child: _stepper(),
             ),
             const Divider(height: 1, color: AppColors.divider),
             Expanded(
@@ -6040,51 +6113,79 @@ if (err == null) {
                   Row(children: [
                     if (_step > 0) ...[
                       Expanded(
-                          child: OutlinedButton.icon(
-                        onPressed: () => setState(() => _step--),
-                        icon: const Icon(Icons.arrow_back, size: 16),
-                        label: const Text('Back'),
-                        style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 13)),
+                          child: SizedBox(
+                        height: 52,
+                        child: OutlinedButton.icon(
+                          onPressed: () => setState(() => _step--),
+                          icon: const Icon(Icons.arrow_back, size: 18),
+                          label: const Text('Back',
+                              style: TextStyle(
+                                  fontSize: 15, fontWeight: FontWeight.w600)),
+                          style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.primary,
+                              side: const BorderSide(color: AppColors.primary),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14))),
+                        ),
                       )),
                       const SizedBox(width: 12),
                     ],
                     Expanded(
-                        child: ElevatedButton.icon(
-                      onPressed: _saving
-    ? null
-    : (_step < 4
-        ? () {
-            if (_step == 0 && !_validateStep0()) return;
-
-            setState(() => _step++);
-          }
-        : _submit),
-                      icon: _saving
-    ? const SizedBox(
-        width: 16,
-        height: 16,
-        child: CircularProgressIndicator(
-          strokeWidth: 2,
-          color: Colors.white,
-        ),
-      )
-    : Icon(
-        _step < 4
-            ? Icons.arrow_forward
-            : Icons.cloud_upload_outlined,
-        size: 16,
-      ),
-                      label: Text(
-  _saving
-      ? 'Saving...'
-      : (_step < 4
-          ? 'Next'
-          : (_isEdit ? 'Update' : 'Save')),
-),
-                      style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 13)),
-                    )),
+                        flex: _step > 0 ? 2 : 1,
+                        child: Container(
+                          height: 52,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(14),
+                            boxShadow: [
+                              BoxShadow(
+                                  color: AppColors.primary.withOpacity(0.28),
+                                  blurRadius: 16,
+                                  offset: const Offset(0, 6)),
+                            ],
+                          ),
+                          child: ElevatedButton.icon(
+                            onPressed: _saving
+                                ? null
+                                : (_step < 4
+                                    ? () {
+                                        if (_step == 0 && !_validateStep0()) {
+                                          return;
+                                        }
+                                        setState(() => _step++);
+                                      }
+                                    : _submit),
+                            icon: _saving
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : Icon(
+                                    _step < 4
+                                        ? Icons.arrow_forward
+                                        : Icons.cloud_upload_outlined,
+                                    size: 20,
+                                  ),
+                            label: Text(
+                              _saving
+                                  ? 'Saving...'
+                                  : (_step < 4
+                                      ? 'Next'
+                                      : (_isEdit ? 'Update' : 'Save')),
+                              style: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w600),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.primary,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14))),
+                          ),
+                        )),
                   ]),
                   const SizedBox(height: 20),
                 ])),
@@ -6190,6 +6291,206 @@ if (err == null) {
     );
   }
 
+  // ══════════════════════════════════════════════════════════
+  // FORM DESIGN — step indicator, section header, field style,
+  // "Add custom field" button
+  // ══════════════════════════════════════════════════════════
+
+  static const _stepLabels = [
+    'Basic',
+    'Business',
+    'Location',
+    'Manage',
+    'Notes',
+  ];
+
+  /// Numbered circles with labels; the active one has a soft ring, done
+  /// steps turn green with a check. Tapping jumps to a step (moving past
+  /// Basic still needs Basic to be valid).
+  Widget _stepper() => Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var i = 0; i < _stepLabels.length; i++)
+            Expanded(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  if (i > 0 && _step == 0 && !_validateStep0()) return;
+                  setState(() => _step = i);
+                },
+                child: Column(children: [
+                  SizedBox(
+                    height: 38,
+                    child: Row(children: [
+                      Expanded(child: i > 0 ? _stepDash(i - 1) : const SizedBox()),
+                      _stepCircle(i),
+                      Expanded(
+                          child: i < _stepLabels.length - 1
+                              ? _stepDash(i)
+                              : const SizedBox()),
+                    ]),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _stepLabels[i],
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight:
+                          i == _step ? FontWeight.w600 : FontWeight.w500,
+                      color: i == _step
+                          ? AppColors.primary
+                          : AppColors.textHint,
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+        ],
+      );
+
+  Widget _stepCircle(int i) {
+    final done = i < _step;
+    final active = i == _step;
+    final circle = Container(
+      width: 30,
+      height: 30,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: done
+            ? AppColors.success
+            : active
+                ? AppColors.primary
+                : AppColors.divider,
+        shape: BoxShape.circle,
+      ),
+      child: done
+          ? const Icon(Icons.check, color: Colors.white, size: 15)
+          : Text(
+              '${i + 1}',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: active ? Colors.white : AppColors.textHint,
+              ),
+            ),
+    );
+    if (!active) return circle;
+    // Soft ring around the active step
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: const BoxDecoration(
+        color: AppColors.primaryLight,
+        shape: BoxShape.circle,
+      ),
+      child: circle,
+    );
+  }
+
+  /// Short dash between step i and i + 1.
+  Widget _stepDash(int i) => Center(
+        child: Container(
+          width: 12,
+          height: 2,
+          decoration: BoxDecoration(
+            color: i < _step ? AppColors.success : AppColors.border,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+      );
+
+  /// Icon tile · title · rule, at the top of each step.
+  Widget _stepHeader(String title, IconData icon, {Widget? trailing}) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 16, top: 2),
+        child: Row(children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: AppColors.primaryLight,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, size: 20, color: AppColors.primary),
+          ),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              title,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textPrimary,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Divider(color: AppColors.border, thickness: 1),
+          ),
+          if (trailing != null) ...[const SizedBox(width: 4), trailing],
+        ]),
+      );
+
+  /// White, rounded, bordered — matches CrmTextField.
+  InputDecoration _formFieldDecoration({String? hint, Widget? suffix}) {
+    OutlineInputBorder border(Color c, [double w = 1]) => OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: c, width: w),
+        );
+    return InputDecoration(
+      filled: true,
+      fillColor: AppColors.surface,
+      hintText: hint,
+      hintStyle: const TextStyle(color: AppColors.textHint, fontSize: 14),
+      suffixIcon: suffix,
+      contentPadding:
+          const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      border: border(AppColors.border),
+      enabledBorder: border(AppColors.border),
+      focusedBorder: border(AppColors.primary, 1.5),
+    );
+  }
+
+  /// Full-width dashed "+ Add custom field" for one section.
+  Widget _addCustomFieldButton(String cardTitle) => Padding(
+        padding: const EdgeInsets.only(top: 16),
+        child: CustomPaint(
+          painter: _DashedRRectPainter(
+            color: AppColors.primary.withOpacity(0.4),
+            radius: 14,
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () => _openCreateCustomField(cardTitle),
+              child: const SizedBox(
+                height: 52,
+                width: double.infinity,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.add, size: 20, color: AppColors.primary),
+                    SizedBox(width: 8),
+                    Text(
+                      'Add custom field',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
   Widget _fieldError(String? error) => error == null
       ? const SizedBox.shrink()
       : Padding(
@@ -6202,11 +6503,7 @@ if (err == null) {
 
   Widget _basicStep() =>
       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-         SectionHeader(
-  title: "Basic Information",
-  icon: Icons.person_outline,
-  onAddField: () => _openCreateCustomField("Basic Information"),
-),
+        _stepHeader('Basic Information', Icons.person_outline),
         CrmTextField(
             label: 'Lead Name',
             required: true,
@@ -6255,35 +6552,99 @@ if (err == null) {
               ),
             ),
             const SizedBox(height: 6),
-            IntlPhoneField(
-              controller: _phone,
-              initialCountryCode: _getInitialCountryCode(
-                widget.existingLead?.phone ?? '',
-              ),
-              showCountryFlag: true,
-              disableLengthCheck: true,
-              inputFormatters: [
-                FilteringTextInputFormatter.digitsOnly,
-                LengthLimitingTextInputFormatter(12), // change to 10 if needed
-              ],
-              decoration: const InputDecoration(
-                hintText: '9876543210',
-                border: OutlineInputBorder(),
-              ),
-              onChanged: (phone) {
-                _phoneCountryCode = phone.countryCode;
+IntlPhoneField(
+  controller: _phone,
+  initialCountryCode: _getInitialCountryCode(
+    widget.existingLead?.phone ?? '',
+  ),
+  showCountryFlag: true,
+  disableLengthCheck: false,
+  decoration: _formFieldDecoration(
+    hint: 'Enter phone number',
+  ),
+  onChanged: (phone) {
+    _phoneCountryCode = phone.countryCode;
+    final err = _validatePhone(phone.number);
+    if (_phoneError != err) setState(() => _phoneError = err);
+    _scheduleDuplicateCheck();
+  },
+  onCountryChanged: (country) {
+    setState(() {
+      _phoneCountryCode = '+${country.dialCode}';
+      _phoneError = null;
+    });
+  },
+  onSubmitted: (_) {},
+  validator: (phone) {
+  if (phone == null || phone.number.trim().isEmpty) {
+    return 'Phone number is required';
+  }
 
-                final err = _validatePhone(phone.number);
+  try {
+    if (!phone.isValidNumber()) {
+      return 'Enter a valid phone number';
+    }
+  } catch (_) {
+    return 'Enter a valid phone number';
+  }
 
-                if (_phoneError != err) {
-                  setState(() {
-                    _phoneError = err;
-                  });
-                }
-              },
-            ),
-            _fieldError(_phoneError),
+  return null;
+},
+),            _fieldError(_phoneError),
+            _duplicateWarning('phone number', _phoneDupLead),
             const SizedBox(height: 6),
+                // Alternative Mobile Number — Basic Information
+    Column(
+  crossAxisAlignment: CrossAxisAlignment.start,
+  children: [
+    const Text(
+      'Alternative Mobile Number',
+      style: TextStyle(
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+        color: AppColors.textSecondary,
+      ),
+    ),
+    const SizedBox(height: 6),
+    IntlPhoneField(
+  controller: _alternatePhone,
+  initialCountryCode: _getInitialCountryCode(
+    widget.existingLead?.alternatePhoneNumber ?? '',
+  ),
+  showCountryFlag: true,
+  disableLengthCheck: false,
+  decoration: _formFieldDecoration(
+    hint: 'Enter alternative phone number',
+  ),
+  onChanged: (phone) {
+    _alternatePhoneCountryCode = phone.countryCode;
+  },
+  onCountryChanged: (country) {
+    setState(() {
+      _alternatePhoneCountryCode = '+${country.dialCode}';
+    });
+  },
+  validator: (phone) {
+  // Alternative phone is optional.
+  if (phone == null || phone.number.trim().isEmpty) {
+    return null;
+  }
+
+  try {
+    if (!phone.isValidNumber()) {
+      return 'Enter a valid alternative phone number';
+    }
+  } catch (_) {
+    return 'Enter a valid alternative phone number';
+  }
+
+  return null;
+},
+),
+  ],
+),
+                const SizedBox(height: 6),
+
             CrmTextField(
               label: 'Email',
               hint: 'name@gmail.com',
@@ -6295,9 +6656,23 @@ if (err == null) {
                 if (_emailError != err) {
                   setState(() => _emailError = err);
                 }
+                _scheduleDuplicateCheck();
               },
             ),
+
+                const SizedBox(height: 6),
+
+    // Alternative Email — Basic Information
+    CrmTextField(
+      label: 'Alternative Email',
+      hint: 'alternative@gmail.com',
+      controller: _alternateEmail,
+      keyboardType: TextInputType.emailAddress,
+      enableInteractiveSelection: true,
+    ),
+
             _fieldError(_emailError),
+            _duplicateWarning('email', _emailDupLead),
           ],
         ),
         const SizedBox(height: 14),
@@ -6305,21 +6680,25 @@ if (err == null) {
             ..._customFields
     .where((e) => e.cardTitle == "Basic Information")
     .map((e) => _buildCustomField(e)),
+        _addCustomFieldButton("Basic Information"),
       ]);
 
   Widget _businessStep() =>
       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-         SectionHeader(
-  title: "Business Details",
-  icon: Icons.business_outlined,
-  onAddField: () => _openCreateCustomField("Business Details"),
-),
+        _stepHeader('Business Details', Icons.business_outlined),
         CrmDropdown(
             label: 'Industry',
             value: _industry,
             items: _industries,
             hint: 'Select Industry',
             onChanged: (v) => setState(() => _industry = v)),
+        if (_industry == 'Other') ...[
+          const SizedBox(height: 14),
+          CrmTextField(
+              label: 'Other Industry',
+              hint: 'Enter industry',
+              controller: _otherIndustry),
+        ],
         const SizedBox(height: 14),
         CrmDropdown(
             label: 'Source',
@@ -6340,38 +6719,38 @@ if (err == null) {
             hint: 'What is the lead looking for?',
             controller: _req,
             maxLines: 4),
+        const SizedBox(height: 14),
+        CrmTextField(
+            label: 'Number of Employees',
+            hint: 'e.g. 50',
+            controller: _employees,
+            keyboardType: TextInputType.number,
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(9),
+            ]),
             ..._customFields
     .where((e) => e.cardTitle == "Business Details")
     .map((e) => _buildCustomField(e)),
+        _addCustomFieldButton("Business Details"),
       ]);
     
   Widget _locationStep() {
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      // LOCATION HEADING
-      Row(
-        children: [
-          const Expanded(
-            child: Text(
-              'Location',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+      // LOCATION HEADING (+ fill from current location)
+      _stepHeader(
+        'Location',
+        Icons.location_on_outlined,
+        trailing: IconButton(
+          tooltip: 'Get current location',
+          icon: const Icon(
+            Icons.my_location,
+            color: AppColors.primary,
           ),
-
-          // 👇 PASTE THE ICON BUTTON HERE
-          IconButton(
-            tooltip: 'Get current location',
-            icon: const Icon(
-              Icons.my_location,
-              color: AppColors.primary,
-            ),
-            onPressed: _fetchCurrentLocation,
-          ),
-        ],
+          onPressed: _fetchCurrentLocation,
+        ),
       ),
 
       const SizedBox(height: 12),
@@ -6529,11 +6908,7 @@ Container(
 }
   Widget _manageStep() =>
       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-         SectionHeader(
-  title: "Lead Management",
-  icon: Icons.assignment_outlined,
-  onAddField: () => _openCreateCustomField("Lead Management"),
-),
+        _stepHeader('Lead Management', Icons.assignment_outlined),
         const Text('Status',
             style: TextStyle(
                 fontSize: 13,
@@ -6571,7 +6946,45 @@ Container(
                 fontWeight: FontWeight.w600,
                 color: AppColors.textSecondary)),
         const SizedBox(height: 6),
-        if (_salesUsers.isEmpty)
+        if (_assigneeLocked)
+          // Read-only: sales users can't reassign.
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Row(children: [
+              CircleAvatar(
+                radius: 12,
+                backgroundColor: AppColors.primaryLight,
+                child: Text(
+                  _lockedAssigneeName.isNotEmpty
+                      ? _lockedAssigneeName[0].toUpperCase()
+                      : '?',
+                  style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.primary),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  _lockedAssigneeName.isNotEmpty
+                      ? _lockedAssigneeName
+                      : 'Assigned to you',
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 14, color: AppColors.textPrimary),
+                ),
+              ),
+              const Icon(Icons.lock_outline,
+                  size: 16, color: AppColors.textHint),
+            ]),
+          )
+        else if (_salesUsers.isEmpty)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
             decoration: BoxDecoration(
@@ -6703,15 +7116,12 @@ Container(
         ..._customFields
     .where((e) => e.cardTitle == "Lead Management")
     .map((e) => _buildCustomField(e)),
+        _addCustomFieldButton("Lead Management"),
       ]);
 
   Widget _notesStep() =>
       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-         SectionHeader(
-  title: "Additional Information",
-  icon: Icons.notes_outlined,
-  onAddField: () => _openCreateCustomField("Additional Information"),
-),
+        _stepHeader('Additional Information', Icons.notes_outlined),
         CrmTextField(
             label: 'Notes',
             hint: 'Context, observations...',
@@ -6719,8 +7129,8 @@ Container(
             maxLines: 6),
             ..._customFields
     .where((e) => e.cardTitle == "Additional Information")
-    .map((e) => _buildCustomField(e))
-    .toList(),
+    .map((e) => _buildCustomField(e)),
+        _addCustomFieldButton("Additional Information"),
         const SizedBox(height: 20),
 
         Container(
@@ -7142,196 +7552,174 @@ Widget _buildCustomField(CustomField field) {
   Widget fieldWidget;
 
   switch (field.type) {
-    case 'text':
-      fieldWidget = TextFormField(
-        initialValue: field.value,
-        decoration: InputDecoration(
-          labelText: field.name,
-          border: const OutlineInputBorder(),
-        ),
-        onChanged: (value) {
-          field.value = value;
-        },
-      );
-      break;
-
     case 'number':
       fieldWidget = TextFormField(
         initialValue: field.value,
         keyboardType: TextInputType.number,
-        decoration: InputDecoration(
-          labelText: field.name,
-          border: const OutlineInputBorder(),
-        ),
-        onChanged: (value) {
-          field.value = value;
-        },
+        style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
+        decoration: _formFieldDecoration(hint: field.name),
+        onChanged: (value) => field.value = value,
       );
       break;
 
     case 'dropdown':
-case 'select':
-  fieldWidget = DropdownButtonFormField<String>(
-    value: field.options.contains(field.value)
-        ? field.value
-        : null,
-
-    decoration: InputDecoration(
-      labelText: field.name,
-      border: const OutlineInputBorder(),
-    ),
-
-    items: field.options.map((option) {
-      return DropdownMenuItem<String>(
-        value: option,
-        child: Text(option),
+    case 'select':
+      fieldWidget = DropdownButtonFormField<String>(
+        value: field.options.contains(field.value) ? field.value : null,
+        isExpanded: true,
+        decoration: _formFieldDecoration(hint: 'Select'),
+        items: field.options
+            .map((option) => DropdownMenuItem<String>(
+                  value: option,
+                  child: Text(option, overflow: TextOverflow.ellipsis),
+                ))
+            .toList(),
+        onChanged: (String? selectedValue) {
+          if (selectedValue == null) return;
+          // Update the actual CustomField object
+          setState(() => field.value = selectedValue);
+        },
       );
-    }).toList(),
+      break;
 
-    onChanged: (String? selectedValue) {
-      if (selectedValue == null) return;
-
-      // IMPORTANT: update the actual CustomField object
-      field.value = selectedValue;
-
-      debugPrint(
-        'DROPDOWN CHANGED => '
-        'name=${field.name}, '
-        'value=${field.value}, '
-        'options=${field.options}',
-      );
-
-      setState(() {});
-    },
-  );
-  break;
     case 'date':
       fieldWidget = InkWell(
+        borderRadius: BorderRadius.circular(12),
         onTap: () async {
-          DateTime initialDate = DateTime.now();
-
-          if (field.value.isNotEmpty) {
-            try {
-              initialDate = DateTime.parse(field.value);
-            } catch (_) {}
-          }
-
+          final initialDate =
+              DateTime.tryParse(field.value) ?? DateTime.now();
           final picked = await showDatePicker(
             context: context,
             initialDate: initialDate,
             firstDate: DateTime(2000),
             lastDate: DateTime(2100),
           );
-
           if (picked == null || !mounted) return;
-
-          final formatted =
-              DateFormat('yyyy-MM-dd').format(picked);
-
           setState(() {
-            field.value = formatted;
+            field.value = DateFormat('yyyy-MM-dd').format(picked);
           });
         },
         child: InputDecorator(
-          decoration: InputDecoration(
-            labelText: field.name,
-            border: const OutlineInputBorder(),
-            suffixIcon: const Icon(Icons.calendar_today),
+          decoration: _formFieldDecoration(
+            suffix: const Icon(Icons.calendar_today_outlined,
+                size: 18, color: AppColors.textSecondary),
           ),
           child: Text(
-            field.value.isEmpty
-                ? 'Select date'
-                : field.value,
+            field.value.isEmpty ? 'Select date' : field.value,
+            style: TextStyle(
+              fontSize: 14,
+              color: field.value.isEmpty
+                  ? AppColors.textHint
+                  : AppColors.textPrimary,
+            ),
           ),
         ),
       );
       break;
 
+    case 'text':
     default:
       fieldWidget = TextFormField(
         initialValue: field.value,
-        decoration: InputDecoration(
-          labelText: field.name,
-          border: const OutlineInputBorder(),
-        ),
-        onChanged: (value) {
-          field.value = value;
-        },
+        style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
+        decoration: _formFieldDecoration(hint: field.name),
+        onChanged: (value) => field.value = value,
       );
   }
-  
 
   return Padding(
     padding: const EdgeInsets.only(top: 14),
-    child: Row(
+    child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(
-          child: fieldWidget,
-        ),
-
-        const SizedBox(width: 4),
-
-        IconButton(
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(
-            minWidth: 36,
-            minHeight: 36,
+        // Label + "Custom" tag
+        Row(children: [
+          Flexible(
+            child: Text(
+              field.name,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textSecondary,
+              ),
+            ),
           ),
-          icon: const Icon(
-            Icons.close,
-            size: 20,
-            color: Colors.red,
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: AppColors.primaryLight,
+              borderRadius: BorderRadius.circular(99),
+            ),
+            child: const Text(
+              'Custom',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: AppColors.primary,
+              ),
+            ),
           ),
-          onPressed: () async {
-            if (field.id.isNotEmpty) {
-              final confirmed = await showDialog<bool>(
-                context: context,
-                builder: (dialogContext) {
-                  return AlertDialog(
-                    title: const Text(
-                      'Remove custom field?',
-                    ),
-                    content: Text(
-                      'Remove "${field.name}" from this lead?',
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () {
-                          Navigator.pop(
-                            dialogContext,
-                            false,
-                          );
-                        },
-                        child: const Text('Cancel'),
-                      ),
-                      ElevatedButton(
-                        onPressed: () {
-                          Navigator.pop(
-                            dialogContext,
-                            true,
-                          );
-                        },
-                        child: const Text('Remove'),
-                      ),
-                    ],
-                  );
-                },
-              );
-
-              if (confirmed != true || !mounted) {
-                return;
-              }
-            }
-
-            setState(() {
-              _customFields.remove(field);
-            });
-          },
+        ]),
+        const SizedBox(height: 6),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: fieldWidget),
+            const SizedBox(width: 10),
+            // Square trash button, same height as the field
+            SizedBox(
+              width: 50,
+              height: 50,
+              child: OutlinedButton(
+                onPressed: () => _removeCustomField(field),
+                style: OutlinedButton.styleFrom(
+                  padding: EdgeInsets.zero,
+                  backgroundColor: AppColors.surface,
+                  side: const BorderSide(color: AppColors.border),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Icon(
+                  Icons.delete_outline,
+                  size: 20,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     ),
   );
+}
+
+/// Saved fields (with an id) ask first; a field added in this session
+/// is just dropped.
+Future<void> _removeCustomField(CustomField field) async {
+  if (field.id.isNotEmpty) {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Remove custom field?'),
+        content: Text('Remove "${field.name}" from this lead?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+  }
+  setState(() => _customFields.remove(field));
 }
 
   Future<void> _pickFiles() async {

@@ -1,19 +1,10 @@
-// ╔══════════════════════════════════════════════════════════════╗
-// ║     lib/screen/LeaderBoard/service/leaderBoard_service.dart  ║
-// ║                                                              ║
-// ║  Strategy: network-first, cache fallback                     ║
-// ║  1. Always try the API first                                 ║
-// ║  2. Cache every successful response to SQLite                ║
-// ║  3. On ANY error → fall back to SQLite cache                 ║
-// ║  4. Only throw when BOTH API and cache fail                  ║
-// ╚══════════════════════════════════════════════════════════════╝
-
-import 'package:crm_app/database/local_db.dart';
 import 'package:dio/dio.dart';
 import 'package:crm_app/screen/LeaderBoard/modal/leaderBoard_modal.dart';
 import 'package:crm_app/services/auth_interceptor.dart';
 
-const String _baseUrl = 'https://crm-backend-api.techzarinfo.cloud/api';
+const String _baseUrl =
+    'https://crm-backend-api.techzarinfo.cloud/api';
+
 const String _leaderboardEndpoint = '/streak/leaderboard';
 
 class LeaderboardService {
@@ -22,10 +13,11 @@ class LeaderboardService {
       baseUrl: _baseUrl,
       connectTimeout: const Duration(seconds: 10),
       receiveTimeout: const Duration(seconds: 10),
+      headers: {
+        'Accept': 'application/json',
+      },
     ),
   )..interceptors.add(AuthInterceptor());
-
-  // ── Public API ──────────────────────────────────────────────────────────────
 
   static Future<LeaderboardResponse> fetchLeaderboard({
     required String token,
@@ -34,103 +26,85 @@ class LeaderboardService {
     String? filterType,
     bool forceRefresh = false,
   }) async {
-    final cacheKey = LocalDb.leaderboardCacheKey(
-      filterType: filterType,
-      startDate: startDate,
-      endDate: endDate,
-    );
+    final queryParams = <String, dynamic>{};
 
-    // ── 1. Try API ──────────────────────────────────────────────
-    try {
-      final json = await _fetchFromApi(
-        token: token,
-        startDate: startDate,
-        endDate: endDate,
-        filterType: filterType,
-      );
-
-      // ── 2. Cache the fresh response under the specific key ────
-      try {
-        await LocalDb.instance.cacheLeaderboard(
-          cacheKey: cacheKey,
-          responseJson: json,
-        );
-      } catch (_) {}
-
-      return LeaderboardResponse.fromJson(json);
-    } catch (apiError) {
-      // ── 3. API failed — try cache with the exact filter key first,
-      //       then fall back to the default (no-filter) cache key ──
-      try {
-        final db = LocalDb.instance;
-
-        // Try exact filter key first
-        Map<String, dynamic>? cached = await db.getCachedLeaderboard(cacheKey);
-
-        // If no exact match and we had filters, fall back to default cache
-        if (cached == null &&
-            (filterType != null || startDate != null || endDate != null)) {
-          final defaultKey = LocalDb.leaderboardCacheKey(
-            filterType: null,
-            startDate: null,
-            endDate: null,
-          );
-          cached = await db.getCachedLeaderboard(defaultKey);
-        }
-
-if (cached == null) {
-  throw Exception('No cached leaderboard found');
-}
-
-final data = cached['data'];
-
-if (data is List && data.isNotEmpty) {
-  return LeaderboardResponse.fromJson(cached);
-}
-
-if (cached['stats'] != null) {
-  return LeaderboardResponse.fromJson(cached);
-}
-            } catch (cacheError) {
-        // Cache read failed — fall through
-      }
-
-      // ── 4. Both API and cache failed ─────────────────────────
-      if (apiError is DioException &&
-          apiError.type == DioExceptionType.connectionError) {
-        throw Exception('No internet connection and no cached data available.');
-      }
-      rethrow;
+    if (startDate != null && startDate.isNotEmpty) {
+      queryParams['startDate'] = startDate;
     }
-  }
 
-  /// Wipes all leaderboard cache rows (call on logout or manual reset).
-  static Future<void> clearCache() => LocalDb.instance.clearLeaderboardCache();
+    if (endDate != null && endDate.isNotEmpty) {
+      queryParams['endDate'] = endDate;
+    }
 
-  // ── Private: raw API call (throws on any failure) ───────────────────────────
-
-  static Future<Map<String, dynamic>> _fetchFromApi({
-    required String token,
-    String? startDate,
-    String? endDate,
-    String? filterType,
-  }) async {
-    final queryParams = <String, String>{};
-    if (startDate != null) queryParams['startDate'] = startDate;
-    if (endDate != null) queryParams['endDate'] = endDate;
-    if (filterType != null) queryParams['filterType'] = filterType;
+    if (filterType != null && filterType.isNotEmpty) {
+      queryParams['filterType'] = filterType;
+    }
 
     try {
       final response = await _dio.get(
         _leaderboardEndpoint,
-        queryParameters: queryParams.isNotEmpty ? queryParams : null,
-        options: Options(headers: {'Authorization': 'Bearer $token'}),
+        queryParameters:
+            queryParams.isEmpty ? null : queryParams,
+        options: Options(
+          headers: {
+            'Authorization': 'Bearer $token',
+          },
+        ),
       );
-      return response.data as Map<String, dynamic>;
-    } on DioException {
-      // Re-throw as DioException so the caller can inspect the type
-      // for the cache-vs-rethrow decision above.
-      rethrow;
+
+      if (response.data is! Map) {
+        throw Exception('Invalid leaderboard response.');
+      }
+
+      final json = Map<String, dynamic>.from(
+        response.data as Map,
+      );
+
+      if (json['success'] != true) {
+        throw Exception(
+          'Failed to load leaderboard.',
+        );
+      }
+
+      return LeaderboardResponse.fromJson(json);
+    } on DioException catch (error) {
+      final statusCode = error.response?.statusCode;
+
+      if (error.type == DioExceptionType.connectionTimeout ||
+          error.type == DioExceptionType.receiveTimeout ||
+          error.type == DioExceptionType.sendTimeout) {
+        throw Exception(
+          'Request timed out. Please try again.',
+        );
+      }
+
+      if (error.type == DioExceptionType.connectionError) {
+        throw Exception(
+          'Unable to connect to the server. Check your internet connection.',
+        );
+      }
+
+      if (statusCode == 401 || statusCode == 403) {
+        throw Exception(
+          'Session expired or access denied. Please log in again.',
+        );
+      }
+
+      if (statusCode != null && statusCode >= 500) {
+        throw Exception(
+          'Server error. Please try again later.',
+        );
+      }
+
+      final data = error.response?.data;
+
+      if (data is Map && data['message'] != null) {
+        throw Exception(data['message'].toString());
+      }
+
+      throw Exception(
+        error.message ?? 'Failed to load leaderboard.',
+      );
     }
   }
 }

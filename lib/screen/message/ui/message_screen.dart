@@ -33,6 +33,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
     super.initState();
     _chatCubit = ChatCubit()
       ..loadChatData()
+      ..loadPinnedGroups()
       ..connectSocket();
   }
 
@@ -504,11 +505,52 @@ class _ContactsList extends StatelessWidget {
               time: time,
               unreadCount: c.unreadCount,
               onTap: () => onTap(c),
+              menu: _RowMenu(
+                actions: const [
+                  _RowAction('clear', 'Clear chat',
+                      Icons.delete_outline_rounded),
+                  _RowAction('delete', 'Delete chat',
+                      Icons.delete_outline_rounded,
+                      destructive: true),
+                ],
+                onSelected: (value) => value == 'delete'
+                    ? _deleteChat(context, c)
+                    : _clearChat(context, c),
+              ),
             );
           },
         );
       },
     );
+  }
+
+  Future<void> _clearChat(BuildContext context, ContactModel c) async {
+    final confirmed = await _confirm(
+      context,
+      title: 'Clear chat?',
+      message: 'All messages with ${c.name} will be cleared.',
+      action: 'Clear',
+    );
+    if (!confirmed || !context.mounted) return;
+
+    final success = await context.read<ChatCubit>().clearChat(c.id);
+    if (!context.mounted) return;
+    _toast(context, success ? 'Chat cleared' : 'Failed to clear chat');
+  }
+
+  Future<void> _deleteChat(BuildContext context, ContactModel c) async {
+    final confirmed = await _confirm(
+      context,
+      title: 'Delete chat?',
+      message: 'This will permanently delete your conversation with '
+          '${c.name}. This cannot be undone.',
+      action: 'Delete',
+    );
+    if (!confirmed || !context.mounted) return;
+
+    final success = await context.read<ChatCubit>().clearChat(c.id);
+    if (!context.mounted) return;
+    _toast(context, success ? 'Chat deleted' : 'Failed to delete chat');
   }
 }
 
@@ -535,7 +577,17 @@ class _GroupsList extends StatelessWidget {
           );
         }
 
-        final groups = filterGroups(state.groupsResponse?.groups ?? const []);
+        final pinnedIds = state.pinnedGroupIds;
+        // Copy: filterGroups returns the state's own list when not searching.
+        final groups =
+            List.of(filterGroups(state.groupsResponse?.groups ?? const []));
+        // Pinned groups first (newest pin on top), the rest keep server order.
+        final pinned = [
+          for (final id in pinnedIds) ...groups.where((g) => g.id == id),
+        ];
+        groups
+          ..removeWhere((g) => pinnedIds.contains(g.id))
+          ..insertAll(0, pinned);
 
         if (groups.isEmpty) {
           return const _EmptyList(text: 'No groups found');
@@ -552,6 +604,7 @@ class _GroupsList extends StatelessWidget {
             final time = g.lastMessage != null
                 ? _formatTime(g.lastMessage!.createdAt)
                 : '';
+            final isPinned = pinnedIds.contains(g.id);
             return _ConversationTile(
               selected: g.id == selectedId,
               avatarColor: _colorFor(g.id),
@@ -561,13 +614,123 @@ class _GroupsList extends StatelessWidget {
               subtitle: preview,
               time: time,
               unreadCount: g.unreadCount,
+              pinned: isPinned,
               onTap: () => onTap(g),
+              menu: _RowMenu(
+                actions: [
+                  const _RowAction('clear', 'Clear chat',
+                      Icons.delete_outline_rounded),
+                  isPinned
+                      ? const _RowAction(
+                          'pin', 'Unpin chat', Icons.push_pin_outlined)
+                      : const _RowAction(
+                          'pin', 'Pin chat', Icons.push_pin_outlined),
+                ],
+                onSelected: (value) => value == 'pin'
+                    ? context.read<ChatCubit>().toggleGroupChatPin(g.id)
+                    : _clearGroupChat(context, g),
+              ),
             );
           },
         );
       },
     );
   }
+
+  Future<void> _clearGroupChat(BuildContext context, GroupModel g) async {
+    final confirmed = await _confirm(
+      context,
+      title: 'Clear chat?',
+      message: 'All messages in ${g.name} will be cleared.',
+      action: 'Clear',
+    );
+    if (!confirmed || !context.mounted) return;
+
+    final success = await context.read<ChatCubit>().clearGroupChat(g.id);
+    if (!context.mounted) return;
+    _toast(context, success ? 'Chat cleared' : 'Failed to clear chat');
+  }
+}
+
+class _RowAction {
+  final String value;
+  final String label;
+  final IconData icon;
+  final bool destructive;
+  const _RowAction(this.value, this.label, this.icon,
+      {this.destructive = false});
+}
+
+/// ⋮ menu at the end of a conversation row.
+class _RowMenu extends StatelessWidget {
+  final List<_RowAction> actions;
+  final ValueChanged<String> onSelected;
+  const _RowMenu({required this.actions, required this.onSelected});
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      tooltip: 'More options',
+      icon: const Icon(Icons.more_vert_rounded,
+          color: AppColors.textSecondary, size: 20),
+      padding: EdgeInsets.zero,
+      splashRadius: 18,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      onSelected: onSelected,
+      itemBuilder: (_) => [
+        for (final a in actions)
+          PopupMenuItem(
+            value: a.value,
+            height: 42,
+            child: Row(
+              children: [
+                Icon(a.icon,
+                    size: 18,
+                    color:
+                        a.destructive ? Colors.red : AppColors.textSecondary),
+                const SizedBox(width: 10),
+                Text(a.label,
+                    style: TextStyle(
+                        fontSize: 13.5,
+                        color: a.destructive
+                            ? Colors.red
+                            : AppColors.textPrimary)),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+Future<bool> _confirm(
+  BuildContext context, {
+  required String title,
+  required String message,
+  required String action,
+}) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(title),
+      content: Text(message),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: Text(action, style: const TextStyle(color: Colors.red)),
+        ),
+      ],
+    ),
+  );
+  return confirmed == true;
+}
+
+void _toast(BuildContext context, String text) {
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
 }
 
 class _ConversationTile extends StatelessWidget {
@@ -581,6 +744,12 @@ class _ConversationTile extends StatelessWidget {
   final int unreadCount;
   final VoidCallback onTap;
 
+  /// Shows a pin icon next to the time.
+  final bool pinned;
+
+  /// ⋮ menu at the end of the row.
+  final Widget? menu;
+
   const _ConversationTile({
     required this.selected,
     required this.avatarColor,
@@ -591,6 +760,8 @@ class _ConversationTile extends StatelessWidget {
     required this.time,
     required this.unreadCount,
     required this.onTap,
+    this.pinned = false,
+    this.menu,
   });
 
   @override
@@ -607,7 +778,7 @@ class _ConversationTile extends StatelessWidget {
                 width: 3),
           ),
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
+        padding: EdgeInsets.fromLTRB(13, 12, menu != null ? 4 : 13, 12),
         child: Row(
           children: [
             ChatAvatar(
@@ -632,6 +803,11 @@ class _ConversationTile extends StatelessWidget {
                                 fontWeight: FontWeight.w700,
                                 color: AppColors.textPrimary)),
                       ),
+                      if (pinned) ...[
+                        const Icon(Icons.push_pin_rounded,
+                            size: 13, color: AppColors.textHint),
+                        const SizedBox(width: 4),
+                      ],
                       if (time.isNotEmpty)
                         Text(time,
                             style: TextStyle(
@@ -678,6 +854,10 @@ class _ConversationTile extends StatelessWidget {
                 ],
               ),
             ),
+            if (menu != null) ...[
+              const SizedBox(width: 2),
+              SizedBox(width: 32, child: menu),
+            ],
           ],
         ),
       ),

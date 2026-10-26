@@ -767,62 +767,57 @@ class _CalendarViewState extends State<_CalendarView> {
 
   // ── Appointment rendering ───────────────────────────────────
 
-  Widget _appointmentBuilder(
-    BuildContext context,
-    CalendarAppointmentDetails details,
-  ) {
-    final event = details.appointments.first as CalendarEvent;
-    final info = categoryInfoOf(event.type);
+  
+Widget _appointmentBuilder(
+  BuildContext context,
+  CalendarAppointmentDetails details,
+) {
+  final event = details.appointments.first as CalendarEvent;
+  final info = categoryInfoOf(event.type);
 
-    if (_view == CalendarView.schedule) {
-      return _ScheduleEventTile(event: event, info: info);
-    }
+  if (_view == CalendarView.schedule) {
+    return _ScheduleEventTile(event: event, info: info);
+  }
 
-    final isMonth = _view == CalendarView.month;
-    final fontSize = isMonth ? 10.0 : 11.0;
-    final verticalPadding = isMonth ? 1.0 : 4.0;
+  final isMonth = _view == CalendarView.month;
+  final isCompact = details.bounds.height < 38;
 
-    // Week/day appointments get a pixel height driven by the event's
-    // duration (1 hour by default — see getEndTime in calendar_data_source),
-    // which can be shorter than what 2 lines of text need at this font
-    // size. Without clamping maxLines to what the tile can actually fit,
-    // the title overflows its bounds and paints over neighboring
-    // appointments instead of just ellipsizing cleanly.
-    final availableHeight = details.bounds.height - verticalPadding * 2;
-    final lineHeight = fontSize * 1.3;
-    final maxLines =
-        isMonth ? 1 : (availableHeight / lineHeight).floor().clamp(1, 2);
+  final fontSize = isMonth ? 10.0 : 11.0;
 
-    return Container(
-      width: details.bounds.width,
-      height: details.bounds.height,
-      margin: EdgeInsets.symmetric(
-        vertical: isMonth ? 1 : 2,
-        horizontal: isMonth ? 2 : 3,
-      ),
-      padding: EdgeInsets.symmetric(
-        horizontal: 6,
-        vertical: verticalPadding,
-      ),
-      clipBehavior: Clip.hardEdge,
-      decoration: BoxDecoration(
-        color: info.color.withOpacity(0.14),
-        borderRadius: BorderRadius.circular(4),
-        border: Border(left: BorderSide(color: info.color, width: 3)),
-      ),
-      alignment: Alignment.centerLeft,
-      child: Text(
-        event.title,
-        maxLines: maxLines,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          fontSize: fontSize,
-          fontWeight: FontWeight.w600,
+  return Container(
+    width: details.bounds.width,
+    height: details.bounds.height,
+    padding: EdgeInsets.symmetric(
+      horizontal: isMonth ? 3 : 5,
+      vertical: isCompact ? 0 : 3,
+    ),
+    clipBehavior: Clip.hardEdge,
+    decoration: BoxDecoration(
+      color: info.color.withOpacity(0.14),
+      borderRadius: BorderRadius.circular(5),
+      border: Border(
+        left: BorderSide(
           color: info.color,
+          width: 3,
         ),
       ),
-    );
-  }
+    ),
+    alignment: Alignment.centerLeft,
+    child: Text(
+      event.title,
+      maxLines: isMonth || isCompact ? 1 : 2,
+      softWrap: true,
+      overflow: TextOverflow.ellipsis,
+      textAlign: TextAlign.left,
+      style: TextStyle(
+        fontSize: fontSize,
+        height: 1.15,
+        fontWeight: FontWeight.w600,
+        color: info.color,
+      ),
+    ),
+  );
+}
 
   // ── Build ────────────────────────────────────────────────────
 
@@ -867,7 +862,10 @@ class _CalendarViewState extends State<_CalendarView> {
                       _events = [..._events, state.note];
                     });
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Note added')),
+                      const SnackBar(
+                        content: Text('Note added'),
+                        backgroundColor: AppColors.success,
+                      ),
                     );
                   } else if (state is CalendarNoteUpdated) {
                     setState(() {
@@ -877,7 +875,10 @@ class _CalendarViewState extends State<_CalendarView> {
                       ];
                     });
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Note updated')),
+                      const SnackBar(
+                        content: Text('Note updated'),
+                        backgroundColor: AppColors.success,
+                      ),
                     );
                   } else if (state is CalendarNoteDeleted) {
                     setState(() {
@@ -885,7 +886,10 @@ class _CalendarViewState extends State<_CalendarView> {
                           _events.where((e) => e.id != state.noteId).toList();
                     });
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Note deleted')),
+                      const SnackBar(
+                        content: Text('Note deleted'),
+                        backgroundColor: AppColors.success,
+                      ),
                     );
                   } else if (state is CalendarError && _hasData) {
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -910,27 +914,42 @@ class _CalendarViewState extends State<_CalendarView> {
                   return Stack(
                     children: [
                       SfCalendar(
-                        view: _view,
-                        controller: _controller,
-                        dataSource: CalendarEventDataSource(events),
-                        headerHeight: 0,
-                        viewHeaderHeight: _view == CalendarView.month ? 28 : 50,
-                        todayHighlightColor: AppColors.primary,
-                        cellBorderColor: AppColors.border,
-                        backgroundColor: AppColors.surface,
-                        monthViewSettings: const MonthViewSettings(
-                          appointmentDisplayMode:
-                              MonthAppointmentDisplayMode.appointment,
-                          showAgenda: false,
-                        ),
-                        scheduleViewSettings: const ScheduleViewSettings(
-                          hideEmptyScheduleWeek: true,
-                          appointmentItemHeight: 74,
-                        ),
-                        appointmentBuilder: _appointmentBuilder,
-                        onTap: (details) => _onCalendarTap(details, events),
-                        onViewChanged: _onViewChanged,
-                      ),
+  view: _view,
+  controller: _controller,
+  dataSource: CalendarEventDataSource(events),
+  headerHeight: 0,
+  viewHeaderHeight: _view == CalendarView.month ? 28 : 50,
+  todayHighlightColor: AppColors.primary,
+  cellBorderColor: AppColors.border,
+  backgroundColor: AppColors.surface,
+
+  // Month view
+monthViewSettings: const MonthViewSettings(
+  appointmentDisplayMode:
+      MonthAppointmentDisplayMode.appointment,
+  showAgenda: false,
+  appointmentDisplayCount: 3,
+),
+  // Week and day views
+  timeSlotViewSettings: const TimeSlotViewSettings(
+  startHour: 6,
+  endHour: 22,
+  timeInterval: Duration(minutes: 30),
+  timeIntervalHeight: 30,
+  timeFormat: 'h a',
+  minimumAppointmentDuration: Duration(minutes: 30),
+),
+
+  // Agenda view
+  scheduleViewSettings: const ScheduleViewSettings(
+    hideEmptyScheduleWeek: true,
+    appointmentItemHeight: 74,
+  ),
+
+  appointmentBuilder: _appointmentBuilder,
+  onTap: (details) => _onCalendarTap(details, events),
+  onViewChanged: _onViewChanged,
+),
                       if (loading)
                         const Positioned(
                           top: 0,

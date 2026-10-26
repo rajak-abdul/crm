@@ -442,12 +442,6 @@ if (rawImages is List) {
         ));
       }
     }
-    if (j['preferredCurrencyValue'] != null) {
-  val = (j['preferredCurrencyValue'] as num?)?.toDouble() ??
-      double.tryParse(j['preferredCurrencyValue'].toString()) ??
-      0;
-}
-
     // discountGiven — API sends a plain number.
     final discountGiven = (j['discountGiven'] is num)
         ? (j['discountGiven'] as num).toDouble()

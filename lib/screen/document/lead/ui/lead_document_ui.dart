@@ -3,6 +3,7 @@ import 'package:crm_app/screen/document/lead/cubit/lead_state.dart';
 import 'package:crm_app/screen/document/lead/cubit/leads_document_cubit.dart';
 import 'package:crm_app/utils/attachment_downloader.dart';
 import 'package:flutter/material.dart';
+import 'package:crm_app/thems/app_themes.dart' show AppColors;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
@@ -750,8 +751,10 @@ class _LeadsDocState extends State<LeadsDoc> {
       messengerKey.currentState?.showSnackBar(
         SnackBar(
           content: Text('Downloaded: $fileName'),
+          backgroundColor: AppColors.success,
           action: SnackBarAction(
             label: 'OPEN',
+            textColor: Colors.white,
             onPressed: () {
               OpenFile.open(savedPath);
             },

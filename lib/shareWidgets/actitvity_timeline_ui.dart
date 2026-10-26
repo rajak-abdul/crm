@@ -3,6 +3,10 @@ import 'package:intl/intl.dart';
 
 import '../thems/app_themes.dart';
 
+// Activity timeline shared by the lead and deal detail sheets — same look
+// as the proposal sheet's Activity tab: "Activity timeline" header, round
+// icon per entry joined by a thin vertical line, bold title + grey time.
+
 class ActivityTimelineItem {
   final String type;
   final String title;
@@ -25,12 +29,17 @@ class ActivityTimeline extends StatelessWidget {
   final bool isLoading;
   final String emptyMessage;
 
+  /// Line under the "Activity timeline" header, e.g.
+  /// "Recent activity and updates for this lead".
+  final String subtitle;
+
   const ActivityTimeline({
     super.key,
     required this.activities,
     this.controller,
     this.isLoading = false,
     this.emptyMessage = 'No activity available',
+    this.subtitle = 'Recent activity and updates',
   });
 
   // ALL ACTIVITY ICONS ARE CENTRALIZED HERE
@@ -58,6 +67,7 @@ class ActivityTimeline extends StatelessWidget {
         return Icons.sync_alt_outlined;
 
       case 'stage_changed':
+      case 'stage_change':
         return Icons.swap_vert_outlined;
 
       // Files
@@ -87,6 +97,9 @@ class ActivityTimeline extends StatelessWidget {
         return Icons.delete_sweep_outlined;
 
       // Follow-up
+      case 'followup':
+        return Icons.event_available_outlined;
+
       case 'followup_rescheduled':
         return Icons.event_repeat_outlined;
 
@@ -136,6 +149,38 @@ class ActivityTimeline extends StatelessWidget {
     }
   }
 
+  /// Icon colour by kind of event (order matters: e.g. a completed
+  /// follow-up is green, a cancelled meeting is red).
+  static Color getColor(String type) {
+    final t = type.toLowerCase();
+    if (t.contains('delete') ||
+        t.contains('cancel') ||
+        t.contains('missed') ||
+        t.contains('unlinked')) {
+      return AppColors.danger;
+    }
+    if (t.contains('status') ||
+        t.contains('stage') ||
+        t.contains('converted') ||
+        t.contains('completed')) {
+      return AppColors.success;
+    }
+    if (t.contains('followup') || t.contains('meeting')) {
+      return AppColors.warning;
+    }
+    if (t.contains('created') || t.contains('added') || t == 'assigned') {
+      return AppColors.primary;
+    }
+    if (t.contains('task') || t.contains('target')) return AppColors.purple;
+    if (t.contains('attachment') || t.contains('image')) {
+      return AppColors.accent;
+    }
+    if (t.contains('edit') || t.contains('update') || t.contains('assign')) {
+      return AppColors.purple;
+    }
+    return AppColors.textSecondary;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (isLoading) {
@@ -144,130 +189,168 @@ class ActivityTimeline extends StatelessWidget {
       );
     }
 
-    if (activities.isEmpty) {
-      return Center(
-        child: Text(
-          emptyMessage,
-          style: const TextStyle(
-            fontSize: 13,
-            color: AppColors.textSecondary,
-          ),
-        ),
-      );
-    }
-
-    return ListView.separated(
+    return ListView.builder(
       controller: controller,
-      padding: const EdgeInsets.fromLTRB(
-        20,
-        4,
-        20,
-        20,
-      ),
-      itemCount: activities.length,
-      separatorBuilder: (_, __) {
-        return const SizedBox(height: 10);
-      },
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      itemCount: activities.isEmpty ? 2 : activities.length + 1,
       itemBuilder: (_, index) {
-        final activity = activities[index];
+        if (index == 0) return _Header(subtitle: subtitle);
 
-        return _ActivityTimelineCard(
-          activity: activity,
+        if (activities.isEmpty) {
+          return Padding(
+            padding: const EdgeInsets.only(top: 24),
+            child: Center(
+              child: Text(
+                emptyMessage,
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+          );
+        }
+
+        final i = index - 1;
+        return _TimelineEntry(
+          activity: activities[i],
+          isLast: i == activities.length - 1,
         );
       },
     );
   }
 }
 
-class _ActivityTimelineCard extends StatelessWidget {
-  final ActivityTimelineItem activity;
+class _Header extends StatelessWidget {
+  final String subtitle;
+  const _Header({required this.subtitle});
 
-  const _ActivityTimelineCard({
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(bottom: 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Activity timeline',
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              subtitle,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      );
+}
+
+class _TimelineEntry extends StatelessWidget {
+  final ActivityTimelineItem activity;
+  final bool isLast;
+
+  const _TimelineEntry({
     required this.activity,
+    required this.isLast,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppColors.background,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: AppColors.border,
-        ),
-      ),
+    final description = activity.description.trim();
+    final by = activity.performedBy?.trim() ?? '';
+    final time = activity.timestamp == null
+        ? ''
+        : DateFormat('M/d/yyyy, h:mm:ss a')
+            .format(activity.timestamp!.toLocal());
+
+    // IntrinsicHeight lets the connecting line run the full height of the
+    // entry, however many lines its text wraps to.
+    return IntrinsicHeight(
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: AppColors.primaryLight,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(
-              ActivityTimeline.getIcon(activity.type),
-              size: 17,
-              color: AppColors.primary,
+          // ── Icon + connecting line ──
+          SizedBox(
+            width: 36,
+            child: Column(
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  alignment: Alignment.center,
+                  decoration: const BoxDecoration(
+                    color: AppColors.background,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    ActivityTimeline.getIcon(activity.type),
+                    size: 16,
+                    color: ActivityTimeline.getColor(activity.type),
+                  ),
+                ),
+                if (!isLast)
+                  Expanded(
+                    child: Container(
+                      width: 1.5,
+                      margin: const EdgeInsets.symmetric(vertical: 4),
+                      color: AppColors.border,
+                    ),
+                  ),
+              ],
             ),
           ),
 
           const SizedBox(width: 12),
 
+          // ── Text ──
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  activity.title,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-
-                const SizedBox(height: 4),
-
-                Text(
-                  activity.description,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-
-                if (activity.performedBy != null &&
-                    activity.performedBy!.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-
+            child: Padding(
+              padding: EdgeInsets.only(top: 6, bottom: isLast ? 0 : 22),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Text(
-                    'By ${activity.performedBy}',
+                    activity.title,
                     style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                      color: AppColors.textSecondary,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
                     ),
                   ),
-                ],
-
-                if (activity.timestamp != null) ...[
-                  const SizedBox(height: 3),
-
-                  Text(
-                    DateFormat(
-                      'dd MMM yyyy, hh:mm a',
-                    ).format(
-                      activity.timestamp!.toLocal(),
+                  if (description.isNotEmpty && description != activity.title)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        description,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
                     ),
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: AppColors.textHint,
+                  if (time.isNotEmpty || by.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        [
+                          if (time.isNotEmpty) time,
+                          if (by.isNotEmpty) 'by $by',
+                        ].join('  ·  '),
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          color: AppColors.textHint,
+                        ),
+                      ),
                     ),
-                  ),
                 ],
-              ],
+              ),
             ),
           ),
         ],

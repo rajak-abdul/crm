@@ -1096,7 +1096,16 @@ Future<Map<String, dynamic>?> uploadChatFile(
     );
   }
 
-  Future<bool> _clear(String path, String fallbackError) async {
+  /// [isOpen] is whether the chat being cleared is the one on screen; the
+  /// list's ⋮ menu can clear a chat that isn't open, and that must not
+  /// wipe the open conversation. [clearPreview] drops the list row's
+  /// last-message preview.
+  Future<bool> _clear(
+    String path,
+    String fallbackError, {
+    required bool isOpen,
+    required void Function() clearPreview,
+  }) async {
     if (isClosed) return false;
 
     try {
@@ -1108,10 +1117,11 @@ Future<Map<String, dynamic>?> uploadChatFile(
 
       if (isClosed) return false;
 
-      _clearOpenMessages();
+      if (isOpen) _clearOpenMessages();
+      clearPreview();
       return true;
     } on DioException catch (e) {
-      if (isClosed) return false;
+      if (isClosed || !isOpen) return false;
 
       emit(
         state.copyWith(
@@ -1126,7 +1136,7 @@ Future<Map<String, dynamic>?> uploadChatFile(
 
       return false;
     } catch (e) {
-      if (isClosed) return false;
+      if (isClosed || !isOpen) return false;
 
       emit(
         state.copyWith(
@@ -1142,6 +1152,23 @@ Future<Map<String, dynamic>?> uploadChatFile(
     final success = await _clear(
       '/api/groups/$groupId/clear',
       'Failed to clear group chat',
+      isOpen: _activeGroupId == groupId,
+      clearPreview: () {
+        final current = state.groupsResponse;
+        if (current == null) return;
+        emit(
+          state.copyWith(
+            groupsResponse: GroupsResponse(
+              groups: [
+                for (final g in current.groups)
+                  g.id == groupId
+                      ? g.copyWith(unreadCount: 0, clearLastMessage: true)
+                      : g,
+              ],
+            ),
+          ),
+        );
+      },
     );
 
     if (success) {
@@ -1152,8 +1179,66 @@ Future<Map<String, dynamic>?> uploadChatFile(
     return success;
   }
 
-  Future<bool> clearChat(String userId) =>
-      _clear('/api/chat/clear/$userId', 'Failed to clear chat');
+  /// Also used by the list's "Delete chat": the backend's delete for a
+  /// direct chat is this same endpoint.
+  Future<bool> clearChat(String userId) => _clear(
+        '/api/chat/clear/$userId',
+        'Failed to clear chat',
+        isOpen: _activeContactId == userId,
+        clearPreview: () {
+          final current = state.contactsResponse;
+          if (current == null) return;
+          emit(
+            state.copyWith(
+              contactsResponse: ContactsResponse(
+                contacts: [
+                  for (final c in current.contacts)
+                    c.id == userId
+                        ? c.copyWith(unreadCount: 0, clearLastMessage: true)
+                        : c,
+                ],
+              ),
+            ),
+          );
+        },
+      );
+
+  // ============================================================
+  // PIN / UNPIN GROUP CHAT IN THE LIST (stored on this device —
+  // there is no backend API for this yet)
+  // ============================================================
+
+  String get _pinnedGroupsKey => 'pinned_group_chats_$_currentUserId';
+
+  Future<void> loadPinnedGroups() async {
+    if (isClosed) return;
+    try {
+      await initialize();
+      final prefs = await SharedPreferences.getInstance();
+      if (isClosed) return;
+      emit(state.copyWith(
+        pinnedGroupIds: prefs.getStringList(_pinnedGroupsKey) ?? const [],
+      ));
+    } catch (e) {
+      debugPrint('Load pinned groups failed: $e');
+    }
+  }
+
+  /// Newest pin goes first.
+  Future<void> toggleGroupChatPin(String groupId) async {
+    if (isClosed) return;
+
+    final ids = List<String>.of(state.pinnedGroupIds);
+    if (!ids.remove(groupId)) ids.insert(0, groupId);
+    emit(state.copyWith(pinnedGroupIds: ids));
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_pinnedGroupsKey, ids);
+    } catch (e) {
+      debugPrint('Save pinned groups failed: $e');
+    }
+  }
 
   // ============================================================
   // SOCKET CONNECTION

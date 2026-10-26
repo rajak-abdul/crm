@@ -244,7 +244,8 @@ Future<String?> _editMeeting(
           );
 
           if (!success) {
-            throw Exception('Failed to update meeting');
+            throw Exception(
+                meetingsCubit.lastError ?? 'Failed to update meeting.');
           }
 
           // Refresh meetings

@@ -160,6 +160,7 @@ final response = await dio.get(
     int reminderMinutes = 10,
     String provider = 'google_meet',
   }) async {
+    lastError = null;
     try {
       // ALWAYS verify Google before creating
       final googleConnected = await checkGoogleConnection();
@@ -174,6 +175,7 @@ final response = await dio.get(
           ),
         );
 
+        lastError = _googleNotConnected;
         return false;
       }
 
@@ -213,6 +215,8 @@ final response = await dio.get(
           ),
         );
 
+        lastError = _responseMessage(response.data) ??
+            'Failed to create meeting.';
         return false;
       }
 
@@ -238,21 +242,41 @@ final response = await dio.get(
 
       return true;
     } on DioException catch (e) {
-      emit(
-        MeetingsError(
-          _dioErrorMessage(e),
-        ),
-      );
-
+      // The create sheet shows the error; the list behind keeps its data.
+      lastError = _dioErrorMessage(e);
+      _restoreLoaded();
       return false;
     } catch (e) {
-      emit(
-        MeetingsError(
-          e.toString(),
-        ),
-      );
-
+      lastError = e.toString().replaceFirst('Exception: ', '');
+      _restoreLoaded();
       return false;
+    }
+  }
+
+  /// Why the last [createMeeting] / [updateMeeting] call failed — shown
+  /// by the meeting sheet. Null after a successful call.
+  String? lastError;
+
+  static const _googleNotConnected =
+      'Google account is not connected. Connect Google Calendar to continue.';
+
+  String? _responseMessage(dynamic data) {
+    if (data is Map && data['message'] != null) {
+      final m = data['message'].toString().trim();
+      if (m.isNotEmpty) return m;
+    }
+    return null;
+  }
+
+  /// Drops the "creating" state after a failed save without wiping the list.
+  void _restoreLoaded() {
+    if (isClosed) return;
+    final s = state;
+    if (s is MeetingsCreating) {
+      emit(MeetingsLoaded(
+        meetings: s.meetings,
+        googleConnected: s.googleConnected,
+      ));
     }
   }
 
@@ -271,6 +295,7 @@ Future<bool> updateMeeting({
   int reminderMinutes = 10,
   String provider = 'google_meet',
 }) async {
+  lastError = null;
   try {
     final googleConnected = await checkGoogleConnection();
 
@@ -284,6 +309,7 @@ Future<bool> updateMeeting({
         ),
       );
 
+      lastError = _googleNotConnected;
       return false;
     }
 
@@ -327,6 +353,8 @@ Future<bool> updateMeeting({
         ),
       );
 
+      lastError = _responseMessage(response.data) ??
+          'Failed to update meeting.';
       return false;
     }
 
@@ -363,22 +391,14 @@ Future<bool> updateMeeting({
     debugPrint('UPDATE MEETING DIO ERROR: ${e.response?.data}');
     debugPrint('UPDATE MEETING STATUS: ${e.response?.statusCode}');
 
-    emit(
-      MeetingsError(
-        _dioErrorMessage(e),
-      ),
-    );
-
+    lastError = _dioErrorMessage(e);
+    _restoreLoaded();
     return false;
   } catch (e) {
     debugPrint('UPDATE MEETING ERROR: $e');
 
-    emit(
-      MeetingsError(
-        e.toString(),
-      ),
-    );
-
+    lastError = e.toString().replaceFirst('Exception: ', '');
+    _restoreLoaded();
     return false;
   }
 }

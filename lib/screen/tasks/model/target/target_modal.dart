@@ -16,6 +16,7 @@ class TargetModel {
   final DateTime? startDate;
   final DateTime? endDate;
   final String? status; // 'New' | 'Completed' | ...
+  final String? priority; // 'Low' | 'Medium' | 'High'
   final String? description;
 
   final int targetLeads;
@@ -65,6 +66,7 @@ class TargetModel {
     this.startDate,
     this.endDate,
     this.status,
+    this.priority,
     this.description,
     this.targetLeads = 0,
     this.targetDeals = 0,
@@ -107,6 +109,7 @@ class TargetModel {
       startDate: _parseDate(json['startDate']),
       endDate: _parseDate(json['endDate']),
       status: json['status'],
+      priority: json['priority']?.toString(),
       description: json['description'],
 
       targetLeads: (json['targetLeads'] as num?)?.toInt() ?? 0,

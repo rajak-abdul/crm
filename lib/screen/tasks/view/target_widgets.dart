@@ -129,8 +129,8 @@ class TargetHeader extends StatelessWidget {
                 onTap: () => Navigator.of(context).maybePop(),
                 child: const Padding(
                   padding: EdgeInsets.all(6),
-                  child: Icon(Icons.arrow_back_ios_new_rounded,
-                      size: 20, color: AppColors.textPrimary),
+                  child: Icon(Icons.arrow_back_rounded,
+                      size: 22, color: AppColors.textPrimary),
                 ),
               ),
               const SizedBox(width: 4),

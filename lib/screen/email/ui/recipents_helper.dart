@@ -433,29 +433,45 @@ class _RecipientsBottomSheetState
   // ============================================================
   // RECIPIENT NAME
   // ============================================================
-
-  String _getRecipientName(dynamic recipient) {
-  // Email history API returns recipients as plain email strings.
+String _getRecipientName(dynamic recipient) {
   if (recipient is String) {
     final email = recipient.trim().toLowerCase();
 
-    return widget.recipientNames[email] ?? '';
+    final name = widget.recipientNames[email]?.trim();
+
+    if (name != null && name.isNotEmpty) {
+      return name;
+    }
+
+    // Display the email when the name is unavailable.
+    return recipient.trim();
   }
 
-  // Keep support for object-based recipients as well.
   try {
-    if (recipient.name != null) {
-      return recipient.name.toString();
+    final name = recipient.name?.toString().trim();
+
+    if (name != null && name.isNotEmpty) {
+      return name;
     }
   } catch (_) {}
 
   try {
-    if (recipient.fullName != null) {
-      return recipient.fullName.toString();
+    final name = recipient.fullName?.toString().trim();
+
+    if (name != null && name.isNotEmpty) {
+      return name;
     }
   } catch (_) {}
 
-  return '';
+  try {
+    final email = recipient.email?.toString().trim();
+
+    if (email != null && email.isNotEmpty) {
+      return email;
+    }
+  } catch (_) {}
+
+  return 'Unknown Recipient';
 }
   // ============================================================
   // RECIPIENT EMAIL

@@ -507,9 +507,11 @@ class Lead {
         city: _s(j['city']),
         state: _s(j['state']),
         pincode: _s(j['pincode']),
-        numberOfEmployees: (j['NumberOfEmployees'] ?? j['numberOfEmployees']) is num
-            ? ((j['NumberOfEmployees'] ?? j['numberOfEmployees']) as num).toInt()
-            : null,
+        numberOfEmployees: int.tryParse(
+            (j['NumberOfEmployees'] ?? j['numberOfEmployees'] ?? '')
+                .toString()
+                .split('.')
+                .first),
         latitude: (j['latitude'] as num?)?.toDouble(),
         longitude: (j['longitude'] as num?)?.toDouble(),
         trash: j['trash'] is bool ? j['trash'] as bool : false,

@@ -24,16 +24,34 @@ class TaskRepository {
         .toList();
   }
 
-  Future<MyDashboardStatsModel> getMyDashboardStats({
-    String period = 'all',
+  /// Tasks linked to one lead or deal ([kind]: 'lead' | 'deal').
+  Future<List<TaskModel>> getLinkedTasks({
+    required String kind,
+    required String id,
   }) async {
-    final data = await apiService.getMyDashboardStats(period: period);
+    final data = await apiService.getLinkedTasks(kind: kind, id: id);
 
-    return MyDashboardStatsModel.fromJson(
-      (data as Map<String, dynamic>?) ?? {},
-    );
+    return [
+      for (final e in (data as List? ?? const []))
+        if (e is Map<String, dynamic>) TaskModel.fromJson(e),
+    ];
   }
 
+Future<MyDashboardStatsModel> getMyDashboardStats({
+  String period = 'all',
+  String? startDate,
+  String? endDate,
+}) async {
+  final data = await apiService.getMyDashboardStats(
+    period: period,
+    startDate: startDate,
+    endDate: endDate,
+  );
+
+  return MyDashboardStatsModel.fromJson(
+    (data as Map<String, dynamic>?) ?? {},
+  );
+}
   /// Notifications for the logged-in user (all types; newest first as
   /// returned by the backend). A page shorter than [limit] is the last.
   Future<List<TaskNotificationModel>> getMyNotifications({
@@ -77,7 +95,8 @@ class TaskRepository {
   }
 
   /// Moves a task to [status] ('Pending' | 'In Progress' | 'In Hold' |
-  /// 'Completed' | 'Rejected'). In Hold sends [reason] as holdReason.
+  /// 'Completed' | 'Rejected'). [reason] goes as holdReason (In Hold) or
+  /// rejectionReason (Rejected).
   Future<void> updateTaskStatus({
     required String taskId,
     required String status,
@@ -89,6 +108,7 @@ class TaskRepository {
       body: {
         'status': status,
         if (status == 'In Hold' && note.isNotEmpty) 'holdReason': note,
+        if (status == 'Rejected' && note.isNotEmpty) 'rejectionReason': note,
       },
     );
 

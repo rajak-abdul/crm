@@ -78,13 +78,32 @@ class TaskApiService {
   Future<dynamic> getTasks() =>
       _get('/tasks', fallback: 'Failed to load tasks');
 
-  /// GET /targets/my-dashboard-stats?period=
-  Future<dynamic> getMyDashboardStats({String period = 'all'}) => _get(
-        '/targets/my-dashboard-stats',
-        queryParameters: {'period': period},
-        fallback: 'Failed to load dashboard stats',
-      );
+  /// GET /tasks/linked/:kind/:id — tasks linked to one lead or deal
+  /// (kind: 'lead' | 'deal'). Response: [ task, ... ].
+  Future<dynamic> getLinkedTasks({required String kind, required String id}) =>
+      _get('/tasks/linked/$kind/$id', fallback: 'Failed to load linked tasks');
 
+  /// GET /targets/my-dashboard-stats?period=
+Future<dynamic> getMyDashboardStats({
+  String period = 'all',
+  String? startDate,
+  String? endDate,
+}) {
+  final queryParameters = <String, dynamic>{
+    'period': period,
+  };
+
+  if (period == 'custom') {
+    queryParameters['startDate'] = startDate;
+    queryParameters['endDate'] = endDate;
+  }
+
+  return _get(
+    '/targets/my-dashboard-stats',
+    queryParameters: queryParameters,
+    fallback: 'Failed to load dashboard stats',
+  );
+}
   /// GET /notifications/:userId?page=&limit=
   Future<dynamic> getNotifications({
     required String userId,

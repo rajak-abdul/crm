@@ -18,13 +18,12 @@ class CalendarEventDataSource extends CalendarDataSource {
   @override
   DateTime getStartTime(int index) => _eventAt(index).date.toLocal();
 
-  @override
-  DateTime getEndTime(int index) {
-    final event = _eventAt(index);
-    return (event.endDate ?? event.date.add(const Duration(hours: 1)))
-        .toLocal();
-  }
-
+@override
+DateTime getEndTime(int index) {
+  final event = _eventAt(index);
+  return (event.endDate ?? event.date.add(const Duration(hours: 1)))
+      .toLocal();
+}
   @override
   String getSubject(int index) => _eventAt(index).title;
 

@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:crm_app/screen/deals/cubit/deals_cubit.dart';
-import 'package:crm_app/screen/proposal/cubit/draft_cubit.dart';
+import 'package:crm_app/screen/deals/modal/deal_modal.dart' show Deal;
 import 'package:crm_app/screen/proposal/modal/proposal_modal.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -13,12 +13,21 @@ import '../cubit/proposal_cubit.dart';
 class CreateProposalScreen extends StatefulWidget {
   final Proposal? proposal;
 
+  /// Pre-selects this deal (e.g. when opened from a deal's Proposals tab).
+  final Deal? initialDeal;
+
   const CreateProposalScreen({
     super.key,
     this.proposal,
+    this.initialDeal,
   });
 
   bool get isEditMode => proposal != null;
+
+  /// Editing an already-sent proposal: "Update draft" would turn it
+  /// back into a draft, so only "Update & Send" is offered.
+  bool get isEditingSent =>
+      proposal != null && proposal!.status.trim().toLowerCase() != 'draft';
 
   @override
   State<CreateProposalScreen> createState() =>
@@ -32,6 +41,9 @@ class _CreateProposalScreenState
   final dealController = TextEditingController();
   final emailController = TextEditingController();
   final ccController = TextEditingController();
+  final _titleFocus = FocusNode();
+  final _emailFocus = FocusNode();
+  final _ccFocus = FocusNode();
 final HtmlEditorController contentEditorController =
     HtmlEditorController();
     List<PlatformFile> selectedAttachments = [];
@@ -44,24 +56,43 @@ int wordCount = 0;
   bool detailsExpanded = true;
   bool contentExpanded = false;
   bool isSendingProposal = false;
-  bool isSavingDraft = false; 
+  bool isSavingDraft = false;
+
+  /// Latest editor HTML. Kept outside the editor because collapsing the
+  /// Content section unmounts it.
+  String _contentHtml = '';
+
+  bool get _isBusy => isSavingDraft || isSendingProposal;
 
 @override
 void initState() {
   super.initState();
 
   final proposal = widget.proposal;
+  _contentHtml = proposal?.content ?? '';
+
+  for (final node in _fieldFocusNodes) {
+    node.addListener(() {
+      if (node.hasFocus) _blurEditor();
+    });
+  }
 
   if (proposal != null) {
     titleController.text = proposal.title;
     emailController.text = proposal.email;
     ccController.text = proposal.cc;
 
-    dealController.text = proposal.dealTitle;
+    // Some endpoints (e.g. /deals/:id/proposals) don't populate `deal`;
+    // fall back to the deal the screen was opened from.
+    final title = proposal.dealTitle.isNotEmpty
+        ? proposal.dealTitle
+        : (proposal.deal?.name ?? widget.initialDeal?.name ?? '');
 
-    selectedDealTitle = proposal.dealTitle;
+    dealController.text = title;
 
-    selectedDealId = proposal.deal?.id;
+    selectedDealTitle = title;
+
+    selectedDealId = proposal.deal?.id ?? widget.initialDeal?.id;
 
     debugPrint(
       'EDIT PROPOSAL DEAL ID: ${proposal.deal?.id}',
@@ -70,6 +101,12 @@ void initState() {
     debugPrint(
       'EDIT PROPOSAL DEAL TITLE: ${proposal.dealTitle}',
     );
+  } else if (widget.initialDeal != null) {
+    final deal = widget.initialDeal!;
+    selectedDealId = deal.id;
+    selectedDealTitle = deal.name;
+    dealController.text = deal.name;
+    emailController.text = deal.email.trim();
   }
 }
 
@@ -79,102 +116,126 @@ void initState() {
     dealController.dispose();
     emailController.dispose();
     ccController.dispose();
+    for (final node in _fieldFocusNodes) {
+      node.dispose();
+    }
     super.dispose();
   }
 
-Future<void> _sendProposal() async {
-  final content = await contentEditorController.getText();
+  List<FocusNode> get _fieldFocusNodes =>
+      [_titleFocus, _emailFocus, _ccFocus];
 
-  if (titleController.text.trim().isEmpty) {
-    _showMessage('Please enter proposal title');
+  // The editor is a WebView with its own focus, separate from Flutter's,
+  // so without these both a Details field and the editor show a caret.
+
+  /// Removes the editor's caret when a Details field takes focus.
+  Future<void> _blurEditor() async {
+    if (!isEditorLoaded) return;
+    try {
+      await contentEditorController.editorController?.evaluateJavascript(
+        source: 'document.activeElement && document.activeElement.blur();',
+      );
+    } catch (_) {
+      // Editor not ready — nothing to blur.
+    }
+  }
+
+  /// Drops focus from the Details fields when the editor is touched.
+  void _unfocusFields() {
+    for (final node in _fieldFocusNodes) {
+      if (node.hasFocus) node.unfocus();
+    }
+  }
+
+/// Current editor HTML: the live editor when it is mounted, otherwise
+/// the last content it reported.
+Future<String> _readContent() async {
+  if (contentExpanded && isEditorLoaded) {
+    try {
+      _contentHtml = await contentEditorController.getText();
+    } catch (_) {
+      // Editor not ready yet — keep the last known content.
+    }
+  }
+  return _contentHtml;
+}
+
+/// Save draft / Update draft ([isDraft] true) or Send / Update & Send.
+/// Title and deal are required for both; sending also needs
+/// recipients and content.
+Future<void> _submit({required bool isDraft}) async {
+  if (_isBusy) return;
+
+  final title = titleController.text.trim();
+  final hasDeal =
+      selectedDealId != null && selectedDealTitle.trim().isNotEmpty;
+
+  if (title.isEmpty || !hasDeal) {
+    _showMessage(
+      title.isEmpty && !hasDeal
+          ? 'Title and deal are required'
+          : title.isEmpty
+              ? 'Title is required'
+              : 'Deal is required',
+      isError: true,
+    );
     return;
   }
 
-  if (selectedDealId == null) {
-    _showMessage('Please select a deal');
-    return;
+  final content = await _readContent();
+  if (!mounted) return;
+
+  if (!isDraft) {
+    if (emailController.text.trim().isEmpty) {
+      _showMessage('Please enter customer email');
+      return;
+    }
+
+    if (content
+        .replaceAll(RegExp(r'<[^>]*>'), '')
+        .replaceAll('&nbsp;', ' ')
+        .trim()
+        .isEmpty) {
+      _showMessage('Please enter proposal content');
+      return;
+    }
   }
 
-  if (emailController.text.trim().isEmpty) {
-    _showMessage('Please enter customer email');
-    return;
-  }
+  final cubit = context.read<ProposalCubit>();
 
-  if (content
-      .replaceAll(RegExp(r'<[^>]*>'), '')
-      .trim()
-      .isEmpty) {
-    _showMessage('Please enter proposal content');
-    return;
-  }
+  setState(() {
+    if (isDraft) {
+      isSavingDraft = true;
+    } else {
+      isSendingProposal = true;
+    }
+  });
 
   try {
-    setState(() {
-      isSendingProposal = true;
-    });
-
-    await context.read<ProposalCubit>().createProposal(
-      title: titleController.text.trim(),
+    await cubit.createProposal(
+      proposalId: widget.proposal?.id,
+      title: title,
       selectedDealId: selectedDealId!,
       dealTitle: selectedDealTitle,
       cc: ccController.text.trim(),
       content: content,
       emails: emailController.text.trim(),
-      isDraft: false,
+      isDraft: isDraft,
       attachments: selectedAttachments,
     );
 
-    if (!mounted) return;
-
-    _showMessage('Proposal sent successfully', isSuccess: true);
-    Navigator.pop(context, true);
-  } catch (e) {
     if (!mounted) return;
 
     _showMessage(
-      e.toString().replaceFirst('Exception: ', ''),
+      isDraft
+          ? (widget.isEditMode
+              ? 'Draft updated successfully'
+              : 'Draft saved successfully')
+          : (widget.isEditMode
+              ? 'Proposal updated and sent successfully'
+              : 'Proposal sent successfully'),
+      isSuccess: true,
     );
-  } finally {
-    if (mounted) {
-      setState(() {
-        isSendingProposal = false;
-      });
-    }
-  }
-}
-
-Future<void> _saveDraft() async {
-  try {
-    final content = await contentEditorController.getText();
-
-    if (titleController.text.trim().isEmpty) {
-      _showMessage('Please enter proposal title');
-      return;
-    }
-
-    if (selectedDealId == null) {
-      _showMessage('Please select a deal');
-      return;
-    }
-
-    setState(() {
-      isSavingDraft = true;
-    });
-
-    await context.read<ProposalCubit>().createProposal(
-      title: titleController.text.trim(),
-      selectedDealId: selectedDealId!,
-      dealTitle: selectedDealTitle,
-      cc: ccController.text.trim(),
-      content: content,
-      emails: emailController.text.trim(),
-      isDraft: true,
-      attachments: selectedAttachments,
-    );
-
-    if (!mounted) return;
-
-    _showMessage('Draft saved successfully', isSuccess: true);
     Navigator.pop(context, true);
   } catch (e) {
     if (!mounted) return;
@@ -186,16 +247,27 @@ Future<void> _saveDraft() async {
     if (mounted) {
       setState(() {
         isSavingDraft = false;
+        isSendingProposal = false;
       });
     }
   }
 }
 
-  void _showMessage(String message, {bool isSuccess = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
+  void _showMessage(
+    String message, {
+    bool isSuccess = false,
+    bool isError = false,
+  }) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: isSuccess ? Colors.green : null,
+        backgroundColor: isSuccess
+            ? Colors.green
+            : isError
+                ? Colors.red
+                : null,
       ),
     );
   }
@@ -301,6 +373,9 @@ Future<void> _saveDraft() async {
             onTap: () {
               setState(() {
                 contentExpanded = !contentExpanded;
+                // Collapsing unmounts the editor; onInit sets this
+                // again when it is reopened.
+                if (!contentExpanded) isEditorLoaded = false;
               });
             },
             child: _buildContent(),
@@ -335,13 +410,12 @@ Future<void> _saveDraft() async {
         // =========================
         // SAVE AS DRAFT
         // =========================
+        if (!widget.isEditingSent) ...[
         Expanded(
           child: OutlinedButton(
-            onPressed: isSavingDraft
+            onPressed: _isBusy
     ? null
-    : widget.isEditMode
-        ? _updateDraft
-        : _saveDraft,
+    : () => _submit(isDraft: true),
             style: OutlinedButton.styleFrom(
               minimumSize: const Size.fromHeight(44),
             ),
@@ -362,17 +436,16 @@ Future<void> _saveDraft() async {
         ),
 
         const SizedBox(width: 10),
+        ],
 
         // =========================
         // SEND PROPOSAL
         // =========================
         Expanded(
           child: ElevatedButton(
-            onPressed: isSendingProposal
+            onPressed: _isBusy
     ? null
-    : widget.isEditMode
-        ? _sendDraft
-        : _sendProposal,
+    : () => _submit(isDraft: false),
             style: ElevatedButton.styleFrom(
               minimumSize: const Size.fromHeight(44),
             ),
@@ -399,153 +472,7 @@ Future<void> _saveDraft() async {
     );
   }
 
-Future<void> _updateDraft() async {
-  if (widget.proposal == null) {
-    _showMessage('Draft proposal not found');
-    return;
-  }
-
-    if (!isEditorLoaded) {
-    _showMessage('Please wait for the editor to finish loading');
-    return;
-  }
-
-
-  final content = await contentEditorController.getText();
-
-  if (titleController.text.trim().isEmpty) {
-    _showMessage('Please enter proposal title');
-    return;
-  }
-
-  if (selectedDealId == null) {
-    _showMessage('Please select a deal');
-    return;
-  }
-
-  if (emailController.text.trim().isEmpty) {
-    _showMessage('Please enter customer email');
-    return;
-  }
-
-  if (content
-      .replaceAll(RegExp(r'<[^>]*>'), '')
-      .trim()
-      .isEmpty) {
-    _showMessage('Please enter proposal content');
-    return;
-  }
-
-  try {
-    setState(() {
-      isSavingDraft = true;
-    });
-
-    await context.read<ProposalCubit>().createProposal(
-      proposalId: widget.proposal!.id,
-      title: titleController.text.trim(),
-      selectedDealId: selectedDealId!,
-      dealTitle: selectedDealTitle,
-      cc: ccController.text.trim(),
-      content: content,
-      emails: emailController.text.trim(),
-      isDraft: true,
-      attachments: selectedAttachments,
-    );
-
-    if (!mounted) return;
-
-    _showMessage('Proposal updated successfully', isSuccess: true);
-
-    Navigator.pop(context, true);
-  } catch (e) {
-    if (!mounted) return;
-
-    _showMessage(
-      e.toString().replaceFirst('Exception: ', ''),
-    );
-  } finally {
-    if (mounted) {
-      setState(() {
-        isSavingDraft = false;
-      });
-    }
-  }
-}
-
-Future<void> _sendDraft() async {
-  if (widget.proposal == null) {
-    _showMessage('Draft proposal not found');
-    return;
-  }
-
-    if (!isEditorLoaded) {
-    _showMessage('Please wait for the editor to finish loading');
-    return;
-  }
-
-
-  final content = await contentEditorController.getText();
-
-  if (titleController.text.trim().isEmpty) {
-    _showMessage('Please enter proposal title');
-    return;
-  }
-
-  if (selectedDealId == null) {
-    _showMessage('Please select a deal');
-    return;
-  }
-
-  if (emailController.text.trim().isEmpty) {
-    _showMessage('Please enter customer email');
-    return;
-  }
-
-  if (content
-      .replaceAll(RegExp(r'<[^>]*>'), '')
-      .trim()
-      .isEmpty) {
-    _showMessage('Please enter proposal content');
-    return;
-  }
-
-  try {
-    setState(() {
-      isSendingProposal = true;
-    });
-
-    await context.read<ProposalCubit>().createProposal(
-      proposalId: widget.proposal!.id,
-      title: titleController.text.trim(),
-      selectedDealId: selectedDealId!,
-      dealTitle: selectedDealTitle,
-      cc: ccController.text.trim(),
-      content: content,
-      emails: emailController.text.trim(),
-      isDraft: false,
-      attachments: selectedAttachments,
-    );
-
-    if (!mounted) return;
-
-    _showMessage('Proposal updated and sent successfully', isSuccess: true);
-
-    Navigator.pop(context, true);
-  } catch (e) {
-    if (!mounted) return;
-
-    _showMessage(
-      e.toString().replaceFirst('Exception: ', ''),
-    );
-  } finally {
-    if (mounted) {
-      setState(() {
-        isSendingProposal = false;
-      });
-    }
-  }
-}  // =========================
+  // =========================
   // SECTION
   // =========================
 
@@ -668,6 +595,7 @@ Future<void> _sendDraft() async {
 
         TextField(
           controller: titleController,
+          focusNode: _titleFocus,
           maxLength: 80,
           decoration: const InputDecoration(
             hintText: 'Type your proposal title',
@@ -781,6 +709,7 @@ if (state is DealsLoaded) {
 
         TextField(
           controller: emailController,
+          focusNode: _emailFocus,
           keyboardType:
               TextInputType.emailAddress,
           decoration: const InputDecoration(
@@ -815,6 +744,7 @@ if (state is DealsLoaded) {
 
         TextField(
           controller: ccController,
+          focusNode: _ccFocus,
           keyboardType:
               TextInputType.emailAddress,
           decoration: const InputDecoration(
@@ -1055,13 +985,16 @@ if (state is DealsLoaded) {
 // HTML EDITOR
 // =====================================================
 
-SizedBox(
+Listener(
+  // Pointer-down fires before the WebView takes the tap.
+  onPointerDown: (_) => _unfocusFields(),
+  child: SizedBox(
   height: 260,
   child: HtmlEditor(
     controller: contentEditorController,
 
     htmlEditorOptions: HtmlEditorOptions(
-      initialText: widget.proposal?.content ?? '',
+      initialText: _contentHtml,
       hint: 'Write your proposal...',
       shouldEnsureVisible: false,
       autoAdjustHeight: false,
@@ -1087,11 +1020,15 @@ SizedBox(
         });
       },
 
+      onFocus: _unfocusFields,
+
       onChangeContent: (String? content) {
-        _updateWordCount(content ?? '');
+        _contentHtml = content ?? '';
+        _updateWordCount(_contentHtml);
       },
     ),
   ),
+),
 ),
             // =====================================================
             // FOOTER
@@ -1523,13 +1460,7 @@ Future<void> _insertImage() async {
 }
 
 Future<void> _expandEditor() async {
-  if (!isEditorLoaded) {
-    _showMessage('Please wait for the editor to finish loading');
-    return;
-  }
-
-  final currentHtml =
-      await contentEditorController.getText();
+  final currentHtml = await _readContent();
 
   if (!mounted) return;
 
@@ -1587,7 +1518,8 @@ Future<void> _expandEditor() async {
   if (!mounted) return;
 
   if (result != null) {
-    contentEditorController.setText(result);
+    _contentHtml = result;
+    if (isEditorLoaded) contentEditorController.setText(result);
     _updateWordCount(result);
   }
 }

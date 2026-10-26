@@ -95,8 +95,8 @@ class TaskHeader extends StatelessWidget {
                 onTap: () => Navigator.of(context).maybePop(),
                 child: const Padding(
                   padding: EdgeInsets.all(6),
-                  child: Icon(Icons.arrow_back_ios_new_rounded,
-                      size: 20, color: AppColors.textPrimary),
+                  child: Icon(Icons.arrow_back_rounded,
+                      size: 22, color: AppColors.textPrimary),
                 ),
               ),
               const SizedBox(width: 4),
@@ -194,8 +194,8 @@ class TaskFlowBanner extends StatelessWidget {
 class OverviewPeriodDropdown extends StatelessWidget {
   static const periods = {
     'all': 'All Time',
-    'monthly': 'This Month',
-    'weekly': 'This Week',
+    'this_month': 'This Month',
+    'custom': 'Custom Date',
   };
 
   final String value;
@@ -213,13 +213,35 @@ class OverviewPeriodDropdown extends StatelessWidget {
       initialValue: value,
       onSelected: onChanged,
       color: AppColors.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
       itemBuilder: (_) => [
-        for (final e in periods.entries)
-          PopupMenuItem(value: e.key, child: Text(e.value)),
+        for (final entry in periods.entries)
+          PopupMenuItem<String>(
+            value: entry.key,
+            child: Row(
+              children: [
+                Icon(
+                  entry.key == value
+                      ? Icons.radio_button_checked_rounded
+                      : Icons.radio_button_off_rounded,
+                  size: 18,
+                  color: entry.key == value
+                      ? TaskPalette.accent
+                      : AppColors.textSecondary,
+                ),
+                const SizedBox(width: 10),
+                Text(entry.value),
+              ],
+            ),
+          ),
       ],
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 9,
+        ),
         decoration: BoxDecoration(
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(10),
@@ -236,9 +258,12 @@ class OverviewPeriodDropdown extends StatelessWidget {
                 color: AppColors.textPrimary,
               ),
             ),
-            const SizedBox(width: 4),
-            const Icon(Icons.keyboard_arrow_down_rounded,
-                size: 18, color: AppColors.textPrimary),
+            const SizedBox(width: 5),
+            const Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 18,
+              color: AppColors.textPrimary,
+            ),
           ],
         ),
       ),

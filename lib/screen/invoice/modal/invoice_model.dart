@@ -31,6 +31,41 @@ class InvoiceStatusHistoryItem {
       );
 }
 
+/// One line from the API's `breakdown` — itemised lines (label, HSN/SAC,
+/// quantity, amount) that make up the invoice subtotal.
+class InvoiceBreakdownItem {
+  final String id;
+  final String label;
+  final double amount;
+  final String hsnSac;
+  final double quantity;
+
+  const InvoiceBreakdownItem({
+    this.id = '',
+    required this.label,
+    required this.amount,
+    this.hsnSac = '',
+    this.quantity = 1,
+  });
+
+  factory InvoiceBreakdownItem.fromJson(Map<String, dynamic> j) =>
+      InvoiceBreakdownItem(
+        id: (j['_id'] ?? '').toString(),
+        label: (j['label'] ?? '').toString(),
+        amount: Invoice._d(j['amount']) ?? 0,
+        hsnSac: (j['hsnSac'] ?? '').toString(),
+        quantity: Invoice._d(j['quantity']) ?? 1,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (id.isNotEmpty) '_id': id,
+        'label': label,
+        'amount': amount,
+        'hsnSac': hsnSac,
+        'quantity': quantity,
+      };
+}
+
 class Invoice {
   final String id,
       invoiceNo,
@@ -78,6 +113,22 @@ class Invoice {
   final String createdBy;
   final String lastUpdatedBy;
 
+  // Assignee identity (assignTo._id / assignTo.email) — [assignTo] holds
+  // only the display name.
+  final String assignToId;
+  final String assignToEmail;
+
+  // Server-computed amounts, all in the invoice's own [currency].
+  // `total` arrives as a String (e.g. "11500").
+  final double apiSubtotal;
+  final double apiDiscount;
+  final double apiTax;
+  final double apiTotal;
+
+  // Itemised lines and the column label used for quantity ("Qty", "Hours").
+  final List<InvoiceBreakdownItem> breakdown;
+  final String quantityLabel;
+
   const Invoice({
     required this.id,
     required this.invoiceNo,
@@ -121,6 +172,14 @@ class Invoice {
     this.totalPreferredCurrencyValue = 0,
     this.createdBy = '',
     this.lastUpdatedBy = '',
+    this.assignToId = '',
+    this.assignToEmail = '',
+    this.apiSubtotal = 0,
+    this.apiDiscount = 0,
+    this.apiTax = 0,
+    this.apiTotal = 0,
+    this.breakdown = const [],
+    this.quantityLabel = '',
   });
 
   // ── UI display values (Title case) ──────────────────────────────
@@ -245,7 +304,28 @@ class Invoice {
   /// Remaining balance after what's been paid so far.
   double get balanceDue => (total - amountPaid).clamp(0, double.infinity);
 
-  bool get isFullyPaid => amountPaid >= total && total > 0;
+  /// Invoice total in its own [currency] (price − discount + tax).
+  /// [total] is the *preferred*-currency value — don't compare it with
+  /// [amountPaid], which is in [currency].
+  double get originalTotal =>
+      (price - discountAmount + taxAmount).clamp(0, double.infinity).toDouble();
+
+  /// The backend's locked conversion rate into [target] (from
+  /// totalPreferredCurrencyValue), or null when it wasn't saved in
+  /// [target] — e.g. the account currency changed after it was stored.
+  double? savedRateTo(String target) {
+    if (preferredCurrency.trim().toUpperCase() !=
+        target.trim().toUpperCase()) {
+      return null;
+    }
+    if (totalPreferredCurrencyValue <= 0 || originalTotal <= 0) return null;
+    return totalPreferredCurrencyValue / originalTotal;
+  }
+
+  /// Status "paid", or paid ≥ the original-currency total.
+  bool get isFullyPaid =>
+      status.trim().toLowerCase() == 'paid' ||
+      (originalTotal > 0 && amountPaid >= originalTotal - 0.005);
 
   // ── Helpers ─────────────────────────────────────────────────────
   static String _s(dynamic v, [String fb = '']) =>
@@ -311,17 +391,37 @@ class Invoice {
             _d(m['totalPreferredCurrencyValue']) ?? 0,
         createdBy: _s(m['createdBy']),
         lastUpdatedBy: _s(m['lastUpdatedBy']),
+        assignToId: _s(m['assignToId']),
+        assignToEmail: _s(m['assignToEmail']),
+        apiSubtotal: _d(m['apiSubtotal']) ?? 0,
+        apiDiscount: _d(m['apiDiscount']) ?? 0,
+        apiTax: _d(m['apiTax']) ?? 0,
+        apiTotal: _d(m['apiTotal']) ?? 0,
+        breakdown: _parseBreakdown(m['breakdown']),
+        quantityLabel: _s(m['quantityLabel']),
       );
+
+  static List<InvoiceBreakdownItem> _parseBreakdown(dynamic v) => v is List
+      ? v
+          .whereType<Map>()
+          .map((e) =>
+              InvoiceBreakdownItem.fromJson(Map<String, dynamic>.from(e)))
+          .toList()
+      : const [];
 
   // ── fromJson (API response) ──────────────────────────────────────
   factory Invoice.fromJson(Map<String, dynamic> j) {
     // assignTo — may be missing, a string, or an object
     String assignTo = '';
+    String assignToId = '';
+    String assignToEmail = '';
     final rawUser = j['assignedTo'] ?? j['assignTo'] ?? j['assigned_to'];
     if (rawUser is Map) {
       final fn = rawUser['firstName']?.toString().trim() ?? '';
       final ln = rawUser['lastName']?.toString().trim() ?? '';
       assignTo = '$fn $ln'.trim();
+      assignToId = _s(rawUser['_id'] ?? rawUser['id']).trim();
+      assignToEmail = _s(rawUser['email']).trim();
     } else if (rawUser != null) {
       assignTo = rawUser.toString().trim();
     }
@@ -521,6 +621,14 @@ class Invoice {
           _d(j['totalPreferredCurrencyValue']) ?? 0,
       createdBy: _s(j['createdBy']),
       lastUpdatedBy: _s(j['lastUpdatedBy']),
+      assignToId: assignToId,
+      assignToEmail: assignToEmail,
+      apiSubtotal: _d(j['subtotal']) ?? 0,
+      apiDiscount: _d(j['discount']) ?? 0,
+      apiTax: rawTax,
+      apiTotal: serverTotal,
+      breakdown: _parseBreakdown(j['breakdown']),
+      quantityLabel: _s(j['quantityLabel']),
     );
   }
 
@@ -559,6 +667,14 @@ class Invoice {
         'totalPreferredCurrencyValue': totalPreferredCurrencyValue,
         'createdBy': createdBy,
         'lastUpdatedBy': lastUpdatedBy,
+        'assignToId': assignToId,
+        'assignToEmail': assignToEmail,
+        'apiSubtotal': apiSubtotal,
+        'apiDiscount': apiDiscount,
+        'apiTax': apiTax,
+        'apiTotal': apiTotal,
+        'breakdown': breakdown.map((b) => b.toJson()).toList(),
+        'quantityLabel': quantityLabel,
       };
 
   Invoice copyWith({
@@ -600,6 +716,14 @@ class Invoice {
     double? totalPreferredCurrencyValue,
     String? createdBy,
     String? lastUpdatedBy,
+    String? assignToId,
+    String? assignToEmail,
+    double? apiSubtotal,
+    double? apiDiscount,
+    double? apiTax,
+    double? apiTotal,
+    List<InvoiceBreakdownItem>? breakdown,
+    String? quantityLabel,
   }) =>
       Invoice(
         id: id,
@@ -646,6 +770,14 @@ class Invoice {
             totalPreferredCurrencyValue ?? this.totalPreferredCurrencyValue,
         createdBy: createdBy ?? this.createdBy,
         lastUpdatedBy: lastUpdatedBy ?? this.lastUpdatedBy,
+        assignToId: assignToId ?? this.assignToId,
+        assignToEmail: assignToEmail ?? this.assignToEmail,
+        apiSubtotal: apiSubtotal ?? this.apiSubtotal,
+        apiDiscount: apiDiscount ?? this.apiDiscount,
+        apiTax: apiTax ?? this.apiTax,
+        apiTotal: apiTotal ?? this.apiTotal,
+        breakdown: breakdown ?? this.breakdown,
+        quantityLabel: quantityLabel ?? this.quantityLabel,
       );
 }
 

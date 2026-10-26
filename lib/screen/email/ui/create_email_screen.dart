@@ -4,6 +4,7 @@ import 'package:crm_app/screen/email/cubit/scheduled_email_cubit.dart';
 import 'package:crm_app/screen/email/modal/email_modal.dart';
 import 'package:crm_app/screen/email/modal/email_template_modal.dart';
 import 'package:crm_app/screen/email/modal/scheduled_email_modal.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -12,7 +13,7 @@ class CreateEmailScreen extends StatefulWidget {
   final List<EmailContact> recipients;
     final bool isEdit;
     final ScheduledEmail? scheduledEmail;
-
+    
   /// Maps recipient email -> CRM deal/contact name, used to resolve
   /// names for [scheduledEmail] recipients (which are plain emails).
   final Map<String, String> recipientNames;
@@ -27,7 +28,10 @@ class CreateEmailScreen extends StatefulWidget {
 }
 
 class _CreateEmailScreenState extends State<CreateEmailScreen> {
-  final TextEditingController _subjectController =
+List<PlatformFile> _attachedFiles = [];
+bool _isPickingFile = false;
+
+static const int _maxAttachmentSize = 5 * 1024 * 1024;    final TextEditingController _subjectController =
       TextEditingController();
 
   final TextEditingController _contentController =
@@ -372,57 +376,209 @@ Widget build(BuildContext context) {
   // ATTACHMENT
   // =========================================================
 
-  Widget _buildAttachment() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-      child: Container(
-        height: 48,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        decoration: BoxDecoration(
-          border: Border.all(
-            color: const Color(0xFFB7B7BF),
-            width: 1,
-          ),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: const Row(
-          children: [
-            Icon(
-              Icons.cloud_upload_outlined,
-              size: 18,
-              color: Color(0xFF625DCE),
-            ),
+Future<void> _pickAttachment() async {
+  if (_isPickingFile) return;
 
-            SizedBox(width: 8),
+  setState(() => _isPickingFile = true);
 
-            Text(
-              'Tap to attach a file',
-              style: TextStyle(
-                fontSize: 12,
-                color: Color(0xFF625DCE),
-              ),
-            ),
-
-            Spacer(),
-
-            Text(
-              'Max 5MB',
-              style: TextStyle(
-                fontSize: 11,
-                color: Color(0xFF9999A1),
-              ),
-            ),
-          ],
-        ),
-      ),
+  try {
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: true,
+      withData: false,
     );
-  }
 
+    if (!mounted || result == null) return;
+
+    final newFiles = result.files.where(
+      (file) => !_attachedFiles.any(
+        (existing) => existing.name == file.name,
+      ),
+    ).toList();
+
+    final currentSize = _attachedFiles.fold<int>(
+      0,
+      (total, file) => total + file.size,
+    );
+
+    final addedFiles = <PlatformFile>[];
+    int totalSize = currentSize;
+
+    for (final file in newFiles) {
+      if (totalSize + file.size <= _maxAttachmentSize) {
+        addedFiles.add(file);
+        totalSize += file.size;
+      }
+    }
+
+    setState(() {
+      _attachedFiles.addAll(addedFiles);
+    });
+
+    if (addedFiles.length < newFiles.length) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Some files were not added because the combined attachment size cannot exceed 5 MB.',
+          ),
+        ),
+      );
+    }
+  } catch (e) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Unable to select files: $e')),
+    );
+  } finally {
+    if (mounted) {
+      setState(() => _isPickingFile = false);
+    }
+  }
+}
+
+void _removeAttachment(PlatformFile file) {
+  setState(() {
+    _attachedFiles.remove(file);
+  });
+}
+
+String _formatFileSize(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+}
+
+Widget _buildAttachment() {
+  final totalSize = _attachedFiles.fold<int>(
+    0,
+    (total, file) => total + file.size,
+  );
+
+  final remainingSize = _maxAttachmentSize - totalSize;
+
+  return Padding(
+    padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: _isPickingFile ? null : _pickAttachment,
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            height: 48,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              border: Border.all(
+                color: const Color(0xFFB7B7BF),
+              ),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.cloud_upload_outlined,
+                  size: 18,
+                  color: Color(0xFF625DCE),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _isPickingFile
+                        ? 'Selecting files...'
+                        : 'Tap to attach files',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF625DCE),
+                    ),
+                  ),
+                ),
+                Text(
+                  '${_formatFileSize(remainingSize)} left',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF9999A1),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_attachedFiles.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          ..._attachedFiles.map(
+            (file) => Container(
+              margin: const EdgeInsets.only(bottom: 6),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 8,
+              ),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF5F4FF),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: const Color(0xFFE0DDFB),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.attach_file,
+                    size: 17,
+                    color: Color(0xFF625DCE),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      file.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    _formatFileSize(file.size),
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: Color(0xFF777780),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => _removeAttachment(file),
+                    tooltip: 'Remove attachment',
+                    icon: const Icon(
+                      Icons.close,
+                      size: 17,
+                      color: Colors.red,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints(
+                      minWidth: 32,
+                      minHeight: 32,
+                    ),
+                    padding: EdgeInsets.zero,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Text(
+            '${_attachedFiles.length} file(s) · '
+            '${_formatFileSize(totalSize)} of 5 MB used',
+            style: const TextStyle(
+              fontSize: 11,
+              color: Color(0xFF777780),
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
+}
   // =========================================================
   // RECIPIENTS
   // =========================================================
 
-  Widget _buildRecipients() {
+Widget _buildRecipients() {
   return Padding(
     padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
     child: Column(
@@ -436,7 +592,6 @@ Widget build(BuildContext context) {
           ),
         ),
         const SizedBox(height: 6),
-
         Container(
           width: double.infinity,
           decoration: BoxDecoration(
@@ -460,15 +615,39 @@ Widget build(BuildContext context) {
                 )
               : Column(
                   children: _editRecipients.map((contact) {
-  return _buildDynamicRecipient(contact);
-}).toList(),
+                    return Row(
+                      children: [
+                        Expanded(
+                          child: _buildDynamicRecipient(contact),
+                        ),
+                        IconButton(
+                          onPressed: () {
+                            setState(() {
+                              _editRecipients.remove(contact);
+                            });
+                          },
+                          tooltip: 'Remove recipient',
+                          icon: const Icon(
+                            Icons.close,
+                            size: 18,
+                            color: Colors.red,
+                          ),
+                          visualDensity: VisualDensity.compact,
+                          constraints: const BoxConstraints(
+                            minWidth: 40,
+                            minHeight: 40,
+                          ),
+                          padding: EdgeInsets.zero,
+                        ),
+                      ],
+                    );
+                  }).toList(),
                 ),
         ),
       ],
     ),
   );
-}
-  // =========================================================
+}  // =========================================================
   // DYNAMIC RECIPIENT ITEM
   // ========================================================
   Widget _buildDynamicRecipient(EmailContact contact) {

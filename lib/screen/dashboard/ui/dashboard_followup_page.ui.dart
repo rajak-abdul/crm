@@ -1,12 +1,8 @@
 import 'package:crm_app/modals/followup_model.dart';
-import 'package:crm_app/screen/deals/cubit/deals_cubit.dart';
-import 'package:crm_app/screen/deals/ui/deal_detail_sheet.dart';
-import 'package:crm_app/screen/leads/cubit/lead_cubit.dart';
+import 'package:crm_app/screen/deals/ui/deal_screen.dart';
 import 'package:crm_app/screen/leads/ui/lead_screen.dart';
-import 'package:crm_app/screen/meeting/cubit/meeting_cubit.dart';
 import 'package:crm_app/thems/app_themes.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -63,58 +59,29 @@ class _FollowUpsScreenState extends State<FollowUpsScreen> {
     }
   }
 
-  void _viewLead(FollowUpItem item) async {
-  final cubit = LeadCubit();
-
-  final lead = await cubit.fetchLeadById(item.id);
-
-  if (!context.mounted || lead == null) return;
-
-  showModalBottomSheet(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: Colors.transparent,
-    builder: (_) => ScaffoldMessenger(
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: MultiBlocProvider(
-          providers: [
-            BlocProvider.value(value: cubit),
-            BlocProvider(create: (_) => MeetingsCubit()..loadMeetings()),
-          ],
-          child: LeadDetailSheet(
-            lead: lead,
-            leadCubit: cubit,
-          ),
+  // Opens the Leads screen with this lead's detail sheet on top.
+  void _viewLead(FollowUpItem item) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => LeadsScreen(
+          selectedLeadId: item.id,
+          showBackButton: true,
         ),
       ),
-    ),
-  );
-}
-  void _openDeal(FollowUpItem item) async {
-  final cubit = DealsCubit();
+    );
+  }
 
-  final deal = await cubit.getDealById(item.id);
-
-  if (!context.mounted || deal == null) return;
-
-  showModalBottomSheet(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: Colors.transparent,
-    builder: (_) => ScaffoldMessenger(
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: BlocProvider.value(
-          value: cubit,
-          child: DealDetailSheet(
-            deal: deal,
-          ),
+  // Opens the Deals screen with this deal's detail sheet on top.
+  void _openDeal(FollowUpItem item) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => DealsScreen(
+          selectedDealId: item.id,
+          showBackButton: true,
         ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   @override
   Widget build(BuildContext context) {

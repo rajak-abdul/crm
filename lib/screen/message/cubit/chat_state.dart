@@ -14,6 +14,9 @@ class ChatState extends Equatable {
 
   final int unreadCount;
 
+  /// Groups pinned to the top of the Groups list (stored on this device).
+  final List<String> pinnedGroupIds;
+
   const ChatState({
     this.isLoading = false,
     this.errorMessage,
@@ -23,6 +26,7 @@ class ChatState extends Equatable {
     this.messagesLoading = false,
     this.messagesError,
     this.unreadCount = 0,
+    this.pinnedGroupIds = const [],
   });
 
   ChatState copyWith({
@@ -34,6 +38,7 @@ class ChatState extends Equatable {
     bool? messagesLoading,
     String? messagesError,
     int? unreadCount,
+    List<String>? pinnedGroupIds,
     bool clearMessages = false,
   }) {
     return ChatState(
@@ -57,6 +62,9 @@ class ChatState extends Equatable {
 
       unreadCount:
           unreadCount ?? this.unreadCount,
+
+      pinnedGroupIds:
+          pinnedGroupIds ?? this.pinnedGroupIds,
     );
   }
 
@@ -70,5 +78,6 @@ class ChatState extends Equatable {
         messagesLoading,
         messagesError,
         unreadCount,
+        pinnedGroupIds,
       ];
 }

@@ -57,6 +57,16 @@ class _ChatPanelState extends State<ChatPanel> {
   bool _uploadingFile = false;
   ChatMessageModel? _replyingTo;
   String? _selectedMessageId;
+  final TextEditingController _searchController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  bool _searching = false;
+  String _searchQuery = '';
+
+  /// Message the ▲/▼ buttons are currently on.
+  String? _currentMatchId;
+
+  /// Keys for matched messages so search can scroll to them.
+  final Map<String, GlobalKey> _matchKeys = {};
 
   @override
   void initState() {
@@ -72,13 +82,78 @@ class _ChatPanelState extends State<ChatPanel> {
     }
     if (oldWidget.title != widget.title) {
       _pinned = false;
+      _closeSearch();
     }
   }
 
   @override
   void dispose() {
     _controller.dispose();
+    _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
+  }
+
+  void _openSearch() {
+    setState(() => _searching = true);
+  }
+
+  void _closeSearch() {
+    _searchController.clear();
+    setState(() {
+      _searching = false;
+      _searchQuery = '';
+      _currentMatchId = null;
+      _matchKeys.clear();
+    });
+  }
+
+  /// Text messages containing the query (case-insensitive), oldest first.
+  List<ChatMessageModel> get _searchMatches {
+    final q = _searchQuery.trim().toLowerCase();
+    if (!_searching || q.isEmpty) return const [];
+    return _messages
+        .where((m) =>
+            m.type != 'system' &&
+            !m.isDeleted &&
+            m.message.toLowerCase().contains(q))
+        .toList();
+  }
+
+  int _currentMatchIndex(List<ChatMessageModel> matches) =>
+      matches.indexWhere((m) => m.id == _currentMatchId);
+
+  void _onSearchChanged(String value) {
+    setState(() {
+      _searchQuery = value;
+      _matchKeys.clear();
+      // Like WhatsApp, start from the most recent match.
+      final matches = _searchMatches;
+      _currentMatchId = matches.isEmpty ? null : matches.last.id;
+    });
+    _scrollToCurrentMatch();
+  }
+
+  /// [step] -1 moves to the older match (▲), +1 to the newer one (▼).
+  void _moveMatch(int step) {
+    final matches = _searchMatches;
+    final next = _currentMatchIndex(matches) + step;
+    if (next < 0 || next >= matches.length) return;
+    setState(() => _currentMatchId = matches[next].id);
+    _scrollToCurrentMatch();
+  }
+
+  void _scrollToCurrentMatch() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _matchKeys[_currentMatchId]?.currentContext;
+      if (ctx == null || !mounted) return;
+      Scrollable.ensureVisible(
+        ctx,
+        alignment: 0.5,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    });
   }
 
   Future<void> _pickFile() async {
@@ -387,19 +462,23 @@ class _ChatPanelState extends State<ChatPanel> {
                   pinned: _selectedMessage?.isPinned ?? false,
                   onDelete: _selectedMessageIsMine ? _deleteSelected : null,
                 )
-              : _ChatHeader(
-                  title: widget.title,
-                  subtitle: widget.subtitle,
-                  avatarColor: widget.avatarColor,
-                  initials: widget.initials,
-                  imageUrl: widget.imageUrl,
-                  pinned: _pinned,
-                  onBack: widget.onBack,
-                  onTogglePin: () => setState(() => _pinned = !_pinned),
-                  onClearChat: _clearChat,
-                  onLeaveGroup: widget.groupId != null ? _leaveGroup : null,
-                ),
-          const Divider(height: 1, color: AppColors.divider),
+              : _searching
+                  ? _buildSearchBar()
+                  : _ChatHeader(
+                      title: widget.title,
+                      subtitle: widget.subtitle,
+                      avatarColor: widget.avatarColor,
+                      initials: widget.initials,
+                      imageUrl: widget.imageUrl,
+                      pinned: _pinned,
+                      onBack: widget.onBack,
+                      onTogglePin: () => setState(() => _pinned = !_pinned),
+                      onClearChat: _clearChat,
+                      onSearch: _openSearch,
+                      onLeaveGroup:
+                          widget.groupId != null ? _leaveGroup : null,
+                    ),
+          if (!_searching) const Divider(height: 1, color: AppColors.divider),
           if (_pinnedMessages.isNotEmpty)
             _PinnedMessageBar(
               messages: _pinnedMessages,
@@ -408,19 +487,37 @@ class _ChatPanelState extends State<ChatPanel> {
           Expanded(
             child: _buildBody(),
           ),
-          _MessageInputBar(
-            controller: _controller,
-            hint: 'Message ${widget.title}...',
-            onSend: _send,
-            onAttach: _pickFile,
-            pendingFile: _pendingFile,
-            onRemoveFile: _removePendingFile,
-            uploading: _uploadingFile,
-            replyingTo: _replyingTo,
-            onCancelReply: _clearReply,
-          ),
+          // Hidden while searching to give the conversation more room.
+          if (!_searching)
+            _MessageInputBar(
+              controller: _controller,
+              hint: 'Message ${widget.title}...',
+              onSend: _send,
+              onAttach: _pickFile,
+              pendingFile: _pendingFile,
+              onRemoveFile: _removePendingFile,
+              uploading: _uploadingFile,
+              replyingTo: _replyingTo,
+              onCancelReply: _clearReply,
+            ),
         ],
       ),
+    );
+  }
+
+  Widget _buildSearchBar() {
+    final matches = _searchMatches;
+    final index = _currentMatchIndex(matches);
+    return _ChatSearchBar(
+      controller: _searchController,
+      current: index < 0 ? null : index + 1,
+      total: _searchQuery.trim().isEmpty ? null : matches.length,
+      onChanged: _onSearchChanged,
+      onUp: index > 0 ? () => _moveMatch(-1) : null,
+      onDown: index >= 0 && index < matches.length - 1
+          ? () => _moveMatch(1)
+          : null,
+      onClose: _closeSearch,
     );
   }
 
@@ -438,12 +535,19 @@ class _ChatPanelState extends State<ChatPanel> {
       return const _EmptyThread();
     }
     return ListView(
+      controller: _scrollController,
+      // While searching, build every message so ▲/▼ can scroll to
+      // matches that are off screen.
+      cacheExtent: _searching ? 1e7 : null,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       children: _buildMessageList(),
     );
   }
 
   List<Widget> _buildMessageList() {
+    final query = _searching ? _searchQuery.trim() : '';
+    final matchIds =
+        query.isEmpty ? const <String>{} : _searchMatches.map((m) => m.id).toSet();
     final widgets = <Widget>[];
     DateTime? lastDay;
     for (final m in _messages) {
@@ -459,7 +563,8 @@ class _ChatPanelState extends State<ChatPanel> {
       final canReact = _reactionsEnabled &&
           !m.isDeleted &&
           !m.id.startsWith('temp-');
-      widgets.add(_SwipeToReply(
+      final isMatch = matchIds.contains(m.id);
+      Widget item = _SwipeToReply(
         alignEnd: m.isMe,
         onReply: () => _setReplyTo(m),
         child: GestureDetector(
@@ -468,12 +573,21 @@ class _ChatPanelState extends State<ChatPanel> {
             message: m,
             selected: m.id == _selectedMessageId,
             showSenderName: widget.showSenderNames,
+            highlight: isMatch ? query : null,
+            isCurrentMatch: isMatch && m.id == _currentMatchId,
             currentUserId: context.read<ChatCubit>().currentUserId,
             onReact: canReact ? (emoji) => _react(m, emoji) : null,
             onMoreReactions: canReact ? () => _openEmojiPicker(m) : null,
           ),
         ),
-      ));
+      );
+      if (isMatch) {
+        item = KeyedSubtree(
+          key: _matchKeys.putIfAbsent(m.id, () => GlobalKey()),
+          child: item,
+        );
+      }
+      widgets.add(item);
     }
     return widgets;
   }
@@ -675,6 +789,9 @@ class _ChatHeader extends StatelessWidget {
   final VoidCallback onTogglePin;
   final VoidCallback onClearChat;
 
+  /// Opens the in-conversation search bar.
+  final VoidCallback onSearch;
+
   /// Only set for groups; groups get a shorter menu with "Leave group".
   final VoidCallback? onLeaveGroup;
 
@@ -687,6 +804,7 @@ class _ChatHeader extends StatelessWidget {
     required this.pinned,
     required this.onTogglePin,
     required this.onClearChat,
+    required this.onSearch,
     this.onLeaveGroup,
     this.onBack,
   });
@@ -741,11 +859,13 @@ class _ChatHeader extends StatelessWidget {
             shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12)),
             onSelected: (value) {
+              if (value == 'search') onSearch();
               if (value == 'clear') onClearChat();
               if (value == 'leave') onLeaveGroup?.call();
             },
             itemBuilder: (_) => onLeaveGroup != null
                 ? const [
+                    PopupMenuItem(value: 'search', child: Text('Search chat')),
                     PopupMenuItem(value: 'clear', child: Text('Clear chat')),
                     PopupMenuItem(
                       value: 'leave',
@@ -754,9 +874,7 @@ class _ChatHeader extends StatelessWidget {
                     ),
                   ]
                 : const [
-                    PopupMenuItem(value: 'view', child: Text('View profile')),
-                    PopupMenuItem(
-                        value: 'mute', child: Text('Mute notifications')),
+                    PopupMenuItem(value: 'search', child: Text('Search chat')),
                     PopupMenuItem(value: 'clear', child: Text('Clear chat')),
                   ],
           ),
@@ -1012,10 +1130,19 @@ class _MessageBubble extends StatelessWidget {
   final ChatMessageModel message;
   final bool selected;
   final bool showSenderName;
+
+  /// Search term to highlight inside the message text, if any.
+  final String? highlight;
+
+  /// The match the search ▲/▼ buttons are on; highlighted more strongly.
+  final bool isCurrentMatch;
+
   const _MessageBubble({
     required this.message,
     this.selected = false,
     this.showSenderName = false,
+    this.highlight,
+    this.isCurrentMatch = false,
     this.currentUserId = '',
     this.onReact,
     this.onMoreReactions,
@@ -1105,9 +1232,14 @@ class _MessageBubble extends StatelessWidget {
                         ),
                 if (hasFile && hasText) const SizedBox(height: 8),
                 if (hasText)
-                  Text(message.message,
-                      style: TextStyle(
-                          color: textColor, fontSize: 14.5, height: 1.35)),
+                  Text.rich(
+                    TextSpan(
+                      children: _highlightSpans(message.message, highlight,
+                          current: isCurrentMatch),
+                    ),
+                    style: TextStyle(
+                        color: textColor, fontSize: 14.5, height: 1.35),
+                  ),
               ],
             ),
     );
@@ -1517,19 +1649,42 @@ class _MessageInputBarState extends State<_MessageInputBar> {
   ChatMessageModel? get replyingTo => widget.replyingTo;
   VoidCallback get onCancelReply => widget.onCancelReply;
 
+  bool get _focused => _focusNode.hasFocus;
+
+  // Send lights up only when there is something to send.
+  bool get _canSend =>
+      !uploading &&
+      (controller.text.trim().isNotEmpty || pendingFile != null);
+
   @override
   void initState() {
     super.initState();
-    // Typing again (keyboard up) closes the emoji panel.
+    // Typing again (keyboard up) closes the emoji panel; focus also
+    // drives the border highlight.
     _focusNode.addListener(() {
-      if (_focusNode.hasFocus && _showEmoji) {
-        setState(() => _showEmoji = false);
-      }
+      setState(() {
+        if (_focusNode.hasFocus) _showEmoji = false;
+      });
     });
+    controller.addListener(_onTextChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _MessageInputBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != controller) {
+      oldWidget.controller.removeListener(_onTextChanged);
+      controller.addListener(_onTextChanged);
+    }
+  }
+
+  void _onTextChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    controller.removeListener(_onTextChanged);
     _focusNode.dispose();
     super.dispose();
   }
@@ -1569,79 +1724,93 @@ class _MessageInputBarState extends State<_MessageInputBar> {
             ),
             const SizedBox(height: 8),
           ],
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  decoration: BoxDecoration(
-                    color: AppColors.background,
-                    borderRadius: BorderRadius.circular(24),
-                    border: Border.all(color: AppColors.border),
+          // Attach, emoji, text and send all live inside one bordered box.
+          Container(
+            padding: const EdgeInsets.fromLTRB(4, 4, 6, 4),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: _focused || _showEmoji
+                    ? AppColors.primary.withOpacity(0.6)
+                    : AppColors.border,
+              ),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                IconButton(
+                  onPressed: uploading ? null : onAttach,
+                  tooltip: 'Attach',
+                  icon: const Icon(Icons.attach_file_rounded,
+                      color: AppColors.textSecondary, size: 20),
+                  splashRadius: 18,
+                  visualDensity: VisualDensity.compact,
+                ),
+                IconButton(
+                  onPressed: _toggleEmoji,
+                  tooltip: _showEmoji ? 'Keyboard' : 'Emoji',
+                  icon: Icon(
+                      _showEmoji
+                          ? Icons.keyboard_alt_outlined
+                          : Icons.emoji_emotions_outlined,
+                      color: _showEmoji
+                          ? AppColors.primary
+                          : AppColors.textSecondary,
+                      size: 20),
+                  splashRadius: 18,
+                  visualDensity: VisualDensity.compact,
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: TextField(
+                    controller: controller,
+                    focusNode: _focusNode,
+                    minLines: 1,
+                    maxLines: 5,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => onSend(),
+                    style: const TextStyle(fontSize: 14),
+                    decoration: InputDecoration(
+                      hintText: hint,
+                      hintStyle: const TextStyle(
+                          color: AppColors.textHint, fontSize: 14),
+                      border: InputBorder.none,
+                      isCollapsed: true,
+                      contentPadding:
+                          const EdgeInsets.symmetric(vertical: 12),
+                    ),
                   ),
-                  child: Row(
-                    children: [
-                      IconButton(
-                        onPressed: uploading ? null : onAttach,
-                        icon: const Icon(Icons.attach_file_rounded,
-                            color: AppColors.textSecondary, size: 20),
-                        splashRadius: 18,
+                ),
+                const SizedBox(width: 6),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: InkWell(
+                    onTap: _canSend ? onSend : null,
+                    customBorder: const CircleBorder(),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 150),
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: _canSend
+                            ? AppColors.primary
+                            : AppColors.primary.withOpacity(0.35),
+                        shape: BoxShape.circle,
                       ),
-                      IconButton(
-                        onPressed: _toggleEmoji,
-                        tooltip: _showEmoji ? 'Keyboard' : 'Emoji',
-                        icon: Icon(
-                            _showEmoji
-                                ? Icons.keyboard_alt_outlined
-                                : Icons.emoji_emotions_outlined,
-                            color: _showEmoji
-                                ? AppColors.primary
-                                : AppColors.textSecondary,
-                            size: 20),
-                        splashRadius: 18,
-                      ),
-                      Expanded(
-                        child: TextField(
-                          controller: controller,
-                          focusNode: _focusNode,
-                          minLines: 1,
-                          maxLines: 5,
-                          textInputAction: TextInputAction.send,
-                          onSubmitted: (_) => onSend(),
-                          decoration: InputDecoration(
-                            hintText: hint,
-                            hintStyle: const TextStyle(
-                                color: AppColors.textHint, fontSize: 14),
-                            border: InputBorder.none,
-                            isCollapsed: true,
-                            contentPadding:
-                                const EdgeInsets.symmetric(vertical: 12),
-                          ),
+                      child: Transform.rotate(
+                        angle: -0.45,
+                        child: const Padding(
+                          padding: EdgeInsets.only(left: 2),
+                          child: Icon(Icons.send_rounded,
+                              color: Colors.white, size: 18),
                         ),
                       ),
-                    ],
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              InkWell(
-                onTap: uploading ? null : onSend,
-                borderRadius: BorderRadius.circular(24),
-                child: Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: uploading
-                        ? AppColors.primary.withOpacity(0.5)
-                        : AppColors.primary,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(Icons.send_rounded,
-                      color: Colors.white, size: 19),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
           if (_showEmoji) ...[
             const SizedBox(height: 10),
@@ -1819,6 +1988,154 @@ class _MessagesError extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Splits [text] so every case-insensitive match of [query] gets a
+/// highlight; the rest inherits the surrounding style. [current] marks the
+/// match the search ▲/▼ buttons are on with a stronger colour.
+List<TextSpan> _highlightSpans(String text, String? query,
+    {bool current = false}) {
+  final q = query?.trim().toLowerCase() ?? '';
+  if (q.isEmpty) return [TextSpan(text: text)];
+
+  final matchStyle = TextStyle(
+    backgroundColor:
+        current ? const Color(0xFFFB923C) : const Color(0xFFFDE68A),
+    color: AppColors.textPrimary,
+    fontWeight: FontWeight.w600,
+  );
+  final lower = text.toLowerCase();
+  final spans = <TextSpan>[];
+  var start = 0;
+  while (true) {
+    final idx = lower.indexOf(q, start);
+    if (idx < 0) break;
+    if (idx > start) spans.add(TextSpan(text: text.substring(start, idx)));
+    spans.add(TextSpan(
+        text: text.substring(idx, idx + q.length), style: matchStyle));
+    start = idx + q.length;
+  }
+  if (start < text.length) spans.add(TextSpan(text: text.substring(start)));
+  return spans;
+}
+
+/// Floating search box that replaces the chat header while searching:
+/// search icon, field, match counter, ▲ / ▼, divider, close. The parent
+/// rebuilds it on every change, so it holds no state of its own.
+class _ChatSearchBar extends StatelessWidget {
+  final TextEditingController controller;
+
+  /// 1-based position of the current match; null when there is none.
+  final int? current;
+
+  /// Number of matches; null while the query is empty.
+  final int? total;
+  final ValueChanged<String> onChanged;
+
+  /// Older match; null when already on the oldest.
+  final VoidCallback? onUp;
+
+  /// Newer match; null when already on the newest.
+  final VoidCallback? onDown;
+  final VoidCallback onClose;
+
+  const _ChatSearchBar({
+    required this.controller,
+    required this.current,
+    required this.total,
+    required this.onChanged,
+    required this.onUp,
+    required this.onDown,
+    required this.onClose,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final total = this.total;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      child: Container(
+        height: 48,
+        padding: const EdgeInsets.only(left: 14, right: 4),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppColors.border),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.search_rounded,
+                color: AppColors.textSecondary, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: TextField(
+                controller: controller,
+                autofocus: true,
+                textInputAction: TextInputAction.search,
+                onChanged: onChanged,
+                // Keyboard search key steps to the older match, like ▲.
+                onSubmitted: (_) => onUp?.call(),
+                style: const TextStyle(fontSize: 14),
+                decoration: const InputDecoration(
+                  hintText: 'Search in this chat...',
+                  hintStyle:
+                      TextStyle(color: AppColors.textHint, fontSize: 14),
+                  border: InputBorder.none,
+                  isCollapsed: true,
+                ),
+              ),
+            ),
+            if (total != null) ...[
+              const SizedBox(width: 6),
+              Text(
+                total == 0 ? 'No results' : '${current ?? 0} of $total',
+                style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textSecondary),
+              ),
+            ],
+            _navButton(Icons.keyboard_arrow_up_rounded, 'Older match', onUp),
+            _navButton(
+                Icons.keyboard_arrow_down_rounded, 'Newer match', onDown),
+            Container(
+              width: 1,
+              height: 22,
+              margin: const EdgeInsets.symmetric(horizontal: 4),
+              color: AppColors.border,
+            ),
+            IconButton(
+              onPressed: onClose,
+              tooltip: 'Close search',
+              icon: const Icon(Icons.close_rounded,
+                  color: AppColors.textSecondary, size: 20),
+              splashRadius: 18,
+              visualDensity: VisualDensity.compact,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _navButton(IconData icon, String tooltip, VoidCallback? onTap) {
+    return IconButton(
+      onPressed: onTap,
+      tooltip: tooltip,
+      icon: Icon(icon, size: 24),
+      color: AppColors.textSecondary,
+      disabledColor: AppColors.textHint.withOpacity(0.5),
+      splashRadius: 18,
+      visualDensity: VisualDensity.compact,
     );
   }
 }

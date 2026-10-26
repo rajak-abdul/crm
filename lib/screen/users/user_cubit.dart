@@ -1,4 +1,4 @@
-import 'package:crm_app/services/auth_interceptor.dart';
+import 'package:crm_app/utils/data_sync.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -14,21 +14,11 @@ class UserCubit extends Cubit<UserState> {
     try {
       final prefs = await SharedPreferences.getInstance();
 
-      final token = prefs.getString('token') ?? '';
-      final tenant = prefs.getString('tenant_slug') ?? '';
+      // GET /{tenant}/api/users/me — shared with the drawer and the
+      // dashboard for 2 min instead of each requesting it at startup.
+      final data = await SessionCache.usersMe();
 
-      final dio = Dio()..interceptors.add(AuthInterceptor());
-
-      final response = await dio.get(
-        'https://crm-backend-api.techzarinfo.cloud/$tenant/api/users/me',
-        options: Options(
-          headers: {
-            'Authorization': 'Bearer $token',
-          },
-        ),
-      );
-
-      final user = UserProfile.fromJson(response.data);
+      final user = UserProfile.fromJson(data);
 
       // Save locally
       await prefs.setString('currency', user.currency);

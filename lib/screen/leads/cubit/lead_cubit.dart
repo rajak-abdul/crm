@@ -8,6 +8,7 @@ import 'package:crm_app/database/local_db.dart';
 import 'package:crm_app/modals/modals.dart';
 import 'package:crm_app/screen/currency/modal/account_currency_modal.dart';
 import 'package:crm_app/services/auth_interceptor.dart';
+import 'package:crm_app/utils/data_sync.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:dio/dio.dart';
 import 'package:equatable/equatable.dart';
@@ -102,6 +103,29 @@ class LeadError extends LeadState {
   const LeadError(this.message);
   @override
   List<Object?> get props => [message];
+}
+
+/// One page of GET /leads/missed-followups.
+class MissedFollowupPage {
+  final List<Lead> leads;
+  final int total;
+  final int page;
+  final int totalPages;
+
+  const MissedFollowupPage({
+    required this.leads,
+    required this.total,
+    required this.page,
+    required this.totalPages,
+  });
+
+  const MissedFollowupPage.empty()
+      : leads = const [],
+        total = 0,
+        page = 1,
+        totalPages = 1;
+
+  bool get hasMore => page < totalPages;
 }
 
 // Top-level function required by compute()
@@ -216,6 +240,9 @@ class LeadCubit extends Cubit<LeadState> {
       },
     ));
     _dio.interceptors.add(AuthInterceptor());
+    // Saves through here mark Dashboard / Leads (/ Deals on convert) to
+    // refresh on their next visit.
+    _dio.interceptors.add(DataSyncInterceptor());
     _initToken();
   }
 
@@ -290,14 +317,17 @@ class LeadCubit extends Cubit<LeadState> {
   // per current requirements: every filter combination (All Assignee,
   // Missed Follow-ups, both together) should show the same combined,
   // un-deduped list of normal + rejected leads.
+  /// [silent]: background refresh (bottom-nav tab) — keeps the current
+  /// list on screen instead of flashing the "Fetching leads…" spinner.
   Future<void> fetchAllLeads({
   int page = 1,
   int limit = 10,
   String? status,
+  bool silent = false,
 }) async {
   if (isClosed) return;
 
-  emit(LeadLoading());
+  if (!(silent && state is LeadLoaded)) emit(LeadLoading());
 
   try {
     await _initToken();
@@ -320,23 +350,17 @@ class LeadCubit extends Cubit<LeadState> {
     // ONLY SERVER REQUEST
     // ----------------------------------------------------------
 
-    final results = await Future.wait([
+    final results = await Future.wait<dynamic>([
       _dio.get(
         '/leads/getAllLead',
         queryParameters: queryParams,
       ),
-      _dio.get('/users/sales').catchError(
-        (_) => Response(
-          requestOptions: RequestOptions(
-            path: '/users/sales',
-          ),
-          data: [],
-        ),
-      ),
+      // Shared with Deals / Dashboard for 2 min (SessionCache).
+      SessionCache.salesUsers().catchError((_) => <dynamic>[]),
     ]);
 
-    final leadsRaw = results[0].data;
-    final usersRaw = results[1].data;
+    final leadsRaw = (results[0] as Response).data;
+    final usersRaw = results[1];
 
     debugPrint(
       'LEADS RESPONSE: $leadsRaw',
@@ -554,6 +578,57 @@ if (_isSalesman &&
       final normalised = _parseListIsolate([raw]);
       return normalised.isEmpty ? null : Lead.fromJson(normalised.first);
     } catch (_) {
+      return null;
+    }
+  }
+
+  /// Leads by id via GET /leads/getLead/:id, six requests at a time —
+  /// used by the Leads "Tasks" filter, which needs specific leads from
+  /// across every page. Ids that fail to load are skipped.
+  Future<List<Lead>> fetchLeadsByIds(Iterable<String> ids) async {
+    await _initToken();
+    final list = ids.where((id) => id.isNotEmpty).toSet().toList();
+    const batch = 6;
+    final out = <Lead>[];
+    for (var i = 0; i < list.length; i += batch) {
+      final chunk = list.sublist(i, (i + batch).clamp(0, list.length));
+      final results = await Future.wait(chunk.map(fetchLeadById));
+      out.addAll(results.whereType<Lead>());
+    }
+    return out;
+  }
+
+  // ── 🌐 GET /leads/check-duplicate ─────────────────────────
+  /// Names of leads already using [email] / [phoneNumber], keyed 'email' /
+  /// 'phoneNumber' (only the ones that exist). Null when the check fails —
+  /// it's a warning only, so callers just show nothing.
+  Future<Map<String, String>?> checkDuplicate({
+    String? email,
+    String? phoneNumber,
+  }) async {
+    final params = <String, String>{
+      if (email != null && email.isNotEmpty) 'email': email,
+      if (phoneNumber != null && phoneNumber.isNotEmpty)
+        'phoneNumber': phoneNumber,
+    };
+    if (params.isEmpty) return const {};
+    try {
+      await _initToken();
+      final res =
+          await _dio.get('/leads/check-duplicate', queryParameters: params);
+      var data = res.data;
+      if (data is Map && data['data'] is Map) data = data['data'];
+      if (data is! Map) return null;
+      final out = <String, String>{};
+      for (final key in params.keys) {
+        final hit = data[key];
+        if (hit is Map && hit['exists'] == true) {
+          out[key] = (hit['leadName'] ?? '').toString().trim();
+        }
+      }
+      return out;
+    } catch (e) {
+      debugPrint('checkDuplicate error: $e');
       return null;
     }
   }
@@ -1852,55 +1927,47 @@ Future<List<Lead>> getRejectedLeads() async {
 // for the "Missed Follow-ups" filter path. Left in place in case any
 // other call site still references it directly.
 // =========================
-// Fetch missed follow-ups
+// Fetch missed follow-ups (one page)
 // =========================
-Future<List<Lead>> getMissedFollowups() async {
+// GET /leads/missed-followups?page=&limit= →
+// { leads: [...], total, page, totalPages, limit }
+Future<MissedFollowupPage> getMissedFollowups({
+  int page = 1,
+  int limit = 10,
+}) async {
   await _initToken();
 
   final tenantSlug = _cachedTenantSlug;
 
   if (tenantSlug == null || tenantSlug.isEmpty) {
-    return [];
+    return const MissedFollowupPage.empty();
   }
 
   final res = await _dio.get(
     '$_domain/$tenantSlug/api/leads/missed-followups',
     queryParameters: {
-      'page': 1,
-      'limit': 1000,
+      'page': page,
+      'limit': limit,
     },
   );
-  debugPrint("Missed Follow-ups Raw Data: ${res.data}");
 
   final parsed = await compute(
     _parseListIsolate,
     res.data,
   );
 
-  final now = DateTime.now();
+  final leads = parsed.map((e) => Lead.fromJson(e)).toList();
+  final body = res.data is Map ? res.data as Map : const {};
 
-  final today = DateTime(
-    now.year,
-    now.month,
-    now.day,
+  int readInt(dynamic v, int fallback) =>
+      v is num ? v.toInt() : int.tryParse('$v') ?? fallback;
+
+  return MissedFollowupPage(
+    leads: leads,
+    total: readInt(body['total'], leads.length),
+    page: readInt(body['page'], page),
+    totalPages: readInt(body['totalPages'], page),
   );
-
-  return parsed
-      .map((e) => Lead.fromJson(e))
-      .where((lead) {
-        if (lead.followUpDate == null) {
-          return false;
-        }
-
-        final followUpDate = DateTime(
-          lead.followUpDate!.year,
-          lead.followUpDate!.month,
-          lead.followUpDate!.day,
-        );
-
-        return followUpDate.isBefore(today);
-      })
-      .toList();
 }// ===============
 // Export the leads
 // ================
@@ -2100,8 +2167,9 @@ xls.CellValue _xlsDate(DateTime? d) {
       year: local.year, month: local.month, day: local.day);
 }
 
-/// One row per follow-up note (full history); a lead without notes gets a
-/// single row with the note columns empty.
+/// Follow-ups sheet: one row per lead, columns from [columns] below.
+/// Header row: blue fill, white bold text, centered; every cell has a thin
+/// border. Column widths follow the longest value in each column.
 Uint8List _buildFollowUpsWorkbook(List<Lead> leads) {
   final workbook = xls.Excel.createExcel();
   const sheetName = 'Follow-ups';
@@ -2110,46 +2178,74 @@ Uint8List _buildFollowUpsWorkbook(List<Lead> leads) {
     workbook.delete('Sheet1');
   }
 
-  const headers = [
-    'Lead',
-    'Company',
-    'Assign To',
-    'Follow-up Date',
-    'Note Date',
-    'Follow-up Note',
+  final dateFmt = DateFormat("MMM d, yyyy 'at' hh:mm a");
+  // Header → value. Add/remove/reorder columns here only.
+  final columns = <(String, String Function(Lead))>[
+    ('Lead', (l) => l.name),
+    ('Company', (l) => l.companyName),
+    ('Assign To', (l) => l.assignTo),
+    (
+      'Follow-up Date',
+      (l) => l.followUpDate == null
+          ? ''
+          : dateFmt.format(l.followUpDate!.toLocal()),
+    ),
+    (
+      'Follow-up Note',
+      // Notes oldest → newest, one per line.
+      (l) => ([...l.followUpNotes]
+            ..sort((a, b) => (a.createdAt ?? DateTime(0))
+                .compareTo(b.createdAt ?? DateTime(0))))
+          .map((n) => n.note.trim())
+          .where((n) => n.isNotEmpty)
+          .join('\n'),
+    ),
   ];
-  sheet.appendRow(headers.map((h) => xls.TextCellValue(h)).toList());
 
-  for (final l in leads) {
-    if (l.followUpNotes.isEmpty) {
-      sheet.appendRow([
-        xls.TextCellValue(l.name),
-        xls.TextCellValue(l.companyName),
-        xls.TextCellValue(l.assignTo),
-        _xlsDate(l.followUpDate),
-        xls.TextCellValue(''),
-        xls.TextCellValue(''),
-      ]);
-      continue;
-    }
-    for (final note in l.followUpNotes) {
-      sheet.appendRow([
-        xls.TextCellValue(l.name),
-        xls.TextCellValue(l.companyName),
-        xls.TextCellValue(l.assignTo),
-        _xlsDate(l.followUpDate),
-        _xlsDate(note.createdAt),
-        xls.TextCellValue(note.note),
-      ]);
+  final thin = xls.Border(borderStyle: xls.BorderStyle.Thin);
+  final headerStyle = xls.CellStyle(
+    bold: true,
+    fontColorHex: xls.ExcelColor.white,
+    backgroundColorHex: xls.ExcelColor.fromHexString('#2E86C1'),
+    horizontalAlign: xls.HorizontalAlign.Center,
+    verticalAlign: xls.VerticalAlign.Center,
+    leftBorder: thin,
+    rightBorder: thin,
+    topBorder: thin,
+    bottomBorder: thin,
+  );
+  final bodyStyle = xls.CellStyle(
+    verticalAlign: xls.VerticalAlign.Top,
+    textWrapping: xls.TextWrapping.WrapText,
+    leftBorder: thin,
+    rightBorder: thin,
+    topBorder: thin,
+    bottomBorder: thin,
+  );
+
+  final widths = [for (final c in columns) c.$1.length];
+  void writeRow(int row, List<String> values, xls.CellStyle style) {
+    for (var col = 0; col < values.length; col++) {
+      final cell = sheet.cell(
+        xls.CellIndex.indexByColumnRow(columnIndex: col, rowIndex: row),
+      );
+      cell.value = xls.TextCellValue(values[col]);
+      cell.cellStyle = style;
+      for (final line in values[col].split('\n')) {
+        if (line.length > widths[col]) widths[col] = line.length;
+      }
     }
   }
 
-  sheet.setColumnWidth(0, 30); // Lead
-  sheet.setColumnWidth(1, 35); // Company
-  sheet.setColumnWidth(2, 28); // Assign To
-  sheet.setColumnWidth(3, 16); // Follow-up Date
-  sheet.setColumnWidth(4, 16); // Note Date
-  sheet.setColumnWidth(5, 50); // Follow-up Note
+  writeRow(0, [for (final c in columns) c.$1], headerStyle);
+  for (var i = 0; i < leads.length; i++) {
+    writeRow(i + 1, [for (final c in columns) c.$2(leads[i])], bodyStyle);
+  }
+
+  // Fit each column to its content (with padding, capped for long notes).
+  for (var col = 0; col < columns.length; col++) {
+    sheet.setColumnWidth(col, (widths[col] + 4).clamp(12, 60).toDouble());
+  }
 
   final bytes = workbook.save();
   if (bytes == null) throw Exception('Failed to generate workbook');

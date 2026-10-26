@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Startup background — matches the first frame of assets/splash_screen.mp4.
+         Keep in sync with SplashScreen.background in lib/screen/splash_screen/splash_screen.dart. -->
+    <color name="splash_background">#2F7DBE</color>
+</resources>

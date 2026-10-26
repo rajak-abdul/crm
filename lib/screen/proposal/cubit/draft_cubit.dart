@@ -148,19 +148,23 @@ class DraftProposalCubit extends Cubit<DraftProposalState> {
   // SEND DRAFT PROPOSAL
   // ----------------------------------------------------------
 
-Future<void> sendDraftProposal(String proposalId) async {
+
+
+Future<bool> sendDraftProposal(String proposalId) async {
+  final currentState = state;
+
+  if (currentState is! DraftProposalLoaded) {
+    return false;
+  }
+
+  emit(
+    DraftProposalLoaded(
+      currentState.drafts,
+      sendingProposalId: proposalId,
+    ),
+  );
+
   try {
-    final currentState = state;
-
-    if (currentState is DraftProposalLoaded) {
-      emit(
-        DraftProposalLoaded(
-          currentState.drafts,
-          sendingProposalId: proposalId,
-        ),
-      );
-    }
-
     await initialize();
 
     final response = await dio.post(
@@ -168,43 +172,25 @@ Future<void> sendDraftProposal(String proposalId) async {
     );
 
     if (response.data is! Map) {
-      if (currentState is DraftProposalLoaded) {
-        emit(
-          DraftProposalLoaded(
-            currentState.drafts,
-          ),
-        );
-      }
-      return;
+      await getDraftProposals();
+      return false;
     }
 
     final data = Map<String, dynamic>.from(response.data);
 
-    final proposalData = data['proposal'];
-
-    if (proposalData is! Map) {
-      if (currentState is DraftProposalLoaded) {
-        emit(
-          DraftProposalLoaded(
-            currentState.drafts,
-          ),
-        );
-      }
-      return;
+    if (data['proposal'] is! Map) {
+      await getDraftProposals();
+      return false;
     }
 
-    // Reload the drafts.
     await getDraftProposals();
-  } on DioException catch (e) {
-    debugPrint(
-      'Send draft error: ${e.response?.data}',
-    );
-
-    await getDraftProposals();
+    return true;
   } catch (e) {
     debugPrint('Send draft error: $e');
 
     await getDraftProposals();
+    return false;
   }
 }
+
 }

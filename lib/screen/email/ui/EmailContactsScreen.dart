@@ -31,6 +31,26 @@ class _EmailContactsScreenState extends State<EmailContactsScreen> {
     },
   );
 }
+ // Pagination for the email Campaign
+List<EmailContact> _getPaginatedContacts(
+  List<EmailContact> contacts,
+) {
+  final filteredContacts = _filterContacts(contacts);
+
+  final startIndex = (_currentPage - 1) * _pageSize;
+
+  if (startIndex >= filteredContacts.length) {
+    return [];
+  }
+
+  final endIndex = math.min(
+    startIndex + _pageSize,
+    filteredContacts.length,
+  );
+
+  return filteredContacts.sublist(startIndex, endIndex);
+}
+
   final TextEditingController _searchController = TextEditingController();
 
   bool _selectionMode = false;
@@ -67,17 +87,18 @@ void initState() {
   });
 }
 
-  // The API paginates server-side, so each page change is a new request.
   void _loadPage(int page) {
-    setState(() {
-      _currentPage = page;
-    });
+  if (page < 1) return;
 
-    context.read<EmailContactsCubit>().getEmailContacts(
-          page: page,
-          limit: _pageSize,
-        );
-  }
+  setState(() {
+    _currentPage = page;
+  });
+
+  context.read<EmailContactsCubit>().getEmailContacts(
+        page: page,
+        limit: _pageSize,
+      );
+}
 
   @override
   void dispose() {
@@ -139,8 +160,11 @@ Widget build(BuildContext context) {
 
             // Search and the Leads/Deals chips filter within the
             // currently-loaded page only.
-            final filteredContacts =
-                _filterContacts(state.contacts);
+            final allFilteredContacts = _filterContacts(state.contacts);
+
+final paginatedContacts = _getPaginatedContacts(
+  state.contacts,
+);
 
             final isFiltering = _selectedFilter != 'All' ||
                 _searchController.text.trim().isNotEmpty;
@@ -165,30 +189,34 @@ Widget build(BuildContext context) {
 
                       _buildContactHeader(
                         isFiltering
-                            ? filteredContacts.length
+                            ? allFilteredContacts.length
                             : state.total,
                       ),
 
                       _buildContactsList(
-                        filteredContacts,
+                        paginatedContacts,
                       ),
                     ],
                   ),
                 ),
 
                 PaginationWidget(
-                  currentPage: state.page,
-                  totalItems: state.total,
-                  pageSize: _pageSize,
-                  pageSizeOptions: _pageSizeOptions,
-                  onPageChanged: _loadPage,
-                  onPageSizeChanged: (size) {
-                    setState(() {
-                      _pageSize = size;
-                    });
-                    _loadPage(1);
-                  },
-                ),
+  currentPage: _currentPage,
+  totalItems: allFilteredContacts.length,
+  pageSize: _pageSize,
+  pageSizeOptions: _pageSizeOptions,
+  onPageChanged: (page) {
+    setState(() {
+      _currentPage = page;
+    });
+  },
+  onPageSizeChanged: (size) {
+    setState(() {
+      _pageSize = size;
+      _currentPage = 1;
+    });
+  },
+),
               ],
             );
           }
@@ -202,16 +230,23 @@ Widget build(BuildContext context) {
       // =========================
       // SEND FAB
       // =========================
-      Positioned(
-        right: 16,
-        bottom: 90,
-        child: SizedBox(
-          width: 52,
-          height: 52,
-          child: _buildSendButton(),
-        ),
-      ),
-    ],
+Positioned(
+  right: 16,
+  bottom: 90,
+  child: BlocBuilder<EmailContactsCubit, EmailContactsState>(
+    builder: (context, state) {
+      if (state is! EmailContactsSuccess) {
+        return const SizedBox.shrink();
+      }
+
+      return SizedBox(
+        width: 52,
+        height: 52,
+        child: _buildSendButton(),
+      );
+    },
+  ),
+),    ],
   ),
 );
 

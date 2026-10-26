@@ -5,6 +5,7 @@
 import 'package:crm_app/screen/deals/cubit/deals_sheet_state.dart';
 import 'package:crm_app/screen/deals/modal/deal_modal.dart';
 import 'package:crm_app/screen/invoice/modal/invoice_model.dart';
+import 'package:crm_app/screen/proposal/modal/proposal_modal.dart';
 import 'package:dio/dio.dart'
     show Dio, BaseOptions, InterceptorsWrapper, DioException, DioExceptionType, MultipartFile, FormData, Options, Response, ResponseType;
 import 'package:equatable/equatable.dart';
@@ -16,6 +17,7 @@ import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart'
     show SharedPreferences;
 import 'package:crm_app/services/auth_interceptor.dart';
+import 'package:crm_app/utils/data_sync.dart';
 import 'package:crm_app/utils/permission_helper.dart';
 import 'package:crm_app/database/local_db.dart';
 
@@ -99,6 +101,12 @@ class DealsCubit extends Cubit<DealsState> {
   late final Dio _dio;
   String? _cachedToken;
 
+  /// False for sales users — they only see their own deals, so the UI
+  /// hides the Assigned User filter and the Assign To field.
+  bool get canViewAll =>
+      PermissionHelper.can('users_roles') && !_isSalesRole(_roleName);
+  String _roleName = '';
+
   DealsCubit() : super(DealsInitial()) {
     // ── FIX: Do NOT set Content-Type globally. ─────────────────
     // Dio must set it automatically per-request so that multipart
@@ -132,6 +140,9 @@ class DealsCubit extends Cubit<DealsState> {
 },
     ));
     _dio.interceptors.add(AuthInterceptor());
+    // Saves through here mark Dashboard / Deals (/ Leads on convert) to
+    // refresh on their next visit.
+    _dio.interceptors.add(DataSyncInterceptor());
 
     _initToken();
   }
@@ -152,14 +163,23 @@ class DealsCubit extends Cubit<DealsState> {
     final prefs = await SharedPreferences.getInstance();
     final currentUserId = prefs.getString('user_id') ?? '';
     final userName = prefs.getString('user_name') ?? '';
-    final roleName = prefs.getString('role') ?? '';
-    final canViewAll =
-        PermissionHelper.can('users_roles') && !_isSalesRole(roleName);
+    _roleName = prefs.getString('role') ?? '';
+    final canViewAll = this.canViewAll;
 
-    final allDeals = await _safeGet('/deals/getAll');
-    final pendingDeals = await _safeGet('/deals/pending');
-    final lostDeals = await _safeGet('/lost-deals');
-    final userMaps = await _safeGet('/users/sales');
+    // All four at once (they used to load one after another).
+    // /users/sales comes from the shared, tenant-scoped SessionCache.
+    final results = await Future.wait<List<Map<String, dynamic>>>([
+      _safeGet('/deals/getAll'),
+      _safeGet('/deals/pending'),
+      _safeGet('/lost-deals'),
+      SessionCache.salesUsers()
+          .then(_toList)
+          .catchError((_) => <Map<String, dynamic>>[]),
+    ]);
+    final allDeals = results[0];
+    final pendingDeals = results[1];
+    final lostDeals = results[2];
+    final userMaps = results[3];
 
     final scopedAllRows = _scopeDealsForUser(
       allDeals,
@@ -310,6 +330,47 @@ class DealsCubit extends Cubit<DealsState> {
         .whereType<Map>()
         .map((e) => DealActivityItem.fromJson(Map<String, dynamic>.from(e)))
         .toList();
+  }
+
+  // ── 🌐 GET /{tenantSlug}/api/deals/check-duplicate ────────
+  /// Names of deals already using [email] / [phoneNumber], keyed 'email' /
+  /// 'phoneNumber' (only the ones that exist). Null when the check fails —
+  /// it's a warning only, so callers just show nothing.
+  Future<Map<String, String>?> checkDuplicate({
+    String? email,
+    String? phoneNumber,
+  }) async {
+    final params = <String, String>{
+      if (email != null && email.isNotEmpty) 'email': email,
+      if (phoneNumber != null && phoneNumber.isNotEmpty)
+        'phoneNumber': phoneNumber,
+    };
+    if (params.isEmpty) return const {};
+    try {
+      if (_cachedToken == null || _cachedToken!.isEmpty) await _initToken();
+      final prefs = await SharedPreferences.getInstance();
+      final tenantSlug = prefs.getString('tenant_slug') ?? '';
+      if (tenantSlug.isEmpty) return null;
+
+      final res = await _dio.get(
+        'https://crm-backend-api.techzarinfo.cloud/$tenantSlug/api/deals/check-duplicate',
+        queryParameters: params,
+      );
+      var data = res.data;
+      if (data is Map && data['data'] is Map) data = data['data'];
+      if (data is! Map) return null;
+      final out = <String, String>{};
+      for (final key in params.keys) {
+        final hit = data[key];
+        if (hit is Map && hit['exists'] == true) {
+          out[key] = (hit['leadName'] ?? '').toString().trim();
+        }
+      }
+      return out;
+    } catch (e) {
+      debugPrint('[DealsCubit] checkDuplicate error: $e');
+      return null;
+    }
   }
 
   /// GET /{tenantSlug}/api/users/me
@@ -1113,7 +1174,52 @@ Future<List<Invoice>> getDealInvoices(String dealId) async {
   }
 }
 
+// ===================
+// Proposals Tab
+// ===================
+
+  /// GET /{tenantSlug}/api/deals/:id/proposals — throws on failure so
+  /// the tab can show an error with retry.
+  Future<List<Proposal>> getDealProposals(String dealId) async {
+    final base = await _tenantApiBase();
+    final res = await _dio.get('$base/deals/$dealId/proposals');
+    final data = res.data;
+    final raw = data is List
+        ? data
+        : (data is Map ? (data['proposals'] ?? data['data']) : null);
+    if (raw is! List) return [];
+    return raw
+        .whereType<Map>()
+        .map((e) => Proposal.fromJson(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  /// PUT /{tenantSlug}/api/proposal/updatestatus/:id
+  Future<void> updateProposalStatus(String proposalId, String status) async {
+    final base = await _tenantApiBase();
+    try {
+      await _dio.put(
+        '$base/proposal/updatestatus/$proposalId',
+        data: {'status': status},
+      );
+    } on DioException catch (e) {
+      throw Exception(_dioMsg(e, 'Failed to update status'));
+    }
+  }
+
 // ── Helpers ───────────────────────────────────────────────────
+
+  /// Tenant-scoped API root, e.g. https://…/kishore/api — for the
+  /// endpoints that are not served from the slug-less [_base].
+  Future<String> _tenantApiBase() async {
+    if (_cachedToken == null || _cachedToken!.isEmpty) await _initToken();
+    final prefs = await SharedPreferences.getInstance();
+    final tenantSlug = prefs.getString('tenant_slug') ?? '';
+    if (tenantSlug.isEmpty) {
+      throw Exception('Missing tenant slug — please log in again');
+    }
+    return 'https://crm-backend-api.techzarinfo.cloud/$tenantSlug/api';
+  }
 
   Future<List<Map<String, dynamic>>> _safeGet(String path) async {
     try {

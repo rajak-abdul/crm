@@ -4,6 +4,8 @@
 // ║  Talks only to the Repository: no Dio, no JSON, no widgets.   ║
 // ╚══════════════════════════════════════════════════════════════╝
 
+import 'dart:async';
+
 import 'package:crm_app/screen/deals/modal/deal_modal.dart'
     show DealConstants;
 import 'package:crm_app/screen/tasks/model/target/target_modal.dart';
@@ -18,8 +20,15 @@ import 'task_state.dart';
 
 class TaskViewModel extends Cubit<TaskState> {
   final TaskRepository repository;
+  String? _customStartDate;
+String? _customEndDate;
+int _periodRequestId = 0;
 
   static const _notificationPresenter = TaskNotificationPresenter();
+
+  /// Tasks whose delay reason was sent this session — not asked again
+  /// even if the reload after sending fails.
+  final _reasonSent = <String>{};
 
   TaskViewModel(this.repository) : super(const TaskState());
 
@@ -94,40 +103,84 @@ class TaskViewModel extends Cubit<TaskState> {
     }
   }
 
-  Future<void> _fetch() async {
-    final results = await Future.wait<Object>([
-      repository.getMyTasks(),
-      repository.getMyDashboardStats(period: state.period),
-    ]);
+Future<void> _fetch() async {
+  final results = await Future.wait<Object>([
+    repository.getMyTasks(),
+    repository.getMyDashboardStats(
+      period: state.period,
+      startDate: _customStartDate,
+      endDate: _customEndDate,
+    ),
+  ]);
 
-    final tasks = results[0] as List<TaskModel>;
-    final stats = results[1] as MyDashboardStatsModel;
+  if (isClosed) return;
 
-    emit(_withDerived(state.copyWith(
-      status: tasks.isEmpty ? TaskViewStatus.empty : TaskViewStatus.success,
+  final tasks = results[0] as List<TaskModel>;
+  final stats = results[1] as MyDashboardStatsModel;
+
+  emit(_withDerived(
+    state.copyWith(
+      status: tasks.isEmpty
+          ? TaskViewStatus.empty
+          : TaskViewStatus.success,
       tasks: tasks,
       stats: stats,
-    )));
-  }
-
+    ),
+  ));
+}
   // ============================================================
   // USER ACTIONS
   // ============================================================
 
   /// Reloads only the overview stats for [period]. Returns an error
   /// message on failure (the previous period and stats are kept).
-  Future<String?> changePeriod(String period) async {
-    if (period == state.period) return null;
-
-    try {
-      final stats = await repository.getMyDashboardStats(period: period);
-      emit(state.copyWith(stats: stats, period: period));
-      return null;
-    } catch (e) {
-      return e.toString();
-    }
+Future<String?> changePeriod(
+  String period, {
+  String? startDate,
+  String? endDate,
+}) async {
+  if (period == 'custom' &&
+      (startDate == null || endDate == null)) {
+    return 'Please select a start date and end date.';
   }
 
+  if (period == state.period &&
+      period != 'custom') {
+    return null;
+  }
+
+  final requestId = ++_periodRequestId;
+
+  try {
+    final stats = await repository.getMyDashboardStats(
+      period: period,
+      startDate: startDate,
+      endDate: endDate,
+    );
+
+    if (isClosed || requestId != _periodRequestId) {
+      return null;
+    }
+
+    if (period == 'custom') {
+      _customStartDate = startDate;
+      _customEndDate = endDate;
+    } else {
+      _customStartDate = null;
+      _customEndDate = null;
+    }
+
+    emit(state.copyWith(
+      stats: stats,
+      period: period,
+    ));
+
+    return null;
+  } catch (e) {
+    if (requestId != _periodRequestId) return null;
+    return e.toString();
+  }
+}
   void selectFilter(TaskFilter filter) {
     if (filter == state.filter) return;
     emit(_withDerived(state.copyWith(filter: filter)));
@@ -156,6 +209,35 @@ class TaskViewModel extends Cubit<TaskState> {
 
     // The move is saved; a failed reload only leaves the board stale.
     await refresh();
+    return null;
+  }
+
+  /// Sends why [task] is overdue (POST /tasks/:id/reason-note with
+  /// itemType 'task'), drops it from [TaskState.overdueTasks] and
+  /// reloads. Returns an error message on failure.
+  Future<String?> submitOverdueReason(TaskModel task, String reason) async {
+    final taskId = task.id;
+    if (taskId == null) return 'Task not found';
+
+    final note = reason.trim();
+    if (note.isEmpty) return 'Please add a reason';
+
+    try {
+      await repository.reportTaskIssue(
+        taskId: taskId,
+        note: note,
+        itemType: 'task',
+        itemName: task.title,
+      );
+    } catch (e) {
+      return e.toString();
+    }
+
+    _reasonSent.add(taskId);
+    emit(_withDerived(state));
+    // The reason is saved — don't hold the popup open for the reload; a
+    // failed reload only leaves the list stale.
+    unawaited(refresh());
     return null;
   }
 
@@ -257,7 +339,47 @@ class TaskViewModel extends Cubit<TaskState> {
               if (TaskStage.fromStatus(c.task.status) == stage) c,
           ]),
       ],
+      // Every task, whatever the filter.
+      overdueTasks: s.tasks.where(_needsOverdueReason).toList()
+        ..sort((a, b) => a.dueDate!.compareTo(b.dueDate!)),
     ));
+  }
+
+  /// Open, past its due day, and no task-level reason added since it
+  /// went overdue (a reason note from before the due date doesn't count).
+  bool _needsOverdueReason(TaskModel task) {
+    final id = task.id;
+    final overdueSince = _overdueSince(task);
+    if (id == null || overdueSince == null || _reasonSent.contains(id)) {
+      return false;
+    }
+
+    return !task.reasonNotes.any(
+      (n) =>
+          (n.itemType ?? '').toLowerCase() == 'task' &&
+          n.addedAt != null &&
+          !_calendarDay(n.addedAt!).isBefore(overdueSince),
+    );
+  }
+
+  /// The day after the due date (when the task became overdue), or null
+  /// when it isn't overdue. Same day rule as [_dueInfo]'s "Overdue" label.
+  DateTime? _overdueSince(TaskModel task) {
+    final status = (task.status ?? '').toLowerCase();
+    if (status == 'completed' || status == 'rejected') return null;
+
+    final d = task.dueDate?.toUtc();
+    if (d == null) return null;
+
+    final since = DateTime.utc(d.year, d.month, d.day + 1);
+    return _calendarDay(DateTime.now()).isBefore(since) ? null : since;
+  }
+
+  /// [time]'s local calendar day as a UTC date, comparable with due days
+  /// (stored as midnight UTC of the chosen day).
+  static DateTime _calendarDay(DateTime time) {
+    final local = time.toLocal();
+    return DateTime.utc(local.year, local.month, local.day);
   }
 
   TaskState _withNotifications(TaskState s) {
